@@ -7,6 +7,20 @@
   </head>
   <body>
     <canvas id="pet-canvas"></canvas>
+    <div id="pet-bubble"></div>
+    <div id="widget-badge"></div>
+    <div id="err-overlay" style="display:none;position:fixed;left:6px;top:6px;right:6px;z-index:99;background:rgba(140,20,20,.92);color:#fff;font:11px/1.5 Consolas,monospace;padding:6px 8px;border-radius:6px;white-space:pre-wrap;word-break:break-all;"></div>
+    <script>
+      (function () {
+        var el = document.getElementById("err-overlay");
+        function show(msg) {
+          el.textContent = "⚠ " + msg;
+          el.style.display = "block";
+        }
+        window.addEventListener("error", function (e) { show(e.message); });
+        window.addEventListener("unhandledrejection", function (e) { show(String(e.reason)); });
+      })();
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
