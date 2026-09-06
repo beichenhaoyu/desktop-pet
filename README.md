@@ -18,7 +18,12 @@ npm run tauri build  # 打包发布
 
 ## 目录速览
 
-- `src/pet/` 宠物渲染：程序生成序列帧 + 播放器 + 状态机
-- `src/runtime/` 插件运行时（实施步骤 2）
-- `src-tauri/` Rust 宿主：窗口/托盘/单实例 + 原生能力服务（实施步骤 3）
-- `plugins/` 示例插件（实施步骤 4）
+- `src/pet/` 宠物渲染：立绘加载（含程序生成兜底）+ 播放器 + 状态机
+- `src/runtime/` 插件运行时（manifest 校验、能力桥、事件总线、widget 宿主）
+- `src-tauri/` Rust 宿主：窗口/托盘/单实例 + BLE/存储/权限/overlay 服务
+- `plugins/` 示例插件（心率蓝牙已就绪）
+
+## 致谢
+
+- 宠物立绘「鲸鱼娘」来自开源项目 [dsh-whale-musume](https://github.com/Sutera-Diffusus/dsh-whale-musume)（© Sutera-Diffusus，MIT 协议），素材清单见 [src/pet/assets/whale/README.md](src/pet/assets/whale/README.md)
+

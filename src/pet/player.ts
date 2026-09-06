@@ -9,10 +9,11 @@ export class FramePlayer {
   ) {}
 
   get current(): HTMLCanvasElement {
-    return this.frames[this.index];
+    return this.frames[Math.min(this.index, this.frames.length - 1)];
   }
 
   update(dt: number): void {
+    if (this.frames.length <= 1) return; // 单帧立绘无需推进
     this.acc += dt;
     const step = 1 / this.fps;
     while (this.acc >= step) {
@@ -24,5 +25,10 @@ export class FramePlayer {
   reset(): void {
     this.index = 0;
     this.acc = 0;
+  }
+
+  /** 随机起点（react 表情池每次随机挑一个） */
+  randomize(): void {
+    this.index = Math.floor(Math.random() * this.frames.length);
   }
 }

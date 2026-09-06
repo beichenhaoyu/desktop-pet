@@ -16,4 +16,44 @@ body:active {
 
 #pet-canvas {
   display: block;
+  /* 关键：canvas 属性尺寸是 innerWidth×dpr（HiDPI 背板），
+     必须显式压回 CSS 窗口尺寸，否则布局尺寸=背板尺寸，画面放大 dpr 倍并溢出裁切 */
+  width: 100vw;
+  height: 100vh;
+}
+
+/* 插件徽标插槽：宠物身侧（腰高），不拦截鼠标（保持拖拽手感） */
+#widget-badge {
+  position: fixed;
+  left: 6px;
+  bottom: 150px;
+  pointer-events: none;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+
+/* 台词气泡：宠物头顶弹出（wm-pop 式），不拦截鼠标 */
+#pet-bubble {
+  position: fixed;
+  right: 16px;
+  bottom: 305px;
+  max-width: 240px;
+  padding: 8px 12px;
+  border-radius: 12px 12px 3px 12px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #2b2f36;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-size: 12px;
+  line-height: 1.6;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.2);
+  opacity: 0;
+  transform: translateY(8px) scale(0.92);
+  transform-origin: bottom right;
+  transition: opacity 0.18s ease, transform 0.18s cubic-bezier(0.34, 1.4, 0.64, 1);
+  pointer-events: none;
+  z-index: 10;
+}
+
+#pet-bubble.show {
+  opacity: 1;
+  transform: translateY(0) scale(1);
 }
