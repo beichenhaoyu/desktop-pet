@@ -1,0 +1,4 @@
+# 团队统一 Rust 版本；升级时改这里，rustup 会自动切换
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
