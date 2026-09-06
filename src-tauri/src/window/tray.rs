@@ -1,14 +1,15 @@
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager,
+    AppHandle, Manager, WebviewUrl, WebviewWindowBuilder,
 };
 
-/// 系统托盘：左键切换宠物显隐，右键菜单（显隐 / 退出）
+/// 系统托盘：左键切换宠物显隐，右键菜单（显隐 / 设置 / 退出）
 pub fn setup(app: &AppHandle) -> tauri::Result<()> {
     let toggle = MenuItem::with_id(app, "toggle", "显示 / 隐藏宠物", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&toggle, &quit])?;
+    let menu = Menu::with_items(app, &[&toggle, &settings, &quit])?;
 
     TrayIconBuilder::with_id("pet-tray")
         .icon(app.default_window_icon().expect("missing default window icon").clone())
@@ -27,6 +28,7 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
         })
         .on_menu_event(|app, event| match event.id.as_ref() {
             "toggle" => toggle_pet(app),
+            "settings" => open_settings(app),
             "quit" => app.exit(0),
             _ => {}
         })
@@ -43,4 +45,17 @@ fn toggle_pet(app: &AppHandle) {
             let _ = pet.set_focus();
         }
     }
+}
+
+fn open_settings(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("settings") {
+        let _ = win.show();
+        let _ = win.set_focus();
+        return;
+    }
+    let _ = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
+        .title("DesktopPet 设置")
+        .inner_size(460.0, 640.0)
+        .resizable(false)
+        .build();
 }
