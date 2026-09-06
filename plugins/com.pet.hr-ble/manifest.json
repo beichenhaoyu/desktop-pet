@@ -1,0 +1,17 @@
+{
+  "id": "com.pet.hr-ble",
+  "name": "心率蓝牙",
+  "version": "0.1.0",
+  "entry": "index.js",
+  "widget": "widget.js",
+  "permissions": [
+    "ble:scan",
+    "ble:connect",
+    "bus:publish",
+    "bus:subscribe",
+    "widget",
+    "storage",
+    "overlay"
+  ],
+  "description": "连接蓝牙心率设备（手环/心率带）。可在宠物旁小字显示实时心率，或切换为桌面左上角透明波形图。"
+}
