@@ -1,0 +1,71 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  background: #1e2128;
+  color: #e8eaf0;
+  user-select: none;
+}
+
+#app {
+  padding: 20px 22px;
+}
+
+h2 {
+  font-size: 15px;
+  margin: 0 0 12px;
+  color: #aab2c0;
+  font-weight: 500;
+}
+
+.plugin-name {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 10px;
+  color: #ffd28a;
+}
+
+.hint {
+  font-size: 12px;
+  color: #7a8190;
+  margin: 0 0 6px;
+}
+
+#cap-list {
+  margin: 0 0 18px;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.9;
+  color: #c3c9d4;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+button {
+  font-size: 13px;
+  padding: 7px 22px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+}
+
+button.deny {
+  background: #3a3f4a;
+  color: #cfd4de;
+}
+
+button.allow {
+  background: #2f9e63;
+  color: #fff;
+}
+
+button.allow:hover {
+  background: #35b070;
+}
