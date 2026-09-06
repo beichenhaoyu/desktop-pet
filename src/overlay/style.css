@@ -1,0 +1,15 @@
+/* overlay 悬浮层：全透明背景，内容插件自绘 */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  background: transparent;
+  overflow: hidden;
+}
+
+#widget-overlay {
+  width: 100%;
+  height: 100%;
+}

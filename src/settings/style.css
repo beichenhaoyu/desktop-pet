@@ -1,0 +1,152 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  background: #f6f7f9;
+  color: #2b2f36;
+}
+
+#app {
+  max-width: 430px;
+  margin: 0 auto;
+  padding: 16px 14px 24px;
+}
+
+header h1 {
+  font-size: 18px;
+  margin: 4px 0 2px;
+}
+
+.hint {
+  font-size: 12px;
+  color: #7a8190;
+  margin: 0 0 12px;
+}
+
+.error-banner {
+  background: #fdecea;
+  color: #b3261e;
+  border: 1px solid #f5c6c1;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+
+.plugin-card {
+  background: #fff;
+  border: 1px solid #e4e7ec;
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+}
+
+.plugin-card.error {
+  color: #b3261e;
+  font-size: 12px;
+}
+
+.plugin-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.plugin-name {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.plugin-version {
+  font-size: 11px;
+  color: #98a2b3;
+  margin-left: 6px;
+}
+
+.plugin-id {
+  font-size: 11px;
+  color: #98a2b3;
+  margin-top: 2px;
+}
+
+.plugin-desc {
+  font-size: 12px;
+  color: #475467;
+  margin-top: 6px;
+}
+
+/* 开关 */
+.switch {
+  appearance: none;
+  width: 40px;
+  height: 22px;
+  border-radius: 11px;
+  background: #d0d5dd;
+  position: relative;
+  cursor: pointer;
+  transition: background 0.15s;
+  flex: none;
+}
+
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: left 0.15s;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.switch:checked {
+  background: #2f9e63;
+}
+
+.switch:checked::after {
+  left: 20px;
+}
+
+.perm-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+  align-items: center;
+}
+
+.perm-chip {
+  font-size: 11px;
+  background: #eef1f5;
+  color: #475467;
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.btn-revoke {
+  font-size: 11px;
+  border: 1px solid #d0d5dd;
+  background: #fff;
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  color: #b3261e;
+  margin-left: auto;
+}
+
+.btn-revoke:disabled {
+  color: #98a2b3;
+  cursor: default;
+}
+
+.plugin-settings {
+  margin-top: 10px;
+  border-top: 1px dashed #e4e7ec;
+  padding-top: 8px;
+}

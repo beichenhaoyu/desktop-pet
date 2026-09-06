@@ -1,0 +1,62 @@
+// 跨窗口事件总线：publish 同窗口即时派发 + 经 Rust 中继广播到全部窗口
+// （接收端按 origin 去重）。topic 支持前缀通配，如 "com.pet.hr-ble:*"。
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+
+type Handler = (payload: unknown) => void;
+
+class EventBus {
+  private handlers = new Map<string, Set<Handler>>();
+  private label = getCurrentWindow().label;
+  private initialized = false;
+
+  async init(): Promise<void> {
+    if (this.initialized) return;
+    this.initialized = true;
+    await listen<{ origin: string; topic: string; payload: unknown }>("bus", (e) => {
+      const { origin, topic, payload } = e.payload;
+      if (origin === this.label) return;
+      this.dispatch(topic, payload);
+    });
+  }
+
+  publish(topic: string, payload: unknown): void {
+    this.dispatch(topic, payload);
+    void invoke("bus_publish", { origin: this.label, topic, payload });
+  }
+
+  /** 宿主注入 Rust 原生事件到总线（不回传 Rust，避免回环） */
+  inject(topic: string, payload: unknown): void {
+    this.dispatch(topic, payload);
+  }
+
+  subscribe(topic: string, handler: Handler): () => void {
+    let set = this.handlers.get(topic);
+    if (!set) {
+      set = new Set();
+      this.handlers.set(topic, set);
+    }
+    set.add(handler);
+    return () => {
+      set.delete(handler);
+    };
+  }
+
+  private dispatch(topic: string, payload: unknown): void {
+    for (const [pattern, set] of this.handlers) {
+      const matched =
+        pattern === topic || (pattern.endsWith("*") && topic.startsWith(pattern.slice(0, -1)));
+      if (!matched) continue;
+      for (const handler of set) {
+        try {
+          handler(payload);
+        } catch (err) {
+          console.error(`[bus] handler error on ${topic}`, err);
+        }
+      }
+    }
+  }
+}
+
+export const bus = new EventBus();

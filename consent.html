@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>权限确认</title>
+  </head>
+  <body>
+    <div id="app">
+      <h2>插件请求权限</h2>
+      <p id="plugin-name" class="plugin-name"></p>
+      <p class="hint">以下能力将获得授权：</p>
+      <ul id="cap-list"></ul>
+      <div class="actions">
+        <button id="btn-deny" class="deny">拒绝</button>
+        <button id="btn-allow" class="allow">允许</button>
+      </div>
+    </div>
+    <script type="module" src="/src/consent/main.ts"></script>
+  </body>
+</html>
