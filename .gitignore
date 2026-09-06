@@ -16,6 +16,9 @@ pnpm-debug.log*
 src-tauri/target
 src-tauri/gen/schemas
 
+# 本地打包产物（便携包/安装器输出）
+release-package/
+
 # Editor
 .vscode/*
 !.vscode/extensions.json
