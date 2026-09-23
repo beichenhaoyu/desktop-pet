@@ -5,16 +5,21 @@ const TOPIC_DEVICES = "com.pet.hr-ble:devices";
 const TOPIC_STATUS = "com.pet.hr-ble:status";
 const TOPIC_CMD = "com.pet.hr-ble:cmd";
 
-const cleanups = [];
+// 每个挂载实例（badge/overlay/settings）各自一份清理表，互不干扰
+const scopes = new WeakMap();
 
 export function mount(root, ctx) {
-  if (ctx.region === "badge") return mountBadge(root, ctx);
-  if (ctx.region === "overlay") return mountChart(root, ctx);
-  if (ctx.region === "settings") return mountSettings(root, ctx);
+  const cleanups = [];
+  scopes.set(root, cleanups);
+  if (ctx.region === "badge") return mountBadge(root, ctx, cleanups);
+  if (ctx.region === "overlay") return mountChart(root, ctx, cleanups);
+  if (ctx.region === "settings") return mountSettings(root, ctx, cleanups);
 }
 
-export function unmount() {
-  for (const off of cleanups.splice(0)) {
+export function unmount(root) {
+  const cleanups = scopes.get(root) ?? [];
+  scopes.delete(root);
+  for (const off of cleanups) {
     try {
       off();
     } catch {
@@ -24,7 +29,7 @@ export function unmount() {
 }
 
 /* ---------- 宠物旁小字 ---------- */
-function mountBadge(root, ctx) {
+function mountBadge(root, ctx, cleanups) {
   const style = document.createElement("style");
   style.textContent = `
     .hr-badge {
@@ -44,19 +49,26 @@ function mountBadge(root, ctx) {
   `;
   const el = document.createElement("div");
   el.className = "hr-badge";
-  el.innerHTML = `<span class="heart">♥</span><span class="num">--</span><span class="unit">BPM</span>`;
+  const span = (cls, text) => {
+    const n = document.createElement("span");
+    n.className = cls;
+    n.textContent = text;
+    return n;
+  };
+  const num = span("num", "--");
+  el.append(span("heart", "♥"), num, span("unit", "BPM"));
   root.append(style, el);
 
   cleanups.push(
     ctx.bus.subscribe(TOPIC_BPM, ({ bpm }) => {
-      el.innerHTML =
-        `<span class="heart">♥</span><span class="num">${bpm}</span><span class="unit">BPM</span>`;
+      // 广播数据不可信：只写 textContent，永不把总线 payload 拼进 innerHTML
+      num.textContent = Number.isFinite(bpm) ? String(bpm) : "--";
     }),
   );
 }
 
 /* ---------- 左上角透明波形图 ---------- */
-function mountChart(root, ctx) {
+function mountChart(root, ctx, cleanups) {
   const HEART_PATH =
     "M23.6 2c-3.2 0-6 1.9-7.6 4.6C14.4 3.9 11.6 2 8.4 2 3.8 2 .2 5.7.2 10.2c0 8.1 12.3 16.6 15.8 18.6 3.5-2 15.8-10.5 15.8-18.6C31.8 5.7 28.2 2 23.6 2z";
 
@@ -257,7 +269,7 @@ function mountChart(root, ctx) {
 }
 
 /* ---------- 设置面板（设置窗内） ---------- */
-function mountSettings(root, ctx) {
+function mountSettings(root, ctx, cleanups) {
   const style = document.createElement("style");
   style.textContent = `
     .hr-panel { font-size: 13px; color: #2b2f36; display: flex; flex-direction: column; gap: 10px; }
@@ -326,8 +338,8 @@ function mountSettings(root, ctx) {
 
   cleanups.push(
     ctx.bus.subscribe(TOPIC_DEVICES, (d) => {
-      const exists = devicesSel.querySelector(`option[value="${d.id}"]`);
-      if (exists) return;
+      // 设备 id 来自广播，不能拼进选择器
+      if ([...devicesSel.options].some((o) => o.value === d.id)) return;
       const opt = document.createElement("option");
       opt.value = d.id;
       opt.textContent = `${d.name ?? "未命名设备"}${d.rssi != null ? `（${d.rssi} dBm）` : ""}`;

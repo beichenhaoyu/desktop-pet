@@ -102,7 +102,8 @@ pub fn permission_check(state: tauri::State<PermissionState>, plugin_id: String,
     valid_id(&plugin_id) && state.is_granted(&plugin_id, &capability)
 }
 
-/// 请求授权：已全部授权则立即放行；否则弹同意框阻塞等待用户决定（60s 超时视为拒绝）
+/// 请求授权：只受理 manifest 已声明的能力；已全部授权则立即放行；
+/// 否则弹同意框阻塞等待用户决定（60s 超时视为拒绝）
 #[tauri::command]
 pub async fn permission_request(
     app: AppHandle,
@@ -113,6 +114,20 @@ pub async fn permission_request(
 ) -> Result<bool, String> {
     if !valid_id(&plugin_id) {
         return Err("invalid plugin id".into());
+    }
+    // 磁盘 manifest 是声明能力的唯一事实来源：未声明的能力直接拒绝，不弹框
+    let declared = crate::commands::plugins::declared_capabilities(&app, &plugin_id)?;
+    let undeclared: Vec<&str> = capabilities
+        .iter()
+        .filter(|c| !declared.iter().any(|d| d == *c))
+        .map(String::as_str)
+        .collect();
+    if !undeclared.is_empty() {
+        return Err(format!(
+            "{} 未在 manifest 声明这些能力: {}",
+            plugin_id,
+            undeclared.join(", ")
+        ));
     }
     if capabilities.iter().all(|c| state.is_granted(&plugin_id, c)) {
         return Ok(true);
@@ -157,9 +172,24 @@ pub async fn permission_request(
     }
 }
 
+/// 同意框只能由它自己的窗口应答：req_id 会从窗口 label 泄露，
+/// 不绑定调用方的话任何窗口都能自问自答地放行。
+fn assert_consent_caller(window: &tauri::Window, req_id: &str) -> Result<(), String> {
+    if window.label() == format!("consent-{req_id}") {
+        Ok(())
+    } else {
+        Err("consent window does not own this request".into())
+    }
+}
+
 /// 同意框页面拉取详情
 #[tauri::command]
-pub fn consent_details(state: tauri::State<PermissionState>, req_id: String) -> Result<ConsentDetails, String> {
+pub fn consent_details(
+    window: tauri::Window,
+    state: tauri::State<PermissionState>,
+    req_id: String,
+) -> Result<ConsentDetails, String> {
+    assert_consent_caller(&window, &req_id)?;
     state
         .pending
         .lock().unwrap()
@@ -175,7 +205,13 @@ pub fn consent_details(state: tauri::State<PermissionState>, req_id: String) -> 
 
 /// 同意框页面回传用户决定
 #[tauri::command]
-pub fn consent_answer(state: tauri::State<PermissionState>, req_id: String, granted: bool) -> Result<(), String> {
+pub fn consent_answer(
+    window: tauri::Window,
+    state: tauri::State<PermissionState>,
+    req_id: String,
+    granted: bool,
+) -> Result<(), String> {
+    assert_consent_caller(&window, &req_id)?;
     let sender = state.pending.lock().unwrap().remove(&req_id).map(|p| p.sender);
     match sender {
         Some(tx) => tx.send(granted).map_err(|_| "receiver dropped".into()),

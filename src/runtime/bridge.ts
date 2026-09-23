@@ -2,6 +2,7 @@
 // 进程内插件不是硬安全边界，这里是策略层（见 ARCHITECTURE.md 信任模型）。
 import { invoke } from "@tauri-apps/api/core";
 import { bus } from "./event-bus";
+import { assertPublishable, assertSubscribable } from "./topic-acl";
 
 // 插件为普通 JS（第三方交付物），上下文保持宽松类型
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -53,12 +54,14 @@ export function buildContext(manifest: ManifestLike): PluginContext {
     log: (...args: unknown[]) => console.log(`[${pid}]`, ...args),
 
     bus: {
-      publish: gated(manifest, "bus:publish", (topic: string, payload: unknown) =>
-        Promise.resolve(bus.publish(topic, payload)),
-      ),
-      subscribe: gated(manifest, "bus:subscribe", (topic: string, handler: (payload: unknown) => void) =>
-        Promise.resolve(bus.subscribe(topic, handler)),
-      ),
+      publish: gated(manifest, "bus:publish", (topic: string, payload: unknown) => {
+        assertPublishable(pid, topic);
+        return Promise.resolve(bus.publish(topic, payload));
+      }),
+      subscribe: gated(manifest, "bus:subscribe", (topic: string, handler: (payload: unknown) => void) => {
+        assertSubscribable(pid, topic, manifest.permissions ?? []);
+        return Promise.resolve(bus.subscribe(topic, handler));
+      }),
     },
 
     storage: {
