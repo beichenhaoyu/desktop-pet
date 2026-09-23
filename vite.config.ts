@@ -23,7 +23,9 @@ export default defineConfig(() => ({
       : undefined,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      // plugins/ 也在忽略之列：插件 JS 由宿主的 petplugin 协议按磁盘目录提供，
+      // 让 Vite 因插件增删而重载页面，只会掩盖「热安装是否真的生效」这件事
+      ignored: ["**/src-tauri/**", "**/plugins/**"],
     },
   },
   // 4. 多窗口入口：宠物窗 / 设置窗 / overlay 悬浮层 / 权限同意框

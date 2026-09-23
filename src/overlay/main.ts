@@ -6,11 +6,21 @@ import { getEnabled, type PluginManifest } from "../runtime/plugin-runtime";
 import { widgetHost } from "../runtime/widget-host";
 import "./style.css";
 
-async function mountEnabled(): Promise<void> {
+// 本窗口已挂载的插件，用于目录变动时算出该卸载谁
+const mounted = new Set<string>();
+
+async function syncOverlays(): Promise<void> {
   const manifests = await invoke<PluginManifest[]>("plugins_list");
   const enabled = new Set(getEnabled());
+  for (const id of [...mounted]) {
+    if (!manifests.some((m) => m.id === id && enabled.has(id))) {
+      await widgetHost.unmount(id);
+      mounted.delete(id);
+    }
+  }
   for (const manifest of manifests) {
-    if (enabled.has(manifest.id) && manifest.widget) {
+    if (enabled.has(manifest.id) && manifest.widget && !mounted.has(manifest.id)) {
+      mounted.add(manifest.id);
       await widgetHost.mount(manifest, "overlay").catch((e) => {
         console.error(`[overlay] mount widget: ${manifest.id}`, e);
       });
@@ -20,19 +30,11 @@ async function mountEnabled(): Promise<void> {
 
 async function main(): Promise<void> {
   await bus.init();
-  await mountEnabled();
+  await syncOverlays();
 
-  await listen<{ id: string; enabled: boolean }>("host:plugin-toggled", async (e) => {
-    if (!e.payload.enabled) {
-      await widgetHost.unmount(e.payload.id);
-      return;
-    }
-    const manifests = await invoke<PluginManifest[]>("plugins_list");
-    const manifest = manifests.find((m) => m.id === e.payload.id);
-    if (manifest?.widget) {
-      await widgetHost.mount(manifest, "overlay").catch(console.error);
-    }
-  });
+  // 启停与目录增删都收敛到一次同步（设置窗在 emit 前已写好启用清单）
+  await listen("host:plugin-toggled", () => void syncOverlays().catch(console.error));
+  await listen("host:plugins-changed", () => void syncOverlays().catch(console.error));
 }
 
 void main();

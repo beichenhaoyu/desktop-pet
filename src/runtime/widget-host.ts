@@ -3,6 +3,7 @@
 // widget 能力（事件总线）由宿主经 ctx 注入为受限视图，widget.js 自身保持零 import，
 // 这样 dev（vite 转换）与 release（静态文件）下都能加载。
 import { bus } from "./event-bus";
+import { pluginFileUrl } from "./plugin-url";
 import { createScopedBus, type ScopedBus } from "./topic-acl";
 
 export interface WidgetManifest {
@@ -40,7 +41,7 @@ class WidgetHost {
     const root = container ?? document.getElementById(`widget-${region}`);
     if (!root) return;
 
-    const url = `/plugins/${manifest.id}/${manifest.widget}`;
+    const url = pluginFileUrl(manifest.id, manifest.widget);
     this.mounting.add(key);
     let host: HTMLDivElement | undefined;
     try {

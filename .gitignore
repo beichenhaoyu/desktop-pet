@@ -19,6 +19,10 @@ src-tauri/gen/schemas
 # 本地打包产物（便携包/安装器输出）
 release-package/
 
+# npm run verify 临时写入的探针插件；脚本正常结束时自行删除
+/plugins/zz.probe/
+/plugins/com.zz.spoof/
+
 # Editor
 .vscode/*
 !.vscode/extensions.json

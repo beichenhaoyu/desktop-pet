@@ -111,6 +111,9 @@ async function render(): Promise<void> {
   const manifests = await invoke<PluginManifest[]>("plugins_list");
   const enabled = new Set(getEnabled());
   const list = document.getElementById("plugin-list")!;
+  // 重建 DOM 前必须先卸载 widget：否则 mounted 表里留着已消失的插槽，
+  // 之后 has() 会抑制重挂载，面板静默不见
+  for (const id of rows.keys()) await widgetHost.unmount(id);
   list.innerHTML = "";
   rows.clear();
 
@@ -149,6 +152,11 @@ async function main(): Promise<void> {
     if (!banner) return;
     banner.textContent = `插件异常已隔离 — ${e.payload.plugin}: ${e.payload.error}`;
     banner.style.display = "";
+  });
+
+  // 插件目录变动 → 重新拉列表（新增/移除即时可见）
+  await listen("host:plugins-changed", () => {
+    void render().catch((e) => console.error("[settings] render", e));
   });
 
   // 其他窗口触发的启停（目前只有设置窗自己，保留下述同步逻辑以防扩展）

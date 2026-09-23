@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { bus } from "./event-bus";
 import { buildContext } from "./bridge";
+import { pluginFileUrl } from "./plugin-url";
 import { widgetHost } from "./widget-host";
 
 export interface PluginManifest {
@@ -88,7 +89,7 @@ export async function activatePlugin(manifest: PluginManifest): Promise<void> {
       }
     }
 
-    const url = `/plugins/${manifest.id}/${manifest.entry}`;
+    const url = pluginFileUrl(manifest.id, manifest.entry);
     const mod = (await import(/* @vite-ignore */ url)) as ActiveInstance["module"];
     await mod.activate?.(buildContext(manifest));
     active.set(manifest.id, { manifest, module: mod });
@@ -121,6 +122,11 @@ export async function deactivatePlugin(pluginId: string): Promise<void> {
 /** 按持久化的启用清单同步实际运行状态 */
 export async function reconcile(manifests: PluginManifest[]): Promise<void> {
   const enabled = new Set(getEnabled());
+  // 目录被移走的插件必须真正下线：它已经不在 manifests 里，下面的循环管不到它
+  const installed = new Set(manifests.map((m) => m.id));
+  for (const id of [...active.keys()]) {
+    if (!installed.has(id)) await deactivatePlugin(id);
+  }
   for (const manifest of manifests) {
     if (enabled.has(manifest.id)) {
       await activatePlugin(manifest);
@@ -149,6 +155,10 @@ export async function initRuntime(): Promise<void> {
     } else {
       await deactivatePlugin(id);
     }
+  });
+  // 插件目录变动（放入/移除插件）即时生效，不必重启宿主
+  await listen("host:plugins-changed", async () => {
+    await reconcile(await invoke<PluginManifest[]>("plugins_list"));
   });
   await reconcile(await invoke<PluginManifest[]>("plugins_list"));
 }
