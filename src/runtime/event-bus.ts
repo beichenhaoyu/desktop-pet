@@ -23,7 +23,10 @@ class EventBus {
 
   publish(topic: string, payload: unknown): void {
     this.dispatch(topic, payload);
-    void invoke("bus_publish", { origin: this.label, topic, payload });
+    // 中继失败只影响其他窗口，不能让它变成宿主未处理的 rejection
+    invoke("bus_publish", { topic, payload }).catch((err) => {
+      console.error(`[bus] relay failed: ${topic}`, err);
+    });
   }
 
   /** 宿主注入 Rust 原生事件到总线（不回传 Rust，避免回环） */
@@ -48,7 +51,8 @@ class EventBus {
       const matched =
         pattern === topic || (pattern.endsWith("*") && topic.startsWith(pattern.slice(0, -1)));
       if (!matched) continue;
-      for (const handler of set) {
+      // 复制一份：handler 在派发期间退订/订阅不会影响本轮
+      for (const handler of [...set]) {
         try {
           handler(payload);
         } catch (err) {
