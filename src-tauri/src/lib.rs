@@ -7,7 +7,9 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    // 插件文件协议必须在窗口创建前注册
+    let builder = commands::plugins::register_plugin_protocol(tauri::Builder::default());
+    builder
         // 单实例必须最先注册：重复启动时唤起已有宠物窗
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(pet) = app.get_webview_window("pet") {
@@ -24,6 +26,9 @@ pub fn run() {
             app.state::<PermissionState>().init(app.handle());
             window::pet::setup(app.handle())?;
             window::tray::setup(app.handle())?;
+            // watcher 被 drop 就停止监听，所以必须交给 app state 长期持有
+            let watcher = commands::plugins::spawn_plugins_watcher(app.handle())?;
+            app.manage(std::sync::Mutex::new(watcher));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

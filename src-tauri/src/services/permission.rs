@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -6,6 +6,8 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use tokio::sync::oneshot;
+
+use super::store::StoreState;
 
 /// 插件权限管理：授权表持久化 + 首次调用未授权能力时弹同意框。
 /// 进程内插件不是硬安全边界，这里是策略层（见 ARCHITECTURE.md 信任模型）。
@@ -90,10 +92,44 @@ impl PermissionState {
     pub fn list(&self) -> HashMap<String, Vec<String>> {
         self.granted.lock().unwrap().clone()
     }
+
+    /// 只保留仍在盘的插件的授权，返回被回收的 id。
+    pub fn retain_known(&self, known: &HashSet<String>) -> Vec<String> {
+        let gone: Vec<String> = {
+            let mut map = self.granted.lock().unwrap();
+            let gone: Vec<String> = map
+                .keys()
+                .filter(|id| !known.contains(*id))
+                .cloned()
+                .collect();
+            for id in &gone {
+                map.remove(id);
+            }
+            gone
+        };
+        if !gone.is_empty() {
+            self.save();
+        }
+        gone
+    }
 }
 
 fn valid_id(id: &str) -> bool {
     !id.is_empty() && !id.contains("..") && !id.contains('/') && !id.contains('\\')
+}
+
+/// 插件目录变动后回收孤儿授权。
+/// 读不到目录时什么都不做 —— 宁可留着过期授权，也不要在一次临时 IO 失败上把用户给过的权限抹掉。
+pub fn prune_orphan_grants(app: &AppHandle) {
+    let Ok(ids) = crate::commands::plugins::installed_plugin_ids(app) else {
+        return;
+    };
+    let known: HashSet<String> = ids.into_iter().collect();
+    let removed = app.state::<PermissionState>().retain_known(&known);
+    if !removed.is_empty() {
+        // 宿主尚未引入日志设施（见任务 #13），先保证 dev 控制台可见
+        eprintln!("[permission] 已回收卸载插件的授权: {}", removed.join(", "));
+    }
 }
 
 /// 检查单个能力是否已授权
@@ -225,12 +261,19 @@ pub fn permission_list(state: tauri::State<PermissionState>) -> HashMap<String, 
     state.list()
 }
 
-/// 设置窗：撤销某插件的全部授权
+/// 设置窗：撤销某插件的全部授权，并连带清掉它落盘的存储
 #[tauri::command]
-pub fn permission_revoke(state: tauri::State<PermissionState>, plugin_id: String) -> Vec<String> {
-    if valid_id(&plugin_id) {
-        state.revoke_all(&plugin_id)
-    } else {
-        Vec::new()
+pub fn permission_revoke(
+    plugin_id: String,
+    state: tauri::State<PermissionState>,
+    store: tauri::State<StoreState>,
+) -> Vec<String> {
+    if !valid_id(&plugin_id) {
+        return Vec::new();
     }
+    let revoked = state.revoke_all(&plugin_id);
+    if let Err(e) = store.clear_plugin(&plugin_id) {
+        eprintln!("[permission] 清理 {plugin_id} 存储失败: {e}");
+    }
+    revoked
 }

@@ -33,6 +33,17 @@ impl StoreState {
             .map(|root| root.join(plugin_id).join("store.json"))
     }
 
+    /// 删除某插件的全部存储（撤销授权时连带清理，不留孤儿数据）
+    pub fn clear_plugin(&self, plugin_id: &str) -> Result<(), String> {
+        let path = self.plugin_file(plugin_id)?;
+        let dir = path.parent().ok_or("无法定位插件存储目录")?;
+        match fs::remove_dir_all(dir) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
     fn read_map(path: &PathBuf) -> Map<String, Value> {
         fs::read_to_string(path)
             .ok()
