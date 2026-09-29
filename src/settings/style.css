@@ -170,6 +170,14 @@ header h1 {
   margin: 6px 0;
 }
 
+.agent-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  margin: 4px 0;
+}
+
 .agent-actions button {
   font-size: 12px;
   border: 1px solid #d0d5dd;

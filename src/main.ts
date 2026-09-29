@@ -4,6 +4,7 @@ import { PetStateMachine, type PokeZone } from "./pet/state-machine";
 import { pickLine, type LineState } from "./pet/dialogue";
 import { registerPetController } from "./pet/host";
 import { installClickThrough } from "./pet/click-through";
+import { installGameMode } from "./pet/game-mode";
 import { initRuntime } from "./runtime/plugin-runtime";
 import "./styles.css";
 
@@ -160,16 +161,43 @@ function tick(now: number): void {
   rafId = requestAnimationFrame(tick);
 }
 
+let stopThrough: (() => void) | null = null;
+let idleChat = 0;
+
+/** 可见时才需要跑的辅助循环：hit-test 光标轮询 + 偶尔自言自语 */
+function startAux(): void {
+  if (!stopThrough) stopThrough = installClickThrough({ spriteRect, isDragging: () => dragEngaged });
+  if (!idleChat) {
+    idleChat = window.setInterval(() => {
+      if (pet.action === "idle" && Math.random() < 0.4) say(pickLine("idle"));
+    }, 45_000);
+  }
+}
+
+function stopAux(): void {
+  stopThrough?.();
+  stopThrough = null;
+  if (idleChat) {
+    window.clearInterval(idleChat);
+    idleChat = 0;
+  }
+}
+
 /** 窗口最小化/隐藏时停掉动画，回到可见再续 */
 function setRunning(running: boolean): void {
   if (running) {
+    startAux();
     if (!rafId) {
       last = performance.now();
       rafId = requestAnimationFrame(tick);
     }
-  } else if (rafId) {
-    cancelAnimationFrame(rafId);
-    rafId = 0;
+  } else {
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+    }
+    // 隐藏时把光标轮询与闲聊定时器也掐掉：没人看见的东西不该还在花钱
+    stopAux();
   }
 }
 
@@ -209,8 +237,8 @@ async function init(): Promise<void> {
   });
 
   void initRuntime();
-  installClickThrough({ spriteRect, isDragging: () => dragEngaged });
   setRunning(true);
+  void installGameMode({ pause: () => setRunning(false), resume: () => setRunning(true) });
 
   window.addEventListener("resize", () => {
     fitCanvas();
@@ -219,9 +247,6 @@ async function init(): Promise<void> {
   // dpr 变化（换显示器 / 改系统缩放）靠这条媒体查询感知，resize 事件不一定触发
   watchDpr();
   document.addEventListener("visibilitychange", () => setRunning(!document.hidden));
-  window.setInterval(() => {
-    if (pet.action === "idle" && Math.random() < 0.4) say(pickLine("idle"));
-  }, 45_000);
   window.setTimeout(() => say(pickLine("greet")), 700);
 }
 

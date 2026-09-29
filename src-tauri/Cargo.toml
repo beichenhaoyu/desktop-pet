@@ -28,6 +28,15 @@ notify = "8"
 uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["sync", "time"] }
 
+# 全屏检测用的 Win32 调用。版本与依赖树里已有的 windows 0.62 对齐（btleplug/tauri 带的），
+# 不额外引入一份 windows crate。
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 # 打包体积优化，见 https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
 codegen-units = 1

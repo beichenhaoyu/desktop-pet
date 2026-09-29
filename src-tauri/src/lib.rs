@@ -64,6 +64,7 @@ pub fn run() {
             let agent_watcher = services::agent::spawn_agent_watcher(app.handle())?;
             app.manage(std::sync::Mutex::new(agent_watcher));
             services::agent::start_agent_ticker(app.handle());
+            services::fullscreen::start(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -76,6 +77,9 @@ pub fn run() {
             commands::agent::agent_hooks_status,
             commands::agent::agent_hooks_install,
             commands::agent::agent_hooks_uninstall,
+            services::fullscreen::fullscreen_watch_set,
+            services::fullscreen::fullscreen_watch_status,
+            services::fullscreen::fullscreen_probe,
             commands::bus::bus_publish,
             services::store::store_get,
             services::store::store_set,

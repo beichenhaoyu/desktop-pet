@@ -220,9 +220,39 @@ function wireAgentBox(): void {
   });
 }
 
+const GAME_MODE_KEY = "host:game-mode";
+
+function wireGameMode(): void {
+  const box = document.getElementById("game-mode-switch") as HTMLInputElement | null;
+  if (!box) return;
+  box.checked = localStorage.getItem(GAME_MODE_KEY) !== "0";
+  box.addEventListener("change", async () => {
+    const enabled = box.checked;
+    localStorage.setItem(GAME_MODE_KEY, enabled ? "1" : "0");
+    // 宠物窗据此启停传感并决定是否立刻恢复显示
+    await emit("host:game-mode-changed", { enabled });
+    void renderGameMode();
+  });
+}
+
+async function renderGameMode(): Promise<void> {
+  const el = document.getElementById("game-mode-status");
+  if (!el) return;
+  try {
+    const watching = await invoke<boolean>("fullscreen_watch_status");
+    el.textContent = watching
+      ? "检测中：轮询一次前台窗口约 1.2 秒，代价可忽略。"
+      : "已关闭：不再轮询前台窗口。";
+  } catch (e) {
+    el.textContent = `读取状态失败：${String(e)}`;
+  }
+}
+
 async function main(): Promise<void> {
   await bus.init();
   await render();
+  wireGameMode();
+  void renderGameMode();
   wireAgentBox();
   void renderAgent();
 
