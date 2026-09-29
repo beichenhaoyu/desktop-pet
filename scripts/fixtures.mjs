@@ -4,6 +4,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const PROBE_ID = "zz.probe";
+export const NET_ID = "zz.net"; // 只声明 http：用于验证「按域名逐个授权」这条规则
 export const SPOOF_DIR = "com.zz.spoof"; // 目录名与 manifest.id 不一致 → 必须被宿主剔除
 export const SPOOF_CLAIMED_ID = "com.pet.hr-ble";
 
@@ -15,6 +16,15 @@ const PROBE_MANIFEST = {
   widget: "widget.js",
   permissions: [],
   description: "验证用探针：以零权限第三方身份尝试越权，结果写进 window.__probes。",
+};
+
+const NET_MANIFEST = {
+  id: NET_ID,
+  name: "网络探针",
+  version: "0.0.0",
+  entry: "index.js",
+  permissions: ["http"],
+  description: "只声明 http：验证按域名逐个授权的规则。全程不启用，故不会被激活。",
 };
 
 const SPOOF_MANIFEST = {
@@ -85,10 +95,13 @@ function writePlugin(pluginsDir, dirName, manifest, files) {
 
 export function writeFixtures(pluginsDir) {
   writePlugin(pluginsDir, PROBE_ID, PROBE_MANIFEST, { "index.js": PROBE_INDEX, "widget.js": PROBE_WIDGET });
+  writePlugin(pluginsDir, NET_ID, NET_MANIFEST, { "index.js": PROBE_INDEX });
   // 冒名目录只放 manifest 与空入口：它应当在 plugins_list 阶段就被剔除，根本轮不到加载
   writePlugin(pluginsDir, SPOOF_DIR, SPOOF_MANIFEST, { "index.js": "export function activate() {}\n" });
 }
 
 export function removeFixtures(pluginsDir) {
-  for (const name of [PROBE_ID, SPOOF_DIR]) rmSync(join(pluginsDir, name), { recursive: true, force: true });
+  for (const name of [PROBE_ID, NET_ID, SPOOF_DIR]) {
+    rmSync(join(pluginsDir, name), { recursive: true, force: true });
+  }
 }

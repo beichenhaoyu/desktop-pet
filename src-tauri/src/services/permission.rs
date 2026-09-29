@@ -177,11 +177,16 @@ pub async fn permission_request(
     if !valid_id(&plugin_id) {
         return Err("invalid plugin id".into());
     }
-    // 磁盘 manifest 是声明能力的唯一事实来源：未声明的能力直接拒绝，不弹框
+    // 磁盘 manifest 是声明能力的唯一事实来源：未声明的能力直接拒绝，不弹框。
+    // 例外：http 能力按「插件 × 域名」逐个授权，故 http:<host> 视为被 http 覆盖
     let declared = crate::commands::plugins::declared_capabilities(&app, &plugin_id)?;
     let undeclared: Vec<&str> = capabilities
         .iter()
-        .filter(|c| !declared.iter().any(|d| d == *c))
+        .filter(|c| {
+            !declared
+                .iter()
+                .any(|d| d == *c || (d == "http" && c.starts_with("http:")))
+        })
         .map(String::as_str)
         .collect();
     if !undeclared.is_empty() {

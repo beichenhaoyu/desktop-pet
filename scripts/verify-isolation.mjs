@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join, resolve } from "node:path";
 import { argv, env } from "node:process";
 import { attach, createReport, hostInvoke, reloadAndWait, waitForPage, waitUntil } from "./cdp.mjs";
-import { PROBE_ID, SPOOF_DIR, removeFixtures, writeFixtures } from "./fixtures.mjs";
+import { NET_ID, PROBE_ID, SPOOF_DIR, removeFixtures, writeFixtures } from "./fixtures.mjs";
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
 const PLUGINS_DIR = resolve(import.meta.dirname, "../plugins");
@@ -17,6 +17,33 @@ const MOUNT_BARE = `window.__wh.mount(${probeManifest([])}, 'badge')`;
 const MOUNT_CAPPED = `window.__wh.mount(${probeManifest(["bus:publish", "bus:subscribe"])}, 'settings', document.body)`;
 const r = createReport("隔离与安全回归（dev）");
 const invoke = (c) => hostInvoke(c);
+
+/**
+ * 等同意框弹出、读它展示了什么，然后按 how 作答。
+ * close 必须走真实关窗路径（plugin:window|close 才会触发 Rust 的 CloseRequested；
+ * CDP 的 Page.close 绕过它），且不能 await 其响应 —— 关闭会先拆掉发起调用的 webview。
+ */
+async function driveConsent(how) {
+  const target = await waitForPage(PORT, (t) => /consent/.test(t.url), 15_000);
+  const cs = await attach(PORT, (t) => t.webSocketDebuggerUrl === target.webSocketDebuggerUrl, 10_000);
+  try {
+    const seen = {
+      caps: await cs.ev(`[...document.querySelectorAll('#cap-list li')].map(li => li.textContent)`),
+      name: await cs.ev(`document.getElementById('plugin-name')?.textContent ?? ''`),
+      label: await cs.ev(`window.__TAURI_INTERNALS__.metadata.currentWindow.label`),
+    };
+    if (how === "allow") {
+      await cs.ev(`document.getElementById('btn-allow').click()`);
+    } else {
+      await cs.ev(
+        `(() => { window.__TAURI_INTERNALS__.invoke('plugin:window|close', { label: ${JSON.stringify(seen.label)} }); return true; })()`,
+      );
+    }
+    return seen;
+  } finally {
+    cs.close();
+  }
+}
 
 const isPetPage = (t) => /localhost:1420\/(index\.html)?$/.test(t.url);
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
@@ -219,21 +246,10 @@ try {
   );
   let consentClosed = false;
   try {
-    const consent = await waitForPage(PORT, (t) => /consent/.test(t.url), 15_000);
-    const cs = await attach(PORT, (t) => t.webSocketDebuggerUrl === consent.webSocketDebuggerUrl, 10_000);
-    const caps = await cs.ev(`[...document.querySelectorAll('#cap-list li')].map(li => li.textContent)`);
-    r.check("同意框列出了待授权能力", true, caps.length >= 1);
-    // 必须走真实关闭路径（与用户点关闭同一条）：plugin:window|close 会触发
-    // Rust 侧的 CloseRequested/Destroyed；CDP 的 Page.close 绕过它，测不到这个修复。
-    // 注意不能 await 它的响应：关闭会先拆掉本 webview，回复永远回不来。
-    const closedLabel = await cs.ev(`(() => {
-      const label = window.__TAURI_INTERNALS__.metadata.currentWindow.label;
-      window.__TAURI_INTERNALS__.invoke('plugin:window|close', { label });
-      return label;
-    })()`);
-    r.check("关的是同意框自己的窗口", true, String(closedLabel).startsWith("consent-"));
+    const consent = await driveConsent("close");
+    r.check("同意框列出了待授权能力", true, consent.caps.length >= 1);
+    r.check("关的是同意框自己的窗口", true, consent.label.startsWith("consent-"));
     consentClosed = true;
-    cs.close();
   } catch (err) {
     console.log("     没能操作同意框窗口: " + String(err?.message ?? err).split("\n")[0]);
   }
@@ -250,11 +266,8 @@ try {
       `window.__TAURI_INTERNALS__.invoke('permission_request', { pluginId: ${JSON.stringify(HR)}, pluginName: ${JSON.stringify(hrManifest.name)}, capabilities: ${JSON.stringify(hrManifest.permissions)} })`,
     );
     try {
-      const again = await waitForPage(PORT, (t) => /consent/.test(t.url), 15_000);
-      const cs2 = await attach(PORT, (t) => t.webSocketDebuggerUrl === again.webSocketDebuggerUrl, 10_000);
-      r.check("重新弹出的同意框带插件名", true, (await cs2.ev(`document.getElementById('plugin-name')?.textContent ?? ''`)).includes("心率"));
-      await cs2.ev(`document.getElementById('btn-allow').click()`);
-      cs2.close();
+      const again = await driveConsent("allow");
+      r.check("重新弹出的同意框带插件名", true, again.name.includes("心率"));
     } catch (err) {
       console.log("     还原授权失败: " + String(err?.message ?? err).split("\n")[0]);
     }
@@ -298,6 +311,45 @@ try {
   r.check("损坏状态下拒绝写入", true, !brokenWrite.ok);
   r.check("原文件未被静默改写", true, readFileSync(STORE_FILE, "utf8").includes("这不是合法"));
   rmSync(STORE_DIR, { recursive: true, force: true });
+
+  r.group("http 代理与按域名授权（#21）");
+  // 热安装那组测试结束时删掉了 fixture，这里要自己造回来：
+  // 否则宿主报的是「读不到 manifest」，会被误判成鉴权规则失效
+  writeFixtures(PLUGINS_DIR);
+  await sleep(1200);
+  const LOCAL_URL = "http://localhost:1420/index.html";
+  const HOST_CAP = "http:localhost:1420";
+  const badAsk = await invoke_("permission_request", {
+    pluginId: PROBE_ID,
+    pluginName: "隔离探针",
+    capabilities: [HOST_CAP],
+  });
+  r.check("未声明 http 的插件不能申请按域名放行", true, !badAsk.ok && /未在 manifest 声明/.test(String(badAsk.e)));
+
+  const grant = c
+    .ev(
+      `window.__TAURI_INTERNALS__.invoke('permission_request', { pluginId: ${JSON.stringify(NET_ID)}, pluginName: '网络探针', capabilities: ["http", ${JSON.stringify(HOST_CAP)}] })`,
+    )
+    .catch((e) => "ERR " + e);
+  let granted = false;
+  try {
+    const consent = await driveConsent("allow");
+    r.check("http:<host> 视为被 http 覆盖（弹框而非报未声明）", true, consent.caps.some((x) => x.includes("localhost")));
+    granted = await grant;
+  } catch (err) {
+    console.log("     没能走完 http 授权: " + String(err?.message ?? err).split("\n")[0]);
+  }
+  r.check("域名授权通过后宿主放行", true, granted);
+
+  const fetched = await invoke_("http_request", { pluginId: NET_ID, url: LOCAL_URL });
+  r.check("已授权域名能取回内容", true, fetched.v?.status === 200 && String(fetched.v?.body).includes("doctype"));
+  const otherHost = await invoke_("http_request", { pluginId: NET_ID, url: "http://127.0.0.1:9/x" });
+  r.check("换个域名（localhost ≠ 127.0.0.1）仍被宿主拒绝", true, !otherHost.ok && /未授权/.test(String(otherHost.e)));
+  const badScheme = await invoke_("http_request", { pluginId: NET_ID, url: "file:///C:/Windows/win.ini" });
+  r.check("非 http/https 协议被拒", true, !badScheme.ok && /只允许 http/.test(String(badScheme.e)));
+  const notifyDenied = await invoke_("notify_show", { pluginId: NET_ID, title: "t", body: "b" });
+  r.check("未声明 notify 的插件发不出系统通知", true, !notifyDenied.ok && /未授权/.test(String(notifyDenied.e)));
+  await invoke_("permission_revoke", { pluginId: NET_ID });
 
   r.group("渲染几何与帧烘焙（#17 / #20）");
   const geo = await c.ev(`(async () => {

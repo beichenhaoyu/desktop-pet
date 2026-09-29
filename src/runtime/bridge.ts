@@ -23,16 +23,24 @@ interface ManifestLike {
 }
 
 async function ensurePermission(manifest: ManifestLike, capability: string): Promise<boolean> {
-  const granted = await invoke<boolean>("permission_check", {
-    pluginId: manifest.id,
-    capability,
-  });
-  if (granted) return true;
-  // 未授权 → 弹同意框（宿主阻塞等待用户决定）
+  return ensurePermissions(manifest, [capability]);
+}
+
+/** 一次弹框申请多个能力（http 需要 http + http:<host> 两级，不该弹两次） */
+async function ensurePermissions(manifest: ManifestLike, capabilities: string[]): Promise<boolean> {
+  const missing: string[] = [];
+  for (const capability of capabilities) {
+    const granted = await invoke<boolean>("permission_check", {
+      pluginId: manifest.id,
+      capability,
+    });
+    if (!granted) missing.push(capability);
+  }
+  if (missing.length === 0) return true;
   return invoke<boolean>("permission_request", {
     pluginId: manifest.id,
     pluginName: manifest.name,
-    capabilities: [capability],
+    capabilities: missing,
   });
 }
 
@@ -122,6 +130,37 @@ export function buildContext(manifest: ManifestLike): PluginContext {
         if (!clean) throw new Error(`[${pid}] say 需要非文本内容`);
         requireController().say(clean);
       }),
+    },
+
+    // 出站请求：域名逐个授权（http + http:<host>），实际请求由宿主代发并二次校验 host
+    http: {
+      request: async (
+        url: string,
+        options: { method?: string; headers?: [string, string][]; body?: string } = {},
+      ) => {
+        let host: string;
+        try {
+          host = new URL(url).host;
+        } catch {
+          throw new Error(`[${pid}] URL 非法: ${url}`);
+        }
+        if (!(await ensurePermissions(manifest, ["http", `http:${host}`]))) {
+          throw new Error(`[${pid}] 域名授权被拒绝: ${host}`);
+        }
+        return invoke("http_request", {
+          pluginId: pid,
+          url,
+          method: options.method ?? null,
+          headers: options.headers ?? null,
+          body: options.body ?? null,
+        });
+      },
+    },
+
+    notify: {
+      show: gated(manifest, "notify", (title: string, body: string) =>
+        invoke("notify_show", { pluginId: pid, title, body }),
+      ),
     },
 
     overlay: {

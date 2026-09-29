@@ -17,7 +17,8 @@ fn plugins_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     }
 }
 
-fn is_safe_id(plugin_id: &str) -> bool {
+/// 插件 id / 文件名的安全字符集：只允许 [A-Za-z0-9._-] 且不含 .. 与路径分隔符
+pub fn is_safe_id(plugin_id: &str) -> bool {
     !plugin_id.is_empty()
         && !plugin_id.contains("..")
         && !plugin_id.contains('/')
