@@ -2,6 +2,7 @@
 // 进程内插件不是硬安全边界，这里是策略层（见 ARCHITECTURE.md 信任模型）。
 import { invoke } from "@tauri-apps/api/core";
 import { bus } from "./event-bus";
+import { claim, release } from "./resources";
 import { assertPublishable, assertSubscribable } from "./topic-acl";
 
 // 插件为普通 JS（第三方交付物），上下文保持宽松类型
@@ -71,12 +72,21 @@ export function buildContext(manifest: ManifestLike): PluginContext {
     },
 
     ble: {
-      startScan: gated(manifest, "ble:scan", () => invoke("ble_start_scan")),
-      stopScan: gated(manifest, "ble:scan", () => invoke("ble_stop_scan")),
-      connect: gated(manifest, "ble:connect", (deviceId: string) =>
-        invoke("ble_connect", { deviceId }),
-      ),
-      disconnect: gated(manifest, "ble:connect", () => invoke("ble_disconnect")),
+      startScan: gated(manifest, "ble:scan", async () => {
+        claim("ble-scan", pid);
+        await invoke("ble_start_scan");
+      }),
+      stopScan: gated(manifest, "ble:scan", async () => {
+        // 仍有别的插件在扫就不该真的停
+        if (release("ble-scan", pid)) await invoke("ble_stop_scan");
+      }),
+      connect: gated(manifest, "ble:connect", async (deviceId: string) => {
+        claim("ble", pid);
+        await invoke("ble_connect", { deviceId });
+      }),
+      disconnect: gated(manifest, "ble:connect", async () => {
+        if (release("ble", pid)) await invoke("ble_disconnect");
+      }),
       connectedDevice: gated(manifest, "ble:connect", () =>
         invoke("ble_connected_device"),
       ),
@@ -90,9 +100,17 @@ export function buildContext(manifest: ManifestLike): PluginContext {
     },
 
     overlay: {
-      show: gated(manifest, "overlay", () => invoke("overlay_show")),
-      hide: gated(manifest, "overlay", () => invoke("overlay_hide")),
-      destroy: gated(manifest, "overlay", () => invoke("overlay_destroy")),
+      show: gated(manifest, "overlay", async () => {
+        claim("overlay", pid);
+        await invoke("overlay_show");
+      }),
+      hide: gated(manifest, "overlay", async () => {
+        // overlay 是全插件共享的单窗，只有最后一个持有者退出才收掉
+        if (release("overlay", pid)) await invoke("overlay_hide");
+      }),
+      destroy: gated(manifest, "overlay", async () => {
+        if (release("overlay", pid)) await invoke("overlay_destroy");
+      }),
     },
   };
 }

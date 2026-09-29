@@ -41,25 +41,43 @@ impl PermissionState {
         }
     }
 
-    pub fn init(&self, app: &AppHandle) {
-        let dir = app.path().app_data_dir().expect("app_data_dir unavailable");
+    pub fn init(&self, app: &AppHandle) -> Result<(), String> {
+        let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
         let file = dir.join("authorizations.json");
         if let Ok(s) = fs::read_to_string(&file) {
             if let Ok(map) = serde_json::from_str::<HashMap<String, Vec<String>>>(&s) {
                 *self.granted.lock().unwrap() = map;
+            } else {
+                // 授权表读坏了不能就地覆盖：留着原文件，本次按空表运行并打日志
+                log::error!("authorizations.json 解析失败，本次启动按空授权表运行: {file:?}");
             }
         }
         *self.file.lock().unwrap() = Some(file);
+        Ok(())
     }
 
     fn save(&self) {
-        if let Some(file) = self.file.lock().unwrap().clone() {
-            if let Some(parent) = file.parent() {
-                let _ = fs::create_dir_all(parent);
+        let Some(file) = self.file.lock().unwrap().clone() else {
+            log::warn!("授权存储尚未初始化，本次授权变更未落盘");
+            return;
+        };
+        if let Some(parent) = file.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                log::warn!("创建授权目录失败: {e}");
             }
-            if let Ok(json) = serde_json::to_string_pretty(&*self.granted.lock().unwrap()) {
-                let _ = fs::write(&file, json);
+        }
+        let json = match serde_json::to_string_pretty(&*self.granted.lock().unwrap()) {
+            Ok(j) => j,
+            Err(e) => {
+                log::error!("序列化授权表失败: {e}");
+                return;
             }
+        };
+        // 原子写：半截的 authorizations.json 会让下次启动把所有授权当成空表
+        let tmp = file.with_extension("json.tmp");
+        if let Err(e) = fs::write(&tmp, &json).and_then(|()| fs::rename(&tmp, &file)) {
+            let _ = fs::remove_file(&tmp);
+            log::warn!("授权落盘失败: {e}");
         }
     }
 
@@ -87,6 +105,15 @@ impl PermissionState {
         let revoked = self.granted.lock().unwrap().remove(plugin_id).unwrap_or_default();
         self.save();
         revoked
+    }
+
+    /// 丢弃挂起的同意请求：drop sender 后等待方立刻按「拒绝」返回，
+    /// 不必空等 60s 超时。同意框被关闭时由 on_window_event 调用。
+    pub fn discard_pending(&self, req_id: &str) {
+        let dropped = self.pending.lock().unwrap().remove(req_id);
+        if dropped.is_some() {
+            log::info!("同意框未作答即关闭，按拒绝处理: {req_id}");
+        }
     }
 
     pub fn list(&self) -> HashMap<String, Vec<String>> {
@@ -127,8 +154,7 @@ pub fn prune_orphan_grants(app: &AppHandle) {
     let known: HashSet<String> = ids.into_iter().collect();
     let removed = app.state::<PermissionState>().retain_known(&known);
     if !removed.is_empty() {
-        // 宿主尚未引入日志设施（见任务 #13），先保证 dev 控制台可见
-        eprintln!("[permission] 已回收卸载插件的授权: {}", removed.join(", "));
+        log::info!("回收已卸载插件的授权: {}", removed.join(", "));
     }
 }
 
@@ -189,6 +215,22 @@ pub async fn permission_request(
             e.to_string()
         })?;
     let _ = win.set_focus();
+    // 用户把同意框直接关掉（Alt+F4 / 托盘退出等）时必须立刻按「拒绝」结束等待，
+    // 否则那次插件调用要空等满 60s 超时
+    {
+        let app_for_close = app.clone();
+        let req_for_close = req_id.clone();
+        win.on_window_event(move |event| {
+            if matches!(
+                event,
+                tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
+            ) {
+                if let Some(state) = app_for_close.try_state::<PermissionState>() {
+                    state.discard_pending(&req_for_close);
+                }
+            }
+        });
+    }
 
     let answer = tokio::time::timeout(std::time::Duration::from_secs(60), rx).await;
     // 无论结果如何都清理窗口与挂起项
@@ -273,7 +315,7 @@ pub fn permission_revoke(
     }
     let revoked = state.revoke_all(&plugin_id);
     if let Err(e) = store.clear_plugin(&plugin_id) {
-        eprintln!("[permission] 清理 {plugin_id} 存储失败: {e}");
+        log::warn!("清理 {plugin_id} 存储失败: {e}");
     }
     revoked
 }

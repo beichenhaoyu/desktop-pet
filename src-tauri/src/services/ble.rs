@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,8 +20,11 @@ const HR_MEASUREMENT: Uuid = Uuid::from_u128(0x00002a37_0000_1000_8000_00805f9b3
 pub struct BleState {
     core: Mutex<Option<Core>>,
     connected: Mutex<Option<String>>,
+    /// 每次连接自增。通知流退出时只清理属于自己那一代的记录，
+    /// 否则会抹掉更新的连接（同设备重连尤其明显）
+    generation: AtomicU64,
     scanning: Arc<AtomicBool>,
-    notify_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    notify_task: Mutex<Option<(u64, tauri::async_runtime::JoinHandle<()>)>>,
 }
 
 struct Core {
@@ -50,6 +53,7 @@ impl BleState {
         Self {
             core: Mutex::new(None),
             connected: Mutex::new(None),
+            generation: AtomicU64::new(0),
             scanning: Arc::new(AtomicBool::new(false)),
             notify_task: Mutex::new(None),
         }
@@ -78,8 +82,10 @@ fn find_hr_char(peripheral: &Peripheral) -> Option<Characteristic> {
         .find(|c| c.uuid == HR_MEASUREMENT)
 }
 
-/// 通知流任务：流结束（断开）后自清理
-async fn notify_pump(app: AppHandle, peripheral: Peripheral, device_id: String) {
+/// 通知流任务：流结束（断开）后自清理。
+/// `gen` 是本次连接的代际号：只有仍属于自己这一代时才清状态，
+/// 否则同设备重连后，旧流退出会把新连接的状态抹掉。
+async fn notify_pump(app: AppHandle, peripheral: Peripheral, device_id: String, gen: u64) {
     let hr_char = match find_hr_char(&peripheral) {
         Some(c) => c,
         None => {
@@ -107,8 +113,16 @@ async fn notify_pump(app: AppHandle, peripheral: Peripheral, device_id: String) 
     }
     let _ = app.emit("ble:disconnected", device_id.clone());
     let state = app.state::<BleState>();
-    *state.connected.lock().await = None;
-    *state.notify_task.lock().await = None;
+    {
+        let mut task = state.notify_task.lock().await;
+        if matches!(task.as_ref(), Some((g, _)) if *g == gen) {
+            *task = None;
+        }
+    }
+    let mut connected = state.connected.lock().await;
+    if connected.as_deref() == Some(device_id.as_str()) {
+        *connected = None;
+    }
 }
 
 /// 初始化蓝牙（首次调用时创建 Manager/Adapter）
@@ -208,12 +222,10 @@ pub async fn ble_stop_scan(state: tauri::State<'_, BleState>) -> Result<(), Stri
 pub async fn ble_connect(app: AppHandle, state: tauri::State<'_, BleState>, device_id: String) -> Result<(), String> {
     init_ble(&state).await?;
 
-    // 断开旧连接
-    let current = state.connected.lock().await.clone();
-    if let Some(old) = current {
-        if old != device_id {
-            let _ = ble_disconnect_inner(&state, old).await;
-        }
+    // 一律先摘掉旧连接：同设备重连也必须换下旧通知流，
+    // 否则两条流同时广播心率，且旧句柄被覆盖后再也没人 abort
+    if let Some(old) = state.connected.lock().await.clone() {
+        let _ = ble_disconnect_inner(&state, old).await;
     }
 
     let peripheral = {
@@ -238,13 +250,14 @@ pub async fn ble_connect(app: AppHandle, state: tauri::State<'_, BleState>, devi
     }
 
     *state.connected.lock().await = Some(device_id.clone());
-    let task = tauri::async_runtime::spawn(notify_pump(app, peripheral, device_id));
-    *state.notify_task.lock().await = Some(task);
+    let gen = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
+    let task = tauri::async_runtime::spawn(notify_pump(app, peripheral, device_id, gen));
+    *state.notify_task.lock().await = Some((gen, task));
     Ok(())
 }
 
 async fn ble_disconnect_inner(state: &BleState, device_id: String) -> Result<(), String> {
-    if let Some(task) = state.notify_task.lock().await.take() {
+    if let Some((_, task)) = state.notify_task.lock().await.take() {
         task.abort();
     }
     let core_guard = state.core.lock().await;
