@@ -7,7 +7,6 @@
 import idleUrl from "./assets/whale/idle.webp";
 import greetUrl from "./assets/whale/greet.webp";
 import sleepUrl from "./assets/whale/sleep.webp";
-import runUrl from "./assets/whale/run.webp";
 import curiousUrl from "./assets/whale/curious.webp";
 import teasingUrl from "./assets/whale/teasing.webp";
 import angryUrl from "./assets/whale/angry.webp";
@@ -31,17 +30,34 @@ export type ActionName =
 
 export type SpriteSet = Partial<Record<ActionName, HTMLCanvasElement[]>>;
 
-/** 立绘统一缩放到的正方形画布尺寸 */
+/** 立绘统一缩放到的正方形画布的 CSS 边长 */
 export const FRAME_SIZE = 360;
+
+/**
+ * 帧的实际烘焙边长 = FRAME_SIZE × devicePixelRatio。
+ * 渲染层以 CSS 边长绘制、上下文已按 dpr 缩放，两者对齐后 drawImage 是 1:1 贴图，
+ * 不再每帧把 360px 的源双线性上采样（高分屏下糊边的来源）。
+ */
+let bakeScale = 1;
+
+function bakeSize(): number {
+  return Math.round(FRAME_SIZE * bakeScale);
+}
+
+/** 归一化 dpr：小数倍缩放（125%/150%）也照实烘，避免再被采样一次 */
+function deviceScale(): number {
+  return Math.max(1, window.devicePixelRatio || 1);
+}
 
 // 兜底程序宠物的原始绘制尺寸
 const PROCEDURAL_SIZE = 256;
 
+// 注意不含 walk：鲸鱼娘状态机未注册该动作，兜底宠物的踱步帧由程序绘制（walkPose），
+// 原先这里会额外解码一张 192KB 的 run.webp 并烘焙，结果没有任何地方用到
 const POSE_URLS: Array<[ActionName, string]> = [
   ["idle", idleUrl],
   ["greet", greetUrl],
   ["sleep", sleepUrl],
-  ["walk", runUrl], // 兜底宠物仍保留踱步帧；鲸鱼娘不注册该动作
   ["curious", curiousUrl],
   ["teasing", teasingUrl],
   ["angry", angryUrl],
@@ -49,13 +65,20 @@ const POSE_URLS: Array<[ActionName, string]> = [
 ];
 const REACT_URLS = [reactWinkUrl, reactBlushUrl, reactCelebrateUrl, reactShockUrl];
 
-/** 加载鲸鱼娘立绘；任一失败则整体回退程序生成 */
-export async function loadSpriteSet(): Promise<SpriteSet> {
+/** 已解码的立绘源图：DPI 变化重新烘焙时不必再走网络/解码 */
+const imageCache = new Map<string, HTMLImageElement>();
+
+/**
+ * 加载鲸鱼娘立绘；任一失败则整体回退程序生成。
+ * `scale` 省略时用当前 devicePixelRatio —— 换显示器/缩放后带新 scale 再调一次即可只重烘焙。
+ */
+export async function loadSpriteSet(scale = deviceScale()): Promise<SpriteSet> {
+  bakeScale = scale;
   try {
     const frames = await Promise.all(
       POSE_URLS.map(async ([action, url]) => {
         const img = await loadImage(url);
-        return [action, await toFrame(img)] as const;
+        return [action, toFrame(img)] as const;
       }),
     );
     const reactFrames = await Promise.all(
@@ -75,22 +98,28 @@ export async function loadSpriteSet(): Promise<SpriteSet> {
 }
 
 function loadImage(url: string): Promise<HTMLImageElement> {
+  const cached = imageCache.get(url);
+  if (cached) return Promise.resolve(cached);
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.onload = () => resolve(img);
+    img.onload = () => {
+      imageCache.set(url, img);
+      resolve(img);
+    };
     img.onerror = () => reject(new Error(`图片加载失败: ${url}`));
     img.src = url;
   });
 }
 
-async function toFrame(img: HTMLImageElement): Promise<HTMLCanvasElement> {
+function toFrame(img: HTMLImageElement): HTMLCanvasElement {
+  const size = bakeSize();
   const canvas = document.createElement("canvas");
-  canvas.width = FRAME_SIZE;
-  canvas.height = FRAME_SIZE;
+  canvas.width = size;
+  canvas.height = size;
   const ctx = canvas.getContext("2d")!;
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(img, 0, 0, FRAME_SIZE, FRAME_SIZE);
+  ctx.drawImage(img, 0, 0, size, size);
   return canvas;
 }
 
@@ -196,14 +225,19 @@ function drawProceduralFrame(pose: Pose): HTMLCanvasElement {
   return canvas;
 }
 
-/** 把 256 的程序帧缩放统一到 FRAME_SIZE，保证两条路径帧尺寸一致 */
+/** 把 256 的程序帧统一到当前烘焙边长，保证两条路径帧尺寸一致 */
 function scaleToFrame(source: HTMLCanvasElement): HTMLCanvasElement {
+  const size = bakeSize();
   const canvas = document.createElement("canvas");
-  canvas.width = FRAME_SIZE;
-  canvas.height = FRAME_SIZE;
+  canvas.width = size;
+  canvas.height = size;
   const ctx = canvas.getContext("2d")!;
+  ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(source, (FRAME_SIZE - PROCEDURAL_SIZE) / 2, (FRAME_SIZE - PROCEDURAL_SIZE) / 2);
+  // 原来 256 的内容摆在 360 画布里约占 71%，缩放后保持同样的视觉占比
+  const content = Math.round((size * PROCEDURAL_SIZE) / FRAME_SIZE);
+  const offset = Math.round((size - content) / 2);
+  ctx.drawImage(source, offset, offset, content, content);
   return canvas;
 }
 

@@ -299,6 +299,86 @@ try {
   r.check("原文件未被静默改写", true, readFileSync(STORE_FILE, "utf8").includes("这不是合法"));
   rmSync(STORE_DIR, { recursive: true, force: true });
 
+  r.group("渲染几何与帧烘焙（#17 / #20）");
+  const geo = await c.ev(`(async () => {
+    const s = await import('/src/pet/sprites.ts');
+    const set = await s.loadSpriteSet();
+    const style = getComputedStyle(document.documentElement);
+    const num = (v) => parseInt(style.getPropertyValue(v) || '0', 10);
+    return {
+      dpr: window.devicePixelRatio || 1,
+      baked: set.idle?.[0]?.width ?? 0,
+      frameSize: s.FRAME_SIZE,
+      petSize: num('--pet-size'),
+      badgeBottom: num('--pet-badge-bottom'),
+      bubbleBottom: num('--pet-bubble-bottom'),
+      walkLoaded: !!set.walk,
+      innerH: window.innerHeight,
+    };
+  })()`);
+  r.check("帧按 devicePixelRatio 烘焙（不再每帧上采样）", Math.round(geo.frameSize * geo.dpr), geo.baked);
+  // 本机 dpr 可能是 1，上一条退化成 360=360；强制 2× 才真正验证烘焙机制
+  const forced = await c.ev(`(async () => {
+    const s = await import('/src/pet/sprites.ts');
+    const set = await s.loadSpriteSet(2);
+    return set.idle?.[0]?.width ?? 0;
+  })()`);
+  r.check("强制 2× 时帧边长翻倍（高分屏不再糊）", geo.frameSize * 2, forced);
+  r.check("立绘尺寸由 JS 写入 CSS 变量", true, geo.petSize > 0);
+  r.check("徽标位置跟随立绘几何而非各自硬编", true, geo.badgeBottom > 0 && geo.badgeBottom < geo.innerH);
+  r.check("气泡位置同理", true, geo.bubbleBottom > 0 && geo.bubbleBottom <= geo.innerH);
+  r.check("未注册的 walk 不再白白解码 192KB", false, geo.walkLoaded);
+
+  r.group("状态机优先级与排队上限（#19）");
+  const sm = await c.ev(`(async () => {
+    const { PetStateMachine } = await import('/src/pet/state-machine.ts');
+    const mk = () => { const cv = document.createElement('canvas'); cv.width = 1; cv.height = 1; return cv; };
+    const sprites = {};
+    for (const a of ['idle','greet','curious','sleep','teasing','blush','angry','react']) sprites[a] = [mk()];
+    const a = new PetStateMachine(sprites);
+    a.request('teasing');
+    const b = new PetStateMachine(sprites);
+    b.request('curious'); b.request('curious'); b.request('curious');
+    const c2 = new PetStateMachine(sprites);
+    for (const act of ['curious','greet','blush','angry','react','idle','idle']) c2.request(act);
+    const capped = c2.queuedCount; // 必须在排空之前取，否则读到的是排空后的 0
+    const seq = [];
+    for (let i = 0; i < 80; i++) { c2.update(0.1); if (seq[seq.length - 1] !== c2.action) seq.push(c2.action); }
+    return { interrupted: a.action, dedup: b.queuedCount, capped, seq };
+  })()`);
+  r.check("高优先级请求立即打断当前动作", "teasing", sm.interrupted);
+  r.check("同一动作重复请求不叠加排队", 1, sm.dedup);
+  r.check("队列有上限，不会无限缓冲", true, sm.capped > 0 && sm.capped <= 3);
+  r.check("排队动作会被逐个排空", true, sm.seq.includes("angry") && sm.seq.includes("react"));
+
+  r.group("点击穿透判定（#16，注入假光标，不依赖真实鼠标）");
+  const ct = await c.ev(`(async () => {
+    const { installClickThrough } = await import('/src/pet/click-through.ts');
+    const calls = [];
+    let fake = { x: 99999, y: 99999 };
+    const stop = installClickThrough({
+      spriteRect: () => ({ left: 47, top: 47, size: 266 }),
+      isDragging: () => false,
+      pollMs: 40,
+      readCursor: async () => ({ x: fake.x, y: fake.y }),
+      windowOrigin: async () => ({ x: 0, y: 0, scale: 1 }),
+      setThrough: async (enabled) => { calls.push(enabled); },
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    const outside = calls.slice();
+    fake = { x: 180, y: 180 };
+    await new Promise((r) => setTimeout(r, 200));
+    const afterInside = calls.slice();
+    fake = { x: 44, y: 44 }; // 边缘余量内：不该再翻一次
+    await new Promise((r) => setTimeout(r, 200));
+    const afterEdge = calls.slice();
+    stop();
+    return { outside, afterInside, afterEdge };
+  })()`);
+  r.check("指针在实体外时才开启穿透", "[true]", JSON.stringify(ct.outside));
+  r.check("指针回到实体内即关闭穿透", "[true,false]", JSON.stringify(ct.afterInside));
+  r.check("状态未变时不重复下发（无抖动）", "[true,false]", JSON.stringify(ct.afterEdge));
+
   r.group("dev 下的 CSP 现状（仅作基线记录，断言在 verify-release.mjs）");
   r.info("探针内 eval", bare.csp);
   r.check("widget 注入 <style> 生效", true, bare.styleApplied);

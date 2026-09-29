@@ -1,12 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "宿主各窗口能力：核心默认集 + 拖拽窗口 + 点击穿透",
+  "description": "宿主各窗口能力：核心默认集 + 拖拽窗口 + 点击穿透（含穿透期间的光标轮询）",
   "windows": ["pet", "overlay", "settings", "consent-*"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
     "core:window:allow-set-ignore-cursor-events",
+    "core:window:allow-cursor-position",
+    "core:window:allow-outer-position",
+    "core:window:allow-scale-factor",
     "core:window:allow-close"
   ]
 }

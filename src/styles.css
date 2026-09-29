@@ -7,10 +7,16 @@ body {
   overflow: hidden;
   background: transparent;
   user-select: none;
+  /* 默认不画 grab：窗口是 360×360 的透明方块，空白角落并不属于宠物 */
+  cursor: default;
+}
+
+/* 指针落在立绘范围内才提示可拖拽（几何由 main.ts 判定） */
+html.over-pet body {
   cursor: grab;
 }
 
-body:active {
+html.over-pet body:active {
   cursor: grabbing;
 }
 
@@ -22,20 +28,20 @@ body:active {
   height: 100vh;
 }
 
-/* 插件徽标插槽：宠物身侧（腰高），不拦截鼠标（保持拖拽手感） */
+/* 插件徽标插槽：宠物腰侧。位置由 main.ts 按立绘矩形算出，别在这里写死像素 */
 #widget-badge {
   position: fixed;
   left: 6px;
-  bottom: 150px;
+  bottom: var(--pet-badge-bottom, 150px);
   pointer-events: none;
   font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
 }
 
-/* 台词气泡：宠物头顶弹出（wm-pop 式），不拦截鼠标 */
+/* 台词气泡：立绘头顶弹出（wm-pop 式），不拦截鼠标 */
 #pet-bubble {
   position: fixed;
   right: 16px;
-  bottom: 305px;
+  bottom: var(--pet-bubble-bottom, 305px);
   max-width: 240px;
   padding: 8px 12px;
   border-radius: 12px 12px 3px 12px;
