@@ -89,7 +89,7 @@ topic 形如 `<插件 id>:<名字>`，`<插件 id>` 前缀归该插件所有；�
 
 - **发布**：只能发自己前缀，且不能是通配。宿主原生 topic 由宿主注入，插件伪造不了。
 - **订阅**：自己前缀随便订（含 `你的id:*`）；订宿主或他人的 topic 需要声明 `bus:subscribe`，且**不允许通配**（`*` 和 `别人:*` 会被拒，防止一次性窃听所有人的指令通道）。
-- 标准事件名：`ble:heart-rate`、`ble:device-found`、`ble:disconnected`、`llm:token-usage`、`todo:changed`。
+- 标准事件名：`ble:heart-rate`、`ble:device-found`、`ble:disconnected`、`agent:state`（编码 Agent 的会话总状态，只在变化时广播，带递增 `counter`）、`agent:event`（单条 hook 事件：`phase` / `toolName` / `notificationKind`，工具失败这类「总状态里仍算进行中」的信号只能从这里拿）、`llm:token-usage`、`todo:changed`。
 
 多个文件共享 topic 常量时，抽一个 `topics.js` 让 `index.js` 与 `widget.js` 各自 `import`（插件文件由宿主按目录提供，相对 import 在开发和打包版都能解析）。别在两个文件里各写一遍字符串。
 

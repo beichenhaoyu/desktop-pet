@@ -148,6 +148,9 @@ export async function initRuntime(): Promise<void> {
   await listen("ble:heart-rate", (e) => bus.inject("ble:heart-rate", e.payload));
   await listen("ble:disconnected", (e) => bus.inject("ble:disconnected", e.payload));
   await listen("ble:error", (e) => bus.inject("ble:error", e.payload));
+  // Agent hook 事件（Rust 侧 watcher 归一化后广播）
+  await listen("agent:state", (e) => bus.inject("agent:state", e.payload));
+  await listen("agent:event", (e) => bus.inject("agent:event", e.payload));
   // 设置窗切换插件开关 → 本窗运行时执行启停
   await listen<{ id: string; enabled: boolean }>("host:plugin-toggled", async (e) => {
     const { id, enabled } = e.payload;
