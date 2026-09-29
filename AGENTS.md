@@ -5,7 +5,7 @@
 ## 当前状态
 
 - **阶段**：框架与插件运行时已落地并有运行时回归（2026-09-29）。
-- **已完成**：宠物窗（鲸鱼娘立绘 + 状态机 + 呼吸/轻摆渲染层 + 点击穿透）、插件运行时、Rust 能力服务（ble / store / http / notify / 权限同意框）、设置窗、透明 overlay 悬浮窗、心率蓝牙示例插件。
+- **已完成**：宠物窗（鲸鱼娘立绘 + 状态机 + 呼吸/轻摆渲染层 + 点击穿透）、插件运行时、Rust 能力服务（ble / store / http / notify / 权限同意框 / Agent hook 收件）、设置窗、透明 overlay 悬浮窗、心率蓝牙与 Agent 桥两个示例插件。
 - **未完成**：`todo` 与 `llm-token-usage` 两个示例插件（用户已明确暂缓）。
 - 完整设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；插件作者文档见 [PLUGIN_SDK.md](PLUGIN_SDK.md)。
 
@@ -30,7 +30,7 @@
 ## 架构速览
 
 - **WebView 侧**：宠物渲染状态机（动画优先级队列）；Widget 宿主（每插件一个 Shadow DOM 插槽）；插件运行时（manifest 扫描 → 动态 import → activate/deactivate 生命周期，单插件错误隔离）；事件总线（topic 格式 `plugin-id:topic`）；PetAPI 能力桥（按 manifest 权限逐项校验，拒绝默认）。
-- **Rust 宿主侧**：窗口管理（透明/置顶/点击穿透/拖拽）、托盘、单实例、自启；原生能力服务 ble / store（插件隔离 JSON 存储）/ http（白名单域名代理）/ notify；权限管理（授权记录 + 同意对话框）。
+- **Rust 宿主侧**：窗口管理（透明/置顶/点击穿透/拖拽）、托盘、单实例、自启；原生能力服务 ble / store（插件隔离 JSON 存储）/ http（白名单域名代理）/ notify / agent（Qoder hook 收件与状态归一化）；权限管理（授权记录 + 同意对话框）。
 
 ## 实施步骤（按序）
 
@@ -45,12 +45,13 @@
 - `npm run tauri dev` 启动：透明置顶宠物显示并播放 idle 动画，可拖拽，托盘可用 ✅
 - plugins/ 目录放入/移除插件后生效 ✅（目录 watcher + 设置窗启停）；单插件异常不崩溃宿主 ✅
 - 心率插件可扫描/连接并显示实时 BPM ✅；`todo`、`token` 插件未做
+- 设置窗安装 Qoder hook 后，Agent 的工具调用/等确认/结束/失败能驱动宠物 ✅（`npm run verify:agent` 21 条断言；用真实 Qoder 会话跑通尚未实测）
 - 未授权能力调用被拒绝且触发同意框 ✅；SDK 文档 ✅
 - 上述大部分由 `npm run verify` 的运行时断言把守（见「约定」），不是靠人工回归
 
 ## 约定
 
-- 标准事件 topic：`ble:heart-rate`、`llm:token-usage`、`todo:changed`
+- 标准事件 topic：`ble:heart-rate`、`agent:state`（`running｜needs_input｜completed｜idle`，只在变化时广播）、`agent:event`（细粒度 hook 事件，含 phase 与 toolName）、`llm:token-usage`、`todo:changed`
 - topic 归属：`<插件id>:` 前缀归该插件。插件只能**发布**自己前缀；订阅他人/宿主 topic 需声明 `bus:subscribe`，且**不允许通配**越过自己的前缀
 - 能力名见 PLUGIN_SDK.md 第 3 节；新增能力时要同时更新桥、Rust 校验与那份表格
 - 共享资源（BLE 会话、overlay 单窗）按插件持有者计数，释放只对真正的持有者生效

@@ -1,86 +1,57 @@
-// Agent 桥端到端断言：本机起一个假的状态端点冒充 petdex，验证示例插件
-// com.pet.agent-bridge 真的把编码 Agent 的会话状态变成了宠物动作与台词。
+// Agent 事件链路的端到端断言。
 //   终端 1: npm run dev:debug      终端 2: npm run verify:agent
-// 与 verify-isolation 的分工：那条管隔离与安全规则，这条管 agent-bridge 的行为。
-// petdex 真身跑起来时判据不变（假端点换成 7777 上的实例即可）。
-import { createServer } from "node:http";
+// 覆盖两层：
+//   1) hook 分支 —— 真的用 exe 跑一次 `--pet-hook <phase>`，验证 stdin 落成一行 JSONL；
+//   2) 采集→归一化→宠物 —— 往收件目录追加事件，断言宠物动作、台词、总线 topic 与去重。
+// 不依赖 petdex，也不需要 Qoder 真跑起来：事件是按其 hook 形状直接造的。
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { argv, env } from "node:process";
+import { spawnSync } from "node:child_process";
 import { attach, createReport, hostInvoke, listPages, reloadAndWait, waitForPage, waitUntil } from "./cdp.mjs";
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
 const AGENT_ID = "com.pet.agent-bridge";
-const HOOK_PORT = Number(env.AGENT_STATE_PORT ?? 7777);
 const ENABLED_KEY = "host:enabled-plugins";
+const EXE = join(import.meta.dirname, "../src-tauri/target/debug/desktop-pet.exe");
+const INBOX = join(env.APPDATA ?? "", "com.desktoppet.pet", "agent", "inbox");
 const isPetPage = (t) => /localhost:1420\/(index\.html)?$/.test(t.url);
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
-const r = createReport("Agent 桥端到端（dev）");
+const r = createReport("Agent 事件链路（dev）");
 
-// --------------------------------------------------- 假的 petdex 状态端点
-// 响应形状照抄 petdex hook_server 的 mirrorState / mirrorBubble，
-// 否则这条断言验的就不是真契约。
-let snap = { state: "idle", counter: 1, agent: "qoder", title: "verify", busy: false };
-let endpoint = null;
-let bubbleReads = 0;
-
-function startEndpoint() {
-  return new Promise((res, rej) => {
-    endpoint = createServer((req, reply) => {
-      const path = (req.url ?? "").split("?")[0];
-      let body;
-      if (path === "/state") body = JSON.stringify({ state: snap.state, counter: snap.counter });
-      else if (path === "/bubble") {
-        bubbleReads += 1;
-        body = JSON.stringify({
-          text: "正在改 src/main.ts",
-          title: snap.title,
-          agent_source: snap.agent,
-          hostname: "localhost",
-          busy: snap.busy,
-          counter: snap.counter,
-          at: Date.now(),
-        });
-      } else if (path === "/health") body = JSON.stringify({ ok: true, port: HOOK_PORT });
-      else {
-        reply.writeHead(404, { "content-type": "application/json" });
-        reply.end('{"ok":false}');
-        return;
-      }
-      reply.writeHead(200, { "content-type": "application/json" });
-      reply.end(body);
-    });
-    endpoint.once("error", rej);
-    endpoint.listen(HOOK_PORT, "127.0.0.1", res);
-  });
+let seq = 0;
+function emitPhase(phase, payload = {}) {
+  const line = JSON.stringify({ phase, at: Date.now(), payload: { session_id: "verify-sess", ...payload } });
+  appendFileSync(join(INBOX, `${phase}.jsonl`), line + "\n");
+  return line;
 }
 
-function stopEndpoint() {
-  endpoint?.close();
-  endpoint = null;
-}
-
-/**
- * 授权只能走真实同意框（宿主没有直接放行的命令），且各能力的框是分批弹的
- * —— http 在首次轮询时，pet:react/pet:say 要等到第一次状态转移。
- * 所以后台持续应答整个测试期间，把每次看到的权限记下来供断言。
- * stop() 用于收尾：不能停晚一步，否则会把撤销之后的授权又点回来。
- */
+/** 授权只能走真实同意框，且各能力的框分批弹，所以后台持续应答整个测试期间 */
 function makeConsentPump(seen) {
   let stopped = false;
   const run = async (deadlineMs) => {
     const until = Date.now() + deadlineMs;
     while (!stopped && Date.now() < until) {
-      const target = (await listPages(PORT)).find((t) => /consent/.test(t.url));
+      const target = (await listPages(PORT).catch(() => []))
+        .find((t) => /consent/.test(t.url));
       if (!target) {
-        await sleep(400);
+        await sleep(250);
         continue;
       }
-      const cs = await attach(PORT, (t) => t.webSocketDebuggerUrl === target.webSocketDebuggerUrl, 10_000);
+      // 单个框没答上不致命，但绝不能让异常把整个应答循环带走：
+      // 一旦没人答后续对话框，宿主 60 秒超时就会把它们全判成「用户拒绝」，
+      // 表现为偶发的「零噪音」红，而且红在离根因很远的断言上。
       try {
-        seen.push(await cs.ev(`[...document.querySelectorAll('#cap-list li')].map(li => li.textContent)`));
-        await cs.ev(`document.getElementById('btn-allow').click()`);
-      } finally {
-        cs.close();
+        const cs = await attach(PORT, (t) => t.webSocketDebuggerUrl === target.webSocketDebuggerUrl, 8_000);
+        try {
+          seen.push(await cs.ev(`[...document.querySelectorAll('#cap-list li')].map(li => li.textContent)`));
+          await cs.ev(`document.getElementById('btn-allow').click()`);
+        } finally {
+          cs.close();
+        }
+      } catch (e) {
+        console.log(`  · 同意框应答失败，重试：${String(e).slice(0, 80)}`);
       }
       await sleep(300);
     }
@@ -102,26 +73,72 @@ try {
 }
 
 try {
-  await startEndpoint();
+  if (!existsSync(INBOX)) throw new Error(`收件目录不存在：${INBOX}（宿主没起来？）`);
+
+  // ---------- 1) hook 分支：exe 收 stdin 并落盘 ----------
+  r.group("hook 接收分支（起一个真实的 exe --pet-hook）");
+  const marker = `hook-probe-${Date.now()}`;
+  const before = (() => {
+    try {
+      return readFileSync(join(INBOX, "pre.jsonl"), "utf8").length;
+    } catch {
+      return 0;
+    }
+  })();
+  const spawned = spawnSync(EXE, ["--pet-hook", "pre"], {
+    input: JSON.stringify({ session_id: marker, tool_name: "Edit" }),
+    encoding: "utf8",
+    timeout: 15_000,
+  });
+  r.check("hook 分支退出码为 0", 0, spawned.status);
+  const after = (() => {
+    try {
+      return readFileSync(join(INBOX, "pre.jsonl"), "utf8");
+    } catch {
+      return "";
+    }
+  })();
+  const appended = after.slice(before).trim().split("\n").filter(Boolean);
+  r.check("落盘且只有一行", 1, appended.length);
+  const landed = appended.length ? JSON.parse(appended[0]) : {};
+  r.check("phase 与 session 正确", [ "pre", marker ], [ landed.phase, landed.payload?.session_id ]);
+  const bogus = spawnSync(EXE, ["--pet-hook", "../escape"], { input: "{}", timeout: 15_000 });
+  r.check("白名单外的 phase 被拒绝且没建文件", false, existsSync(join(INBOX, "escape.jsonl")) && bogus.status === 0);
+
+  // 清场：上面那些会话会在宿主的活跃表里挂 90 秒，不把总状态压回 idle 的话，
+  // 后面「第一个事件应该变 running」这类断言会因为起点就已经是 running 而假失败。
+  emitPhase("session-end", { session_id: marker });
+  emitPhase("session-end", { session_id: "verify-sess" });
+  await sleep(1800); // 等 watcher 把这两条吃掉，总状态落回 idle 再往下测
+
+  // ---------- 2) 采集 → 归一化 → 宠物 ----------
   c = await attach(PORT, isPetPage);
+  const invoke = hostInvoke(c);
   origEnabled = await c.ev(`localStorage.getItem(${JSON.stringify(ENABLED_KEY)}) ?? '[]'`);
   const token = `agent-${Date.now()}`;
-  const acts = () => c.ev(`window.__pet.acts.slice()`);
-  const said = () => c.ev(`window.__pet.said.slice()`);
-  const hasTopic = (expr) =>
-    c.ev(`(window.__topics.slice().some(([k, p]) => ${expr}))`);
+  await c.ev(`window.__verifyToken = ${JSON.stringify(token)}; true`);
+  pumpDone = consentPump.run(240_000); // 宿主对同意框有 60 秒超时即视为拒绝，应答窗口必须比整轮测试更长
 
   r.group("启用插件");
-  await c.ev(
-    `(() => { const list = JSON.parse(${JSON.stringify(origEnabled)}); if (!list.includes(${JSON.stringify(AGENT_ID)})) list.push(${JSON.stringify(AGENT_ID)}); localStorage.setItem(${JSON.stringify(ENABLED_KEY)}, JSON.stringify(list)); return true; })()`,
-  );
-  await reloadAndWait(c);
-  await c.ev(`window.__verifyToken = ${JSON.stringify(token)}; true`);
-  pumpDone = consentPump.run(60_000);
-
-  // 记录本体收到的动作与台词：气泡 DOM 3.6 秒就收起来，截在入口处更稳
+  // 经运行时启停，不靠重载：重载会切断页面在途的 IPC（点击穿透每 250ms 问一次光标位置），
+  // 宿主随后把「孤儿回调」告警喷到页面上，被后面的零噪音断言算作本跑噪音
   r.check(
-    "宠物控制器可用",
+    "插件经运行时激活",
+    true,
+    await c.ev(`(async () => {
+      const rt = await import('/src/runtime/plugin-runtime.ts');
+      const manifests = await window.__TAURI_INTERNALS__.invoke('plugins_list');
+      const manifest = manifests.find((m) => m.id === ${JSON.stringify(AGENT_ID)});
+      if (!manifest) throw new Error('宿主没扫到插件');
+      rt.setEnabledIds([...JSON.parse(${JSON.stringify(origEnabled)}), ${JSON.stringify(AGENT_ID)}]);
+      await rt.activatePlugin(manifest);
+      return rt.isActive(${JSON.stringify(AGENT_ID)});
+    })()`),
+  );
+
+  // 截获本体入口：气泡 DOM 3.6 秒就收起来，记在入口处更稳
+  r.check(
+    "宠物控制器可截获",
     true,
     await c.ev(`(async () => {
       const host = await import('/src/pet/host.ts');
@@ -136,82 +153,103 @@ try {
       window.__topics = [];
       bus.subscribe(${JSON.stringify(`${AGENT_ID}:state`)}, (p) => window.__topics.push(['state', p]));
       bus.subscribe(${JSON.stringify(`${AGENT_ID}:status`)}, (p) => window.__topics.push(['status', p]));
+      bus.subscribe("agent:state", (p) => window.__topics.push(['host-state', p]));
       return true;
     })()`),
   );
+  const acts = () => c.ev(`window.__pet.acts.slice()`);
+  const said = () => c.ev(`window.__pet.said.slice()`);
 
-  r.group("http 域名授权");
-  snap = { ...snap, state: "running", counter: 2, busy: true };
-  r.check("宠物收到 walk 动作", true, await waitUntil(c, `window.__pet.acts.includes('walk')`, 20_000));
+  /**
+   * 等某个能力真的被授权。插件在 activate 时第一次 publish、第一次 react 各自会弹一个
+   * 同意框，不先等它们落定就把首个事件发出去，断言测的其实是「应答对话框有多快」。
+   */
+  async function awaitGranted(cap, timeoutMs = 30_000) {
+    const until = Date.now() + timeoutMs;
+    while (Date.now() < until) {
+      const list = await invoke("permission_list");
+      if (list.ok && (list.v[AGENT_ID] ?? []).includes(cap)) return true;
+      await sleep(500);
+    }
+    return false;
+  }
+
+  r.group("插件上线与授权");
+  r.check("总线授权已就位（activate 时的首次发布）", true, await awaitGranted("bus:publish"));
+
+  r.group("插件不再需要任何网络能力");
+  const manifests = await invoke("plugins_list");
+  const manifest = manifests.ok ? manifests.v.find((m) => m.id === AGENT_ID) : null;
+  r.check("manifest 存在", true, !!manifest);
+  r.check("permissions 里没有 http", false, (manifest?.permissions ?? []).includes("http"));
+
+  r.group("running：工具调用 → 走起来");
+  emitPhase("pre", { tool_name: "Bash" });
+  r.check("首次插播动作触发授权", true, await awaitGranted("pet:react", 30_000));
+  r.check("宠物收到 walk", true, await waitUntil(c, `window.__pet.acts.includes('walk')`, 8_000));
+  r.check("walk 时不作声", [], await said());
   r.check(
-    "同意框列出了 127.0.0.1 这个域名",
+    "宿主广播了 agent:state=running",
     true,
-    grantedCaps.some((caps) => caps.some((x) => x.includes("127.0.0.1"))),
+    await waitUntil(c, `(window.__topics.slice().some(([k,p]) => k === 'host-state' && p.state === 'running'))`, 5_000),
   );
-  r.check("running 只动不作声", [], await said());
 
-  r.group("needs_input → 好奇并说明是谁在等");
-  snap = { ...snap, state: "needs_input", counter: 3, title: "改 main.ts" };
-  r.check("宠物收到 curious", true, await waitUntil(c, `window.__pet.acts.includes('curious')`, 20_000));
+  r.group("连续事件不重复插播");
+  const beforeBurst = (await acts()).length;
+  for (const [phase, payload] of [["post", { tool_name: "Bash" }], ["pre", { tool_name: "Read" }], ["post", { tool_name: "Read" }]]) {
+    emitPhase(phase, payload);
+    await sleep(300);
+  }
+  await sleep(1500);
+  r.check("总状态没变就不该再动", beforeBurst, (await acts()).length);
+
+  r.group("needs_input：等确认 → 好奇 + 说话");
+  emitPhase("approval-request", { tool_name: "Bash" });
+  r.check("宠物收到 curious", true, await waitUntil(c, `window.__pet.acts.includes('curious')`, 15_000));
   r.check(
-    "台词带上了 agent 来源",
+    "台词提示需要确认",
     true,
-    await waitUntil(c, `window.__pet.said.some(t => t.includes('qoder') && t.includes('确认'))`, 20_000),
+    await waitUntil(c, `window.__pet.said.some(t => t.includes('确认'))`, 15_000),
   );
-  r.check("确实读过 /bubble", true, bubbleReads >= 1);
+
+  r.group("completed：一轮结束 → 打招呼");
+  emitPhase("stop", {});
+  r.check("宠物收到 greet", true, await waitUntil(c, `window.__pet.acts.includes('greet')`, 15_000));
+
+  r.group("failed：工具失败 → 生气并带上工具名");
+  emitPhase("tool-failure", { tool_name: "cargo test" });
+  r.check("宠物收到 angry", true, await waitUntil(c, `window.__pet.acts.includes('angry')`, 15_000));
   r.check(
-    "气泡渲染进了 DOM",
+    "台词里带上失败的工具",
     true,
-    await waitUntil(c, `(document.getElementById('pet-bubble')?.textContent ?? '').includes('qoder')`, 5_000),
+    await waitUntil(c, `window.__pet.said.some(t => t.includes('cargo test'))`, 15_000),
   );
 
-  r.group("同一状态重复上报不再动");
-  const before = (await acts()).length;
-  snap = { ...snap, counter: 4 };
-  await sleep(2400);
-  r.check("acts 计数不变", before, (await acts()).length);
-
-  r.group("端点消失 → 只播报一次，且不影响宿主");
-  stopEndpoint();
+  r.group("会话结束后回落 idle");
+  emitPhase("session-end", { session_id: "verify-sess" });
   r.check(
-    "播报过一次断开",
+    "宿主广播了 idle",
     true,
-    await waitUntil(c, `(window.__topics.slice().some(([k, p]) => k === 'status' && (p.text ?? '').includes('已断开 petdex')))`, 20_000),
+    await waitUntil(c, `(window.__topics.slice().reverse().some(([k,p]) => k === 'host-state' && p.state === 'idle'))`, 25_000),
   );
-  r.check("页面仍然活着", 2, await c.ev(`1+1`));
-  const afterLost = (await acts()).length;
-  await sleep(1600);
-  r.check("断开期间没有多余动作", afterLost, (await acts()).length);
-  const disconnects = await c.ev(
-    `(window.__topics.slice().filter(([k, p]) => k === 'status' && (p.text ?? '').includes('已断开')).length)`,
-  );
-  r.check("断开只播了一次", 1, disconnects);
 
-  r.group("端点回来 → 恢复跟随");
-  await startEndpoint();
-  snap = { ...snap, state: "failed", counter: 5 };
-  r.check("宠物收到 angry", true, await waitUntil(c, `window.__pet.acts.includes('angry')`, 25_000));
-  r.check("播报过一次重连", true, await hasTopic(`k === 'status' && (p.text ?? '').includes('已连上 petdex')`));
-  r.check("状态 topic 带上了会话状态", true, await hasTopic(`k === 'state' && p.state === 'failed'`));
+  r.group("hook 命令写的是真实用户配置吗");
+  const status = await invoke("agent_hooks_status");
+  r.check("非设置窗调用被拒", false, status.ok);
+  r.info("拒绝原因", String(status.e ?? "").slice(0, 60));
 
   r.group("收尾前的完整性");
   r.check("测试期间宠物窗未被重载", token, await c.ev(`window.__verifyToken ?? null`));
   await sleep(500); // console 事件异步送达
   r.check("零噪音", [], c.noise);
 } finally {
-  // 收尾顺序要紧：
-  // 1. 先停同意框应答 —— 否则撤销之后插件的下一次轮询会又弹一个框，被后台应答点回授权。
-  // 2. 再趁端点还活着把插件下线并重载 —— 反过来会留下在途请求或挂起的授权被重载打断，
-  //    宿主随后把孤儿回调告警喷到页面上，污染下一次 verify 的零噪音断言。
-  // 3. 最后关端点、撤销授权。
+  // 收尾顺序：停同意框应答 → 趁一切还在把插件下线（不要拿重载当下线手段）→ 撤销授权
+  // → 最后重载换新文档，把本跑的 console 输出连同旧文档一起丢掉，别污染下一次 attach
   consentPump.stop();
   await pumpDone?.catch(() => undefined);
   if (c) {
     const invoke = hostInvoke(c);
     if (origEnabled !== null) {
-      // 走运行时下线，不要靠重载：重载会切断插件在途的 IPC，宿主把孤儿回调告警
-      // 喷到页面上，而它留在文档的 console 缓冲里，会被下一次 attach 的客户端回放出来，
-      // 表现为「主回归的零噪音偶发红」——看着像别人的问题，其实是我们留下的。
       await c
         .ev(`(async () => {
           const rt = await import('/src/runtime/plugin-runtime.ts');
@@ -220,20 +258,18 @@ try {
           return true;
         })()`)
         .catch(() => undefined);
-      await sleep(1500); // 让 deactivate 与在途请求落地，再拆端点
+      await sleep(1200);
     }
-    stopEndpoint();
     const revoked = await invoke("permission_revoke", { pluginId: AGENT_ID });
     r.info("已撤销授权", JSON.stringify(revoked.ok ? revoked.v : revoked.e));
-    const left = await invoke("permission_list");
-    r.info("剩余授权", JSON.stringify(left.ok ? left.v : left.e));
-    // 最后换一个新文档：本跑期间产生的任何 console 输出都跟着旧文档一起丢掉，
-    // 否则下一次 attach 的客户端（比如主回归）会把它当成自己跑出来的噪音。
-    // 此刻插件已下线、同意框已停应答，属于「无在途请求的纯重载」，不会自己制造孤儿。
     await reloadAndWait(c).catch(() => undefined);
+    // 等这一轮的收尾彻底落地再退出：下一套断言脚本紧跟着 attach 的话，
+    // 会撞在这次重载的尾巴上，红在一堆与本跑无关的断言上
+    await waitUntil(c, `!!window.__TAURI_INTERNALS__ && !!document.querySelector('#pet-canvas')`, 10_000);
+    await sleep(1200);
   }
   const failed = r.summary();
   c?.close();
-  await sleep(500); // 等后台同意框连接与 websocket 关掉，否则 Node 退出时抛 UV_HANDLE_CLOSING
+  await sleep(500);
   process.exit(failed ? 1 : 0);
 }

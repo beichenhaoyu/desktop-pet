@@ -2,11 +2,26 @@ mod commands;
 mod services;
 mod window;
 
-use services::{ble::BleState, http::HttpState, permission::PermissionState, store::StoreState};
+use services::{
+    agent::AgentState,
+    ble::BleState,
+    http::HttpState,
+    permission::PermissionState,
+    store::StoreState,
+};
+use std::sync::Arc;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Agent hook 的接收分支必须排在一切之前：它只把 stdin 落到一个文件就退出。
+    // 走完整启动流程不仅慢，还会被下面的单实例插件把参数转发给已运行的实例，
+    // 于是 stdin 与这次事件一起丢掉。
+    if let Some(phase) = services::agent::hook_phase_from_args(&mut std::env::args()) {
+        services::agent::hook_ingest(phase);
+        return;
+    }
+
     // 插件文件协议必须在窗口创建前注册
     let builder = commands::plugins::register_plugin_protocol(tauri::Builder::default());
     builder
@@ -38,6 +53,7 @@ pub fn run() {
             app.manage(PermissionState::new());
             app.manage(BleState::new());
             app.manage(HttpState::new());
+            app.manage(Arc::new(AgentState::default()));
             app.state::<StoreState>().init(app.handle())?;
             app.state::<PermissionState>().init(app.handle())?;
             window::pet::setup(app.handle())?;
@@ -45,6 +61,9 @@ pub fn run() {
             // watcher 被 drop 就停止监听，所以必须交给 app state 长期持有
             let watcher = commands::plugins::spawn_plugins_watcher(app.handle())?;
             app.manage(std::sync::Mutex::new(watcher));
+            let agent_watcher = services::agent::spawn_agent_watcher(app.handle())?;
+            app.manage(std::sync::Mutex::new(agent_watcher));
+            services::agent::start_agent_ticker(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -54,6 +73,9 @@ pub fn run() {
             window::overlay::overlay_hide,
             window::overlay::overlay_destroy,
             commands::plugins::plugins_list,
+            commands::agent::agent_hooks_status,
+            commands::agent::agent_hooks_install,
+            commands::agent::agent_hooks_uninstall,
             commands::bus::bus_publish,
             services::store::store_get,
             services::store::store_set,

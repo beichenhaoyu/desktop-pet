@@ -33,9 +33,9 @@ Tauri 2 + TypeScript/Vite 实现的桌面宠物框架：宠物本体只提供窗
 **示例插件**
 
 - `com.pet.hr-ble`：扫描并连接心率设备，徽标小字或波形悬浮窗
-- `com.pet.agent-bridge`：只读搭车 petdex 的本地状态端点，把编码 Agent 的会话状态转成宠物动作与台词
+- `com.pet.agent-bridge`：把编码 Agent 的会话状态转成宠物动作与台词。事件由设置窗一键安装的 Qoder hook 采集（宿主自己收，不依赖第三方）
 
-**验证**：打包版 CSP 以响应头下发；隔离、权限、热安装、渲染几何与 Agent 桥行为由 CDP 运行时断言把守（见下方命令）。
+**Agent 事件接入**：设置窗底部「Agent 事件接入」→ 安装 Qoder hook。宿主 exe 自身兼任 hook 接收器（`--pet-hook <phase>` 分支，只落一个文件就退出），收件目录由 watcher 读增量并归一化成会话状态；安装只增删自己标记的条目，不动其他 hook，首次改动会留 `.pre-pet-backup` 备份。
 
 **尚未完成**：`todo` 与 `llm-token-usage` 示例插件；同 realm 插件直接 `import { invoke }` 绕过 JS 桥仍需 Web Worker 宿主才能收口。
 

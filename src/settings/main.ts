@@ -139,9 +139,92 @@ async function render(): Promise<void> {
   }
 }
 
+interface AgentFileReport {
+  path: string;
+  managed: number;
+  error: string | null;
+}
+
+interface AgentStatus {
+  exe: string;
+  files: AgentFileReport[];
+  managed: number;
+  installed: boolean;
+  expectedPerFile: number;
+}
+
+const agentStatusLine = () => document.getElementById("agent-status");
+const agentDetail = () => document.getElementById("agent-detail");
+
+async function renderAgent(): Promise<void> {
+  const status = agentStatusLine();
+  const detail = agentDetail();
+  if (!status || !detail) return;
+  try {
+    const info = await invoke<AgentStatus>("agent_hooks_status");
+    if (info.files.length === 0) {
+      status.textContent = "未找到 Qoder 配置目录（~/.qoder 或 ~/.qoder-cn），本机没装对应客户端。";
+      detail.textContent = "";
+    } else if (info.installed) {
+      status.textContent = `已安装：每个配置文件 ${info.expectedPerFile} 个事件，共 ${info.managed} 条。`;
+    } else if (info.managed > 0) {
+      status.textContent = `部分安装（${info.managed} 条），可能需要修复 —— 宠物程序换过路径时会出现这种情况。`;
+    } else {
+      status.textContent = "未安装。";
+    }
+    const problems = info.files.filter((f) => f.error).map((f) => `${f.path}：${f.error}`);
+    detail.textContent = [
+      `hook 命令指向 ${info.exe}`,
+      ...info.files.map((f) => `${f.path} — 本宠物 ${f.managed} 条`),
+      ...problems,
+    ].join(" ｜ ");
+  } catch (e) {
+    status.textContent = `读取状态失败：${String(e)}`;
+  }
+}
+
+async function runAgentAction(how: "install" | "uninstall"): Promise<void> {
+  const command = how === "install" ? "agent_hooks_install" : "agent_hooks_uninstall";
+  for (const id of ["agent-install", "agent-uninstall"]) {
+    const el = document.getElementById(id) as HTMLButtonElement | null;
+    if (el) el.disabled = true;
+  }
+  const detail = agentDetail();
+  try {
+    const result = await invoke<{ files: AgentFileReport[] }>(command);
+    if (detail) {
+      detail.textContent = result.files
+        .map((f) => `${f.path} — ${f.error ? `失败：${f.error}` : `${f.managed} 条`}`)
+        .join(" ｜ ");
+    }
+  } catch (e) {
+    if (detail) detail.textContent = `操作失败：${String(e)}`;
+  } finally {
+    for (const id of ["agent-install", "agent-uninstall"]) {
+      const el = document.getElementById(id) as HTMLButtonElement | null;
+      if (el) el.disabled = false;
+    }
+    await renderAgent();
+  }
+}
+
+function wireAgentBox(): void {
+  document.getElementById("agent-install")?.addEventListener("click", () => {
+    void runAgentAction("install");
+  });
+  document.getElementById("agent-uninstall")?.addEventListener("click", () => {
+    void runAgentAction("uninstall");
+  });
+  document.getElementById("agent-refresh")?.addEventListener("click", () => {
+    void renderAgent();
+  });
+}
+
 async function main(): Promise<void> {
   await bus.init();
   await render();
+  wireAgentBox();
+  void renderAgent();
 
   // 宠物窗运行时上报的插件异常 → 顶部红条
   banner = document.createElement("div");

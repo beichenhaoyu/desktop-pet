@@ -12,6 +12,21 @@
         <p class="hint">启停即时生效；未授权能力首次调用时会弹出确认框</p>
       </header>
       <main id="plugin-list"></main>
+      <section id="agent-hook" class="agent-box">
+        <h2>Agent 事件接入</h2>
+        <p class="hint" id="agent-status">正在读取状态…</p>
+        <p class="hint" id="agent-detail"></p>
+        <div class="agent-actions">
+          <button type="button" id="agent-install">安装 Qoder hook</button>
+          <button type="button" id="agent-uninstall">卸载</button>
+          <button type="button" id="agent-refresh">刷新</button>
+        </div>
+        <p class="hint">
+          安装会往 ~/.qoder/settings.json 与 ~/.qoder-cn/settings.json 追加本宠物的 hook
+          条目（首次改动会留 .pre-pet-backup 备份），只增删自己的条目，不动其他 hook。
+          装好后 Agent 的工具调用、等待确认、任务完成等事件就会驱动宠物。
+        </p>
+      </section>
     </div>
     <script type="module" src="/src/settings/main.ts"></script>
   </body>
