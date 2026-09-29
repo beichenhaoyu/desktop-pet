@@ -1,9 +1,6 @@
-// 心率插件 widget 渲染器（零 import，能力由宿主注入 ctx.bus）
+// 心率插件 widget 渲染器（能力由宿主注入 ctx.bus，topic 常量与 index.js 共用一份）
 // 区域约定：badge=宠物旁小字 / overlay=左上角波形图 / settings=设置面板
-const TOPIC_BPM = "com.pet.hr-ble:bpm";
-const TOPIC_DEVICES = "com.pet.hr-ble:devices";
-const TOPIC_STATUS = "com.pet.hr-ble:status";
-const TOPIC_CMD = "com.pet.hr-ble:cmd";
+import { TOPIC_BPM, TOPIC_CMD, TOPIC_DEVICES, TOPIC_STATUS } from "./topics.js";
 
 // 每个挂载实例（badge/overlay/settings）各自一份清理表，互不干扰
 const scopes = new WeakMap();

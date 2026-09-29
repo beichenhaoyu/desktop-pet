@@ -1,7 +1,8 @@
 // Widget 宿主：每个插件的 widget 运行在独立 Shadow DOM 中，样式与 DOM 互相隔离。
 // 插件不得直接操作宿主 DOM/画布，只能拿到自己 Shadow Root 的挂载入口；
-// widget 能力（事件总线）由宿主经 ctx 注入为受限视图，widget.js 自身保持零 import，
-// 这样 dev（vite 转换）与 release（静态文件）下都能加载。
+// widget 能力（事件总线）由宿主经 ctx 注入为受限视图。
+// widget 与插件其余文件一样经 petplugin 协议按目录提供，因此可以用相对 import
+// 拆分子模块（示例插件把 topic 常量抽进 topics.js 就是这个用法）。
 import { bus } from "./event-bus";
 import { pluginFileUrl } from "./plugin-url";
 import { createScopedBus, type ScopedBus } from "./topic-acl";

@@ -2,12 +2,7 @@
 // 数据流：Rust ble:heart-rate → 本插件整理 → `${PID}:bpm` 总线 → 各窗口 widget 渲染
 // 设置面板（设置窗）通过 `${PID}:cmd` 下发指令，本插件执行并回发状态。
 // 悬浮窗只在「波形图模式 + 已连接设备」时显示，断开即自动关闭。
-
-const PID = "com.pet.hr-ble";
-const TOPIC_CMD = `${PID}:cmd`;
-const TOPIC_BPM = `${PID}:bpm`;
-const TOPIC_DEVICES = `${PID}:devices`;
-const TOPIC_STATUS = `${PID}:status`;
+import { PID, TOPIC_BPM, TOPIC_CMD, TOPIC_DEVICES, TOPIC_STATUS } from "./topics.js";
 
 let ctx = null;
 let config = { device: null, deviceName: null, mode: "badge" };

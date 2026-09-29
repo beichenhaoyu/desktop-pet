@@ -87,6 +87,16 @@ try {
   await c.ev(`window.__wh.unmount(${JSON.stringify(PROBE_ID)})`);
   await c.ev(`window.__probes = []; window.__canary = []`);
 
+  // 上一轮崩溃可能把探针留在启用清单里：目录 watcher 会据此自动激活它，
+  // 于是测试自己看到的 badge 里多出别人（宿主）挂的容器。起点钉死清单。
+  const baselineEnabled = await c.ev(`(() => {
+    const key = 'host:enabled-plugins';
+    const prev = JSON.parse(localStorage.getItem(key) ?? '[]');
+    const clean = Array.isArray(prev) ? prev.filter((id) => id !== ${JSON.stringify(PROBE_ID)} && id !== ${JSON.stringify(NET_ID)}) : [];
+    localStorage.setItem(key, JSON.stringify(clean));
+    return JSON.stringify(prev);
+  })()`);
+
   // 页面若在测试中途重载（编辑触发的 HMR、崩溃），window 上的句柄与计数会凭空消失，
   // 表现为看不懂的 TypeError。这里埋一个世代标记，越界时给出可执行的提示。
   const TOKEN = `verify-${Date.now()}`;
@@ -131,19 +141,21 @@ try {
 
   await guard();
   r.group("widget 挂载生命周期");
+  // 用增量而不是绝对计数：宿主自己也可能挂过同名容器，绝对数在共享 DOM 上不可靠
   const sel = `#widget-badge > div[data-plugin-id="${PROBE_ID}"]`;
-  r.check("badge 容器已挂载", 1, await c.ev(`document.querySelectorAll(${JSON.stringify(sel)}).length`));
+  const badgeCount = () => c.ev(`document.querySelectorAll(${JSON.stringify(sel)}).length`);
   await c.ev(`window.__wh.unmount(${JSON.stringify(PROBE_ID)})`);
-  r.check("卸载后容器移除", 0, await c.ev(`document.querySelectorAll(${JSON.stringify(sel)}).length`));
+  const base = await badgeCount();
+  await c.ev(MOUNT_BARE);
+  r.check("mount 后容器 +1", base + 1, await badgeCount());
+  await c.ev(`window.__wh.unmount(${JSON.stringify(PROBE_ID)})`);
+  r.check("卸载后回到基线", base, await badgeCount());
   r.check("卸载后 has() 为假", false, await c.ev(`window.__wh.has(${JSON.stringify(PROBE_ID)})`));
 
   r.group("并发重复挂载竞态");
-  const twice = await Promise.all([
-    c.ev(MOUNT_BARE),
-    c.ev(MOUNT_BARE),
-  ]);
-  void twice;
-  r.check("同时两次 mount 只留一个容器", 1, await c.ev(`document.querySelectorAll(${JSON.stringify(sel)}).length`));
+  const base2 = await badgeCount();
+  await Promise.all([c.ev(MOUNT_BARE), c.ev(MOUNT_BARE)]);
+  r.check("同时两次 mount 只 +1", base2 + 1, await badgeCount());
   await c.ev(`window.__wh.unmount(${JSON.stringify(PROBE_ID)})`);
 
   r.group("宿主侧规则（直打 invoke，绕过 JS 能力桥）");
@@ -350,6 +362,18 @@ try {
   const notifyDenied = await invoke_("notify_show", { pluginId: NET_ID, title: "t", body: "b" });
   r.check("未声明 notify 的插件发不出系统通知", true, !notifyDenied.ok && /未授权/.test(String(notifyDenied.e)));
   await invoke_("permission_revoke", { pluginId: NET_ID });
+
+  r.group("示例插件真实挂载（含相对 import 的 topics.js）");
+  await c.ev(INSTALL); // 热安装那组末尾重载过页面，宿主句柄要重装（INSTALL 幂等）
+  const hr = (await invoke_("plugins_list")).v?.find((m) => m.id === "com.pet.hr-ble");
+  r.check("宿主返回了心率插件", true, !!hr?.widget);
+  await c.ev(`window.__wh.mount(${JSON.stringify(hr)}, 'badge')`);
+  r.check(
+    "widget 挂载成功（说明 ./topics.js 在 petplugin 下能解析）",
+    true,
+    await waitUntil(c, `!!document.querySelector('#widget-badge > div[data-plugin-id="com.pet.hr-ble"]')`),
+  );
+  await c.ev(`window.__wh.unmount('com.pet.hr-ble')`);
 
   r.group("渲染几何与帧烘焙（#17 / #20）");
   const geo = await c.ev(`(async () => {
