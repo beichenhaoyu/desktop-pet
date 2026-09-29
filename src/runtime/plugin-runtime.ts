@@ -6,6 +6,7 @@ import { bus } from "./event-bus";
 import { buildContext } from "./bridge";
 import { pluginFileUrl } from "./plugin-url";
 import { widgetHost } from "./widget-host";
+import { releaseAll } from "./resources";
 
 export interface PluginManifest {
   id: string;
@@ -110,12 +111,15 @@ export async function deactivatePlugin(pluginId: string): Promise<void> {
     reportError(pluginId, err);
   }
   await widgetHost.unmount(pluginId);
-  // 宿主兜底释放 BLE 资源（保证插件关闭后不占系统资源）
+  // 只回收该插件确实持有、且已无其他持有者的共享资源。
+  // 早先这里是无条件 ble_disconnect + stop_scan，会掐断别的插件正在用的会话。
+  const freed = releaseAll(pluginId);
   try {
-    await invoke("ble_disconnect");
-    await invoke("ble_stop_scan");
-  } catch {
-    /* 无连接时忽略 */
+    if (freed.ble) await invoke("ble_disconnect");
+    if (freed["ble-scan"]) await invoke("ble_stop_scan");
+    if (freed.overlay) await invoke("overlay_hide");
+  } catch (err) {
+    reportError(pluginId, err);
   }
 }
 

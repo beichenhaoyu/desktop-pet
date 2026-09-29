@@ -1,7 +1,7 @@
 // 隔离与安全回归断言。连到「已在运行」的 dev 实例，跑完给非零退出码即失败。
 //   终端 1: npm run dev:debug     终端 2: npm run verify
 // 只覆盖 dev 能验证的部分；CSP 与打包路径见 verify-release.mjs（每波次收尾手工跑一次）。
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { argv, env } from "node:process";
 import { attach, createReport, hostInvoke, reloadAndWait, waitForPage, waitUntil } from "./cdp.mjs";
@@ -188,16 +188,126 @@ try {
   r.check("撤销后存储读不到旧值", null, await readBack());
   r.check("落盘目录随之删除", false, existsSync(STORE_DIR));
 
+  r.group("总线自递归必须被深度上限截断");
+  // 嵌套调用走 inject 而不是 publish：两者共用同一个 dispatch（被测的就是它），
+  // 但 publish 每次都要过一趟 IPC，突发十几次会触发 Tauri 的 postMessage 回退，噪音盖过信号
+  const rec = await c.ev(`(async () => {
+    const { bus } = await import('/src/runtime/event-bus.ts');
+    let n = 0;
+    const off = bus.subscribe('zz.probe:rec:*', () => { n++; bus.inject('zz.probe:rec:x', {}); });
+    let threw = null;
+    try { bus.inject('zz.probe:rec:x', {}); } catch (e) { threw = String(e); }
+    off();
+    let after = 0;
+    const off2 = bus.subscribe('zz.probe:after', () => after++);
+    bus.inject('zz.probe:after', {});
+    off2();
+    return { n, threw, after };
+  })()`);
+  r.check("递归被截断在有限层", true, rec.n > 1 && rec.n <= 12);
+  r.check("截断后总线仍可正常派发", 1, rec.after);
+  await sleep(600); // console 事件是异步送达的
+  r.check("深度上限有明确告警", true, c.noise.some((x) => x.includes("派发递归")));
+
+  r.group("同意框被直接关掉 → 立刻按拒绝结束，不空等 60s");
+  const HR = "com.pet.hr-ble";
+  const hrManifest = (await invoke_("plugins_list")).v?.find((m) => m.id === HR);
+  const savedConfig = await invoke_("store_get", { pluginId: HR, key: "config" });
+  await invoke_("permission_revoke", { pluginId: HR });
+  const pending = c.ev(
+    `window.__TAURI_INTERNALS__.invoke('permission_request', { pluginId: ${JSON.stringify(HR)}, pluginName: '心率蓝牙', capabilities: ['ble:scan'] })`,
+  );
+  let consentClosed = false;
+  try {
+    const consent = await waitForPage(PORT, (t) => /consent/.test(t.url), 15_000);
+    const cs = await attach(PORT, (t) => t.webSocketDebuggerUrl === consent.webSocketDebuggerUrl, 10_000);
+    const caps = await cs.ev(`[...document.querySelectorAll('#cap-list li')].map(li => li.textContent)`);
+    r.check("同意框列出了待授权能力", true, caps.length >= 1);
+    // 必须走真实关闭路径（与用户点关闭同一条）：plugin:window|close 会触发
+    // Rust 侧的 CloseRequested/Destroyed；CDP 的 Page.close 绕过它，测不到这个修复。
+    // 注意不能 await 它的响应：关闭会先拆掉本 webview，回复永远回不来。
+    const closedLabel = await cs.ev(`(() => {
+      const label = window.__TAURI_INTERNALS__.metadata.currentWindow.label;
+      window.__TAURI_INTERNALS__.invoke('plugin:window|close', { label });
+      return label;
+    })()`);
+    r.check("关的是同意框自己的窗口", true, String(closedLabel).startsWith("consent-"));
+    consentClosed = true;
+    cs.close();
+  } catch (err) {
+    console.log("     没能操作同意框窗口: " + String(err?.message ?? err).split("\n")[0]);
+  }
+  const raced = await Promise.race([
+    pending.then((v) => ({ done: true, v })).catch((e) => ({ done: true, v: "ERR " + e })),
+    new Promise((res) => setTimeout(() => res({ done: false }), 15_000)),
+  ]);
+  r.check("关窗后调用立即返回（未卡满超时）", true, consentClosed && raced.done);
+  r.check("按拒绝处理", false, raced.v === true);
+
+  // 还原用户授权：重新走一次同意框并点「允许」
+  if (hrManifest?.permissions?.length) {
+    const regrant = c.ev(
+      `window.__TAURI_INTERNALS__.invoke('permission_request', { pluginId: ${JSON.stringify(HR)}, pluginName: ${JSON.stringify(hrManifest.name)}, capabilities: ${JSON.stringify(hrManifest.permissions)} })`,
+    );
+    try {
+      const again = await waitForPage(PORT, (t) => /consent/.test(t.url), 15_000);
+      const cs2 = await attach(PORT, (t) => t.webSocketDebuggerUrl === again.webSocketDebuggerUrl, 10_000);
+      r.check("重新弹出的同意框带插件名", true, (await cs2.ev(`document.getElementById('plugin-name')?.textContent ?? ''`)).includes("心率"));
+      await cs2.ev(`document.getElementById('btn-allow').click()`);
+      cs2.close();
+    } catch (err) {
+      console.log("     还原授权失败: " + String(err?.message ?? err).split("\n")[0]);
+    }
+    r.check("点允许后宿主放行", true, await regrant);
+    if (savedConfig?.v !== undefined && savedConfig?.v !== null) {
+      await invoke_("store_set", { pluginId: HR, key: "config", value: savedConfig.v });
+    }
+  }
+
   await c.ev(`localStorage.setItem('host:enabled-plugins', ${JSON.stringify(prevEnabled)})`);
   await reloadAndWait(c);
+
+  r.group("共享资源持有者计数（停用不得误伤他插件）");
+  const res = await c.ev(`(async () => {
+    const m = await import('/src/runtime/resources.ts');
+    m.claim('ble', 'zz.a');
+    m.claim('ble', 'zz.b');
+    const firstRelease = m.release('ble', 'zz.a');
+    const secondRelease = m.release('ble', 'zz.b');
+    m.claim('ble-scan', 'zz.c');
+    const scanIndependent = m.release('ble', 'zz.c');
+    return {
+      nonHolderRelease: m.release('ble', 'zz.not-a-holder'),
+      firstRelease,
+      secondRelease,
+      scanIndependent,
+    };
+  })()`);
+  r.check("非持有者 release 不触发释放", false, res.nonHolderRelease);
+  r.check("仍有人持有时不释放", false, res.firstRelease);
+  r.check("最后一个持有者退出才释放", true, res.secondRelease);
+  r.check("ble 与 ble-scan 各自独立计数", false, res.scanIndependent);
+
+  r.group("存储损坏必须报错，不能被当成空表后覆盖");
+  const STORE_FILE = join(STORE_DIR, "store.json");
+  mkdirSync(STORE_DIR, { recursive: true });
+  writeFileSync(STORE_FILE, "{ 这不是合法 json");
+  const brokenRead = await invoke_("store_get", { pluginId: PROBE_ID, key: "prefs" });
+  r.check("读取损坏文件返回错误", true, !brokenRead.ok && /损坏/.test(String(brokenRead.e)));
+  const brokenWrite = await invoke_("store_set", { pluginId: PROBE_ID, key: "prefs", value: 1 });
+  r.check("损坏状态下拒绝写入", true, !brokenWrite.ok);
+  r.check("原文件未被静默改写", true, readFileSync(STORE_FILE, "utf8").includes("这不是合法"));
+  rmSync(STORE_DIR, { recursive: true, force: true });
 
   r.group("dev 下的 CSP 现状（仅作基线记录，断言在 verify-release.mjs）");
   r.info("探针内 eval", bare.csp);
   r.check("widget 注入 <style> 生效", true, bare.styleApplied);
 
   r.group("宿主页面自身未产生 CSP 违规或未捕获异常");
-  r.check("无", 0, c.noise.length);
-  if (c.noise.length) c.noise.forEach((n) => console.log("   " + n));
+  // 上面的递归测试会刻意打一条 console.error，它是被测行为的证据，不该混进这里的零容忍
+  const unexpected = c.noise.filter((n) => !n.includes("派发递归"));
+  r.check("无", 0, unexpected.length);
+  if (unexpected.length) unexpected.forEach((n) => console.log("   " + n));
 } catch (err) {
   // 断言中途抛错时别只丢一个栈：给出可读原因
   aborted = true;

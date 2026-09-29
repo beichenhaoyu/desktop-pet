@@ -18,12 +18,25 @@ pub fn run() {
                 let _ = pet.set_focus();
             }
         }))
+        // 宿主侧日志：此前所有失败都被 `let _ =` 吞掉，出错时毫无线索
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .targets([
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                        file_name: Some("host".into()),
+                    }),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Webview),
+                ])
+                .level(log::LevelFilter::Info)
+                .build(),
+        )
         .setup(|app| {
             app.manage(StoreState::new());
             app.manage(PermissionState::new());
             app.manage(BleState::new());
-            app.state::<StoreState>().init(app.handle());
-            app.state::<PermissionState>().init(app.handle());
+            app.state::<StoreState>().init(app.handle())?;
+            app.state::<PermissionState>().init(app.handle())?;
             window::pet::setup(app.handle())?;
             window::tray::setup(app.handle())?;
             // watcher 被 drop 就停止监听，所以必须交给 app state 长期持有

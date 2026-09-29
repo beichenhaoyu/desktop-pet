@@ -7,6 +7,9 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 type Handler = (payload: unknown) => void;
 
 class EventBus {
+  /** 嵌套派发上限：正常链路（事件→插件→再广播）远用不到，越界即自递归 */
+  private static readonly MAX_DEPTH = 8;
+  private depth = 0;
   private handlers = new Map<string, Set<Handler>>();
   private label = getCurrentWindow().label;
   private initialized = false;
@@ -47,18 +50,29 @@ class EventBus {
   }
 
   private dispatch(topic: string, payload: unknown): void {
-    for (const [pattern, set] of this.handlers) {
-      const matched =
-        pattern === topic || (pattern.endsWith("*") && topic.startsWith(pattern.slice(0, -1)));
-      if (!matched) continue;
-      // 复制一份：handler 在派发期间退订/订阅不会影响本轮
-      for (const handler of [...set]) {
-        try {
-          handler(payload);
-        } catch (err) {
-          console.error(`[bus] handler error on ${topic}`, err);
+    // 通配订阅者在 handler 里再 publish 会自递归；不加深度的话栈溢出异常会被
+    // 下面 per-handler 的 try 吞掉，表现成无限刷 console 而不是明确报错
+    if (this.depth >= EventBus.MAX_DEPTH) {
+      console.error(`[bus] 派发递归超过 ${EventBus.MAX_DEPTH} 层，已中止: ${topic}`);
+      return;
+    }
+    this.depth += 1;
+    try {
+      for (const [pattern, set] of this.handlers) {
+        const matched =
+          pattern === topic || (pattern.endsWith("*") && topic.startsWith(pattern.slice(0, -1)));
+        if (!matched) continue;
+        // 复制一份：handler 在派发期间退订/订阅不会影响本轮
+        for (const handler of [...set]) {
+          try {
+            handler(payload);
+          } catch (err) {
+            console.error(`[bus] handler error on ${topic}`, err);
+          }
         }
       }
+    } finally {
+      this.depth -= 1;
     }
   }
 }
