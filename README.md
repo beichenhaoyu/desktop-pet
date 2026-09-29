@@ -59,7 +59,7 @@ npm run tauri build    # 打包发布
 
 npm run dev:debug      # 带 WebView2 远程调试端口启动，供断言脚本连接
 npm run verify         # 隔离与安全回归断言（需另一个终端先跑 dev:debug）
-npm run verify:agent   # Agent 桥端到端断言（脚本自起假状态端点）
+npm run verify:agent   # Agent 事件链路断言（脚本自己写收件目录）
 npm run verify:game    # 游戏模式断言（会真的起一个铺满显示器的窗口约 10 秒）
 npm run verify:release # 验打包产物的 CSP，每波次收尾手工跑一次
 ```

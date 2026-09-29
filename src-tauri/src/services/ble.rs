@@ -151,12 +151,13 @@ async fn init_ble(state: &BleState) -> Result<(), String> {
 pub async fn ble_start_scan(app: AppHandle, state: tauri::State<'_, BleState>) -> Result<(), String> {
     init_ble(&state).await?;
 
-    // 每次扫描都重置去重集合：已上报过的设备允许重新上报（设置窗重开后也能刷新列表）
+    // 只重置去重集合：已上报过的设备允许重新上报（设置窗重开后也能刷新列表）。
+    // peripherals 是句柄缓存，不能跟着一起清 —— 清掉之后 UI 里那行设备还在，
+    // 点「连接」就必然报「未在扫描结果中」，同一次运行里连不上刚才那台设备。
     {
         let mut core_guard = state.core.lock().await;
         if let Some(core) = core_guard.as_mut() {
             core.seen.clear();
-            core.peripherals.clear();
         }
     }
 
@@ -229,13 +230,25 @@ pub async fn ble_connect(app: AppHandle, state: tauri::State<'_, BleState>, devi
     }
 
     let peripheral = {
-        let core_guard = state.core.lock().await;
-        let core = core_guard.as_ref().ok_or("BLE init failed")?;
-        core
-            .peripherals
-            .get(&device_id)
-            .cloned()
-            .ok_or("设备未在扫描结果中，请先扫描")?
+        let mut core_guard = state.core.lock().await;
+        let core = core_guard.as_mut().ok_or("BLE init failed")?;
+        match core.peripherals.get(&device_id).cloned() {
+            Some(p) => p,
+            // 缓存没命中就现问适配器一次：btleplug 自己保留已发现的设备。
+            // 不能把「再扫一遍」当成重连的前置条件，否则断开后立刻重连就会失败。
+            None => {
+                let found = core
+                    .adapter
+                    .peripherals()
+                    .await
+                    .map_err(|e| format!("查询已发现设备失败: {e}"))?
+                    .into_iter()
+                    .find(|p| format!("{}", p.id()) == device_id)
+                    .ok_or_else(|| format!("设备 {device_id} 未被适配器发现，请重新扫描"))?;
+                core.peripherals.insert(device_id.clone(), found.clone());
+                found
+            }
+        }
     };
     peripheral.connect().await.map_err(|e| format!("连接失败: {e}"))?;
     peripheral

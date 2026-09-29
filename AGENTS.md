@@ -46,7 +46,8 @@
 - plugins/ 目录放入/移除插件后生效 ✅（目录 watcher + 设置窗启停）；单插件异常不崩溃宿主 ✅
 - 有应用全屏时宠物自动隐身并停止动画，退出后恢复 ✅（`npm run verify:game` 15 条）
 - 心率插件可扫描/连接并显示实时 BPM ✅；`todo`、`token` 插件未做
-- 设置窗安装 Qoder hook 后，Agent 的工具调用/等确认/结束/失败能驱动宠物 ✅（`npm run verify:agent` 21 条断言；用真实 Qoder 会话跑通尚未实测）
+- 断开后可直接重连同一设备，不必重新扫描（代码级修复：扫描不再清空句柄缓存，缓存未命中时回落 `adapter.peripherals()`）。**本机无蓝牙硬件，未经真实心率设备验证**
+- 设置窗安装 Qoder hook 后，Agent 的工具调用/等确认/结束/失败能驱动宠物 ✅（`npm run verify:agent` 23 条断言；用真实 Qoder 会话跑通尚未实测，也未往任何用户的 settings.json 装过 hook）
 - 未授权能力调用被拒绝且触发同意框 ✅；SDK 文档 ✅
 - 上述大部分由 `npm run verify` 的运行时断言把守（见「约定」），不是靠人工回归
 
@@ -58,7 +59,7 @@
 - 能力名见 PLUGIN_SDK.md 第 3 节；新增能力时要同时更新桥、Rust 校验与那份表格
 - 共享资源（BLE 会话、overlay 单窗）按插件持有者计数，释放只对真正的持有者生效
 - 插件存储位置：`%APPDATA%/com.desktoppet.pet/plugins/<id>`（插件间隔离，撤销授权会连带清目录）
-- 首批插件目录：`plugins/com.pet.hr-ble`（已做）、`plugins/com.pet.agent-bridge`（已做：只读搭车 petdex 的 `127.0.0.1:7777` 状态端点，把编码 Agent 的会话状态转成宠物反应）、`plugins/todo`、`plugins/llm-token-usage`（暂缓）
-- **验证**：`npm run dev:debug` + `npm run verify`（WebView2 CDP 驱动真实 webview 的回归断言，覆盖隔离、权限、热安装、渲染几何）；`npm run verify:game` 单跑游戏模式（真起一个全屏窗口当触发源）；`npm run verify:agent` 单跑 Agent 桥端到端（脚本自己起一个假的 petdex 状态端点）；`npm run verify:release` 单独验打包版 CSP，每波次收尾手工跑一次（约 3~4 分钟构建）
-- Agent 接入约定：`agent-bridge` 只做**消费方**——读 petdex 的 `GET /state`、`GET /bubble`（读侧不鉴权，写侧才要 token）。不要改绑 7777，也不要往 `~/.qoder*/settings.json` 里抢 hook 槽位，那些是 petdex 的位置；要自建推流得另起端口并另立设计。
+- 首批插件目录：`plugins/com.pet.hr-ble`（已做）、`plugins/com.pet.agent-bridge`（已做：订阅宿主 `agent:state` 把编码 Agent 的会话状态转成宠物反应）、`plugins/todo`、`plugins/llm-token-usage`（暂缓）
+- **验证**：`npm run dev:debug` + `npm run verify`（WebView2 CDP 驱动真实 webview 的回归断言，覆盖隔离、权限、热安装、渲染几何）；`npm run verify:game` 单跑游戏模式（真起一个全屏窗口当触发源）；`npm run verify:agent` 单跑 Agent 桥端到端（脚本直接往 Agent 收件目录写事件，宿主 watcher 负责归一化）；`npm run verify:release` 单独验打包版 CSP，每波次收尾手工跑一次（约 3~4 分钟构建）
+- Agent 接入约定：hook 事件由宿主自己收 —— `--pet-hook <phase>` 分支在建窗之前分流，落成 `agent/inbox/<phase>.jsonl`，watcher 读增量并归一化成会话状态后广播。不读 petdex、不开本地端口。phase 必须命中白名单（它同时是文件名与 CLI 参数）；安装/卸载只按 `--pet-hook` 标记增删自己的条目，不动其他 hook，写配置前先备份且原子落盘。
 - 宿主日志：`%LOCALAPPDATA%\com.desktoppet.pet\logs\host.log`
