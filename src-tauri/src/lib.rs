@@ -2,7 +2,7 @@ mod commands;
 mod services;
 mod window;
 
-use services::{ble::BleState, permission::PermissionState, store::StoreState};
+use services::{ble::BleState, http::HttpState, permission::PermissionState, store::StoreState};
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -31,10 +31,13 @@ pub fn run() {
                 .level(log::LevelFilter::Info)
                 .build(),
         )
+        // 系统通知：只给宿主 Rust 侧调用，插件必须经 notify_show 的授权检查
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             app.manage(StoreState::new());
             app.manage(PermissionState::new());
             app.manage(BleState::new());
+            app.manage(HttpState::new());
             app.state::<StoreState>().init(app.handle())?;
             app.state::<PermissionState>().init(app.handle())?;
             window::pet::setup(app.handle())?;
@@ -55,6 +58,8 @@ pub fn run() {
             services::store::store_get,
             services::store::store_set,
             services::store::store_delete,
+            services::http::http_request,
+            services::notify::notify_show,
             services::permission::permission_check,
             services::permission::permission_request,
             services::permission::consent_details,
