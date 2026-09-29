@@ -1,0 +1,8 @@
+{
+  "id": "com.pet.agent-bridge",
+  "name": "Agent 桥",
+  "version": "0.1.0",
+  "entry": "index.js",
+  "permissions": ["http", "bus:publish", "pet:react", "pet:say"],
+  "description": "只读搭车 petdex 的本地状态端点（127.0.0.1:7777），把编码 Agent 的会话状态变成宠物的动作与台词。不写 petdex 配置、不占用其端口。"
+}

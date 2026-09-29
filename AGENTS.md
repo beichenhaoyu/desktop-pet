@@ -55,6 +55,7 @@
 - 能力名见 PLUGIN_SDK.md 第 3 节；新增能力时要同时更新桥、Rust 校验与那份表格
 - 共享资源（BLE 会话、overlay 单窗）按插件持有者计数，释放只对真正的持有者生效
 - 插件存储位置：`%APPDATA%/com.desktoppet.pet/plugins/<id>`（插件间隔离，撤销授权会连带清目录）
-- 首批插件目录：`plugins/com.pet.hr-ble`（已做）、`plugins/todo`、`plugins/llm-token-usage`（暂缓）
-- **验证**：`npm run dev:debug` + `npm run verify`（WebView2 CDP 驱动真实 webview 的回归断言，覆盖隔离、权限、热安装、渲染几何）；`npm run verify:release` 单独验打包版 CSP，每波次收尾手工跑一次（约 3~4 分钟构建）
+- 首批插件目录：`plugins/com.pet.hr-ble`（已做）、`plugins/com.pet.agent-bridge`（已做：只读搭车 petdex 的 `127.0.0.1:7777` 状态端点，把编码 Agent 的会话状态转成宠物反应）、`plugins/todo`、`plugins/llm-token-usage`（暂缓）
+- **验证**：`npm run dev:debug` + `npm run verify`（WebView2 CDP 驱动真实 webview 的回归断言，覆盖隔离、权限、热安装、渲染几何）；`npm run verify:agent` 单跑 Agent 桥端到端（脚本自己起一个假的 petdex 状态端点）；`npm run verify:release` 单独验打包版 CSP，每波次收尾手工跑一次（约 3~4 分钟构建）
+- Agent 接入约定：`agent-bridge` 只做**消费方**——读 petdex 的 `GET /state`、`GET /bubble`（读侧不鉴权，写侧才要 token）。不要改绑 7777，也不要往 `~/.qoder*/settings.json` 里抢 hook 槽位，那些是 petdex 的位置；要自建推流得另起端口并另立设计。
 - 宿主日志：`%LOCALAPPDATA%\com.desktoppet.pet\logs\host.log`
