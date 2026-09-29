@@ -2,8 +2,15 @@
 // 进程内插件不是硬安全边界，这里是策略层（见 ARCHITECTURE.md 信任模型）。
 import { invoke } from "@tauri-apps/api/core";
 import { bus } from "./event-bus";
+import { PET_ACTIONS, petController, type ActionName } from "../pet/host";
 import { claim, release } from "./resources";
 import { assertPublishable, assertSubscribable } from "./topic-acl";
+
+function requireController() {
+  const controller = petController();
+  if (!controller) throw new Error("宠物本体尚未初始化完成");
+  return controller;
+}
 
 // 插件为普通 JS（第三方交付物），上下文保持宽松类型
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -97,6 +104,24 @@ export function buildContext(manifest: ManifestLike): PluginContext {
       update: gated(manifest, "widget", (data: unknown) =>
         Promise.resolve(bus.publish(`${pid}:widget`, data)),
       ),
+    },
+
+    // 影响宠物本体：插播动作 / 弹台词气泡（本体只暴露这两个受控入口，不给 canvas/DOM）
+    pet: {
+      react: gated(manifest, "pet:react", async (action: unknown) => {
+        if (!PET_ACTIONS.includes(action as ActionName)) {
+          throw new Error(`[${pid}] 未知宠物动作: ${String(action)}`);
+        }
+        requireController().react(action as ActionName);
+      }),
+      say: gated(manifest, "pet:say", async (text: unknown) => {
+        const clean = String(text ?? "")
+          .replace(/\s*\n\s*/g, " ")
+          .trim()
+          .slice(0, 200);
+        if (!clean) throw new Error(`[${pid}] say 需要非文本内容`);
+        requireController().say(clean);
+      }),
     },
 
     overlay: {

@@ -26,8 +26,11 @@ export class PetStateMachine {
   private players: Partial<Record<ActionName, FramePlayer>> = {};
   private current: ActionName = "idle";
   private played = 0;
-  private queued: ActionName | null = null;
+  /** 同级/低级请求的排队，上限 3：超限时丢最旧的，避免插件刷屏把队列变成无限缓冲 */
+  private queue: ActionName[] = [];
   private sinceInteraction = 0;
+
+  private static readonly MAX_QUEUE = 3;
 
   /** 最近一次姿势切换的时间戳（渲染层做 pose-in 弹跳淡入） */
   lastSwitchAt = 0;
@@ -62,17 +65,34 @@ export class PetStateMachine {
     this.players[action] = new FramePlayer(frames, 1);
   }
 
-  /** 请求插播动作：优先级更高则立即打断，同级则排队等当前动作结束 */
+  /** 请求插播动作：优先级更高则立即打断，同级或更低则排队 */
   request(action: ActionName): void {
     this.sinceInteraction = 0;
     const def = this.defs[action];
     if (!def) return;
-    const cur = this.defs[this.current]!;
-    if (def.priority > cur.priority || this.current === "sleep") {
+    if (this.queue.includes(action)) return; // 同一动作不重复排队
+    const cur = this.defs[this.current];
+    if (!cur || def.priority > cur.priority || this.current === "sleep") {
       this.switchTo(action);
-    } else {
-      this.queued = action;
+      return;
     }
+    this.queue.push(action);
+    if (this.queue.length > PetStateMachine.MAX_QUEUE) this.queue.shift();
+  }
+
+  /** 换上一批重新烘焙的帧（DPI 变化用），保持当前动作 */
+  setSprites(sprites: SpriteSet): void {
+    const keep: ActionName = this.players[this.current] ? this.current : "idle";
+    const played = this.played;
+    this.players = {};
+    for (const action of Object.keys(this.defs) as ActionName[]) {
+      const frames = sprites[action];
+      if (frames && frames.length > 0) this.players[action] = new FramePlayer(frames, 1);
+    }
+    if (!this.players[keep]) this.current = "idle";
+    else this.current = keep;
+    this.played = played;
+    this.players[this.current]?.reset();
   }
 
   /**
@@ -107,6 +127,11 @@ export class PetStateMachine {
     return this.current;
   }
 
+  /** 当前排队等待插播的动作数（诊断与回归断言用） */
+  get queuedCount(): number {
+    return this.queue.length;
+  }
+
   update(dt: number): void {
     this.played += dt;
     this.sinceInteraction += dt;
@@ -127,12 +152,12 @@ export class PetStateMachine {
     if (this.played >= def.duration) {
       let next: ActionName;
       if (this.current === "idle") {
-        // idle 循环：随机切「好奇」小动作，或继续待机
+        // 先排空插件请求，再随机切「好奇」小动作
         next =
-          Math.random() < CURIOUS_CHANCE && this.players.curious ? "curious" : "idle";
+          this.queue.shift() ??
+          (Math.random() < CURIOUS_CHANCE && this.players.curious ? "curious" : "idle");
       } else {
-        next = this.queued ?? def.next ?? "idle";
-        this.queued = null;
+        next = this.queue.shift() ?? def.next ?? "idle";
       }
       this.switchTo(next);
     }
