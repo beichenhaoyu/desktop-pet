@@ -12,6 +12,18 @@
         <p class="hint">启停即时生效；未授权能力首次调用时会弹出确认框</p>
       </header>
       <main id="plugin-list"></main>
+      <section id="game-mode" class="agent-box">
+        <h2>游戏模式</h2>
+        <label class="agent-row">
+          <input type="checkbox" id="game-mode-switch" class="switch" />
+          有应用全屏时自动隐身
+        </label>
+        <p class="hint" id="game-mode-status"></p>
+        <p class="hint">
+          隐身只收起宠物窗：动画、点击穿透轮询与自言自语一并停掉，插件的功能（蓝牙、事件、存储）照常运行。
+          关掉这个开关就不再轮询前台窗口。
+        </p>
+      </section>
       <section id="agent-hook" class="agent-box">
         <h2>Agent 事件接入</h2>
         <p class="hint" id="agent-status">正在读取状态…</p>

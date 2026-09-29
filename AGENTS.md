@@ -5,7 +5,7 @@
 ## 当前状态
 
 - **阶段**：框架与插件运行时已落地并有运行时回归（2026-09-29）。
-- **已完成**：宠物窗（鲸鱼娘立绘 + 状态机 + 呼吸/轻摆渲染层 + 点击穿透）、插件运行时、Rust 能力服务（ble / store / http / notify / 权限同意框 / Agent hook 收件）、设置窗、透明 overlay 悬浮窗、心率蓝牙与 Agent 桥两个示例插件。
+- **已完成**：宠物窗（鲸鱼娘立绘 + 状态机 + 呼吸/轻摆渲染层 + 点击穿透）、插件运行时、Rust 能力服务（ble / store / http / notify / 权限同意框 / Agent hook 收件）、设置窗（含 Agent hook 安装与游戏模式开关）、透明 overlay 悬浮窗、心率蓝牙与 Agent 桥两个示例插件。
 - **未完成**：`todo` 与 `llm-token-usage` 两个示例插件（用户已明确暂缓）。
 - 完整设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；插件作者文档见 [PLUGIN_SDK.md](PLUGIN_SDK.md)。
 
@@ -44,6 +44,7 @@
 
 - `npm run tauri dev` 启动：透明置顶宠物显示并播放 idle 动画，可拖拽，托盘可用 ✅
 - plugins/ 目录放入/移除插件后生效 ✅（目录 watcher + 设置窗启停）；单插件异常不崩溃宿主 ✅
+- 有应用全屏时宠物自动隐身并停止动画，退出后恢复 ✅（`npm run verify:game` 15 条）
 - 心率插件可扫描/连接并显示实时 BPM ✅；`todo`、`token` 插件未做
 - 设置窗安装 Qoder hook 后，Agent 的工具调用/等确认/结束/失败能驱动宠物 ✅（`npm run verify:agent` 21 条断言；用真实 Qoder 会话跑通尚未实测）
 - 未授权能力调用被拒绝且触发同意框 ✅；SDK 文档 ✅
@@ -52,11 +53,12 @@
 ## 约定
 
 - 标准事件 topic：`ble:heart-rate`、`agent:state`（`running｜needs_input｜completed｜idle`，只在变化时广播）、`agent:event`（细粒度 hook 事件，含 phase 与 toolName）、`llm:token-usage`、`todo:changed`
+- 宿主窗口事件（不是总线 topic，插件收不到）：`host:fullscreen`（`{active,title}`，最近 3 次采样的多数票）
 - topic 归属：`<插件id>:` 前缀归该插件。插件只能**发布**自己前缀；订阅他人/宿主 topic 需声明 `bus:subscribe`，且**不允许通配**越过自己的前缀
 - 能力名见 PLUGIN_SDK.md 第 3 节；新增能力时要同时更新桥、Rust 校验与那份表格
 - 共享资源（BLE 会话、overlay 单窗）按插件持有者计数，释放只对真正的持有者生效
 - 插件存储位置：`%APPDATA%/com.desktoppet.pet/plugins/<id>`（插件间隔离，撤销授权会连带清目录）
 - 首批插件目录：`plugins/com.pet.hr-ble`（已做）、`plugins/com.pet.agent-bridge`（已做：只读搭车 petdex 的 `127.0.0.1:7777` 状态端点，把编码 Agent 的会话状态转成宠物反应）、`plugins/todo`、`plugins/llm-token-usage`（暂缓）
-- **验证**：`npm run dev:debug` + `npm run verify`（WebView2 CDP 驱动真实 webview 的回归断言，覆盖隔离、权限、热安装、渲染几何）；`npm run verify:agent` 单跑 Agent 桥端到端（脚本自己起一个假的 petdex 状态端点）；`npm run verify:release` 单独验打包版 CSP，每波次收尾手工跑一次（约 3~4 分钟构建）
+- **验证**：`npm run dev:debug` + `npm run verify`（WebView2 CDP 驱动真实 webview 的回归断言，覆盖隔离、权限、热安装、渲染几何）；`npm run verify:game` 单跑游戏模式（真起一个全屏窗口当触发源）；`npm run verify:agent` 单跑 Agent 桥端到端（脚本自己起一个假的 petdex 状态端点）；`npm run verify:release` 单独验打包版 CSP，每波次收尾手工跑一次（约 3~4 分钟构建）
 - Agent 接入约定：`agent-bridge` 只做**消费方**——读 petdex 的 `GET /state`、`GET /bubble`（读侧不鉴权，写侧才要 token）。不要改绑 7777，也不要往 `~/.qoder*/settings.json` 里抢 hook 槽位，那些是 petdex 的位置；要自建推流得另起端口并另立设计。
 - 宿主日志：`%LOCALAPPDATA%\com.desktoppet.pet\logs\host.log`
