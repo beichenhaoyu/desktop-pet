@@ -164,20 +164,20 @@ export function buildContext(manifest: ManifestLike): PluginContext {
     },
 
     overlay: {
-      // 共享单窗：位置由第一个显示它的人定，后来者只是「确保可见」
+      // 每个插件一扇自己的悬浮窗（标签 overlay-<id>）：位置、高度、显隐互不影响，
+      // 不再是谁先 show 谁定这扇窗
       show: gated(manifest, "overlay", async (options: { placement?: string; height?: number } = {}) => {
-        claim("overlay", pid);
         await invoke("overlay_show", {
+          pluginId: pid,
           placement: options.placement ?? null,
           height: options.height ?? null,
         });
       }),
       hide: gated(manifest, "overlay", async () => {
-        // overlay 是全插件共享的单窗，只有最后一个持有者退出才收掉
-        if (release("overlay", pid)) await invoke("overlay_hide");
+        await invoke("overlay_hide", { pluginId: pid });
       }),
       destroy: gated(manifest, "overlay", async () => {
-        if (release("overlay", pid)) await invoke("overlay_destroy");
+        await invoke("overlay_destroy", { pluginId: pid });
       }),
     },
   };

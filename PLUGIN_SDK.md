@@ -54,7 +54,7 @@ export async function deactivate() { /* 停用/移除时调用 */ }
 | `ble:scan` | `ctx.ble.startScan/stopScan` | 蓝牙扫描 |
 | `ble:connect` | `ctx.ble.connect/disconnect/connectedDevice` | 连接与订阅通知 |
 | `widget` | `ctx.widget.update` | 向自己的 widget 推数据（走 `<id>:widget` topic） |
-| `overlay` | `ctx.overlay.show(opts?)` / `hide` / `destroy` | 共享的透明悬浮窗。`show({ placement: "above-pet", height: 104 })` 让它贴着宠物头顶并跟随拖动；不传就是桌面左上角 |
+| `overlay` | `ctx.overlay.show(opts?)` / `hide` / `destroy` | **本插件专属**的透明悬浮窗（窗口标签 `overlay-<你的 id>`）。`show({ placement: "above-pet", height: 104 })` 让它贴着宠物头顶并跟随拖动；不传就是桌面左上角 |
 | `http` | `ctx.http.request` | 出站请求，**按域名逐个再授权**（`http:<host>`） |
 | `notify` | `ctx.notify.show` | 系统通知 |
 | `pet:react` | `ctx.pet.react` | 让宠物插播一个状态，参数只能是 petdex 的九个状态之一：`idle` `running-right` `running-left` `waving` `jumping` `failed` `waiting` `running` `review`（其余名字会被桥拒绝） |
@@ -118,11 +118,11 @@ export function unmount(root) { /* 用 root 找回自己那份清理表 */ }
 
 ## 6. 共享资源
 
-BLE 会话与 overlay 悬浮层是**全插件共享**的单一资源。宿主按插件记账：`ctx.ble.disconnect()` / `ctx.overlay.hide()` 只在"你是最后一个持有者"时才真正释放；停用某个插件也不会掐断别的插件正在用的会话。所以你可以放心调用清理，不必担心误伤。
+BLE 会话与扫描是**全插件共享**的单一资源。宿主按插件记账：`ctx.ble.disconnect()` 只在"你是最后一个持有者"时才真正释放；停用某个插件也不会掐断别的插件正在用的会话。所以你可以放心调用清理，不必担心误伤。overlay 悬浮窗**不共享**：宿主按插件各开一扇（`overlay-<id>`），`hide()` / `destroy()` 只影响你自己那扇。
 
 宠物被游戏模式隐身时，宿主会把 overlay 一起收掉（你不需要处理），恢复显示时按你当时的意愿重新显示 —— 也就是说 `hide()` 过就不会再出现。
 
-overlay 的**摆放与尺寸由第一个 `show()` 的人决定**：窗口已经开着时，后来的 `show()` 只保证它可见，不会改位置或高度（否则后启用的插件会把别人的内容拽走、或者压扁）。想要不同摆放方式，就先 `destroy()` 再按自己的参数 `show()` —— 但那会收掉别人正在用的悬浮层，所以除非你确认没人用，别这么干。
+overlay 的**摆放与尺寸属于你自己那扇窗**：`show()` 传什么就按什么建，窗口已存在时再 `show()` 会按新参数调整高度与摆放方式，不会影响别的插件的悬浮层。插件停用时宿主会 `destroy` 掉它的悬浮窗，你不需要自己收尾（`deactivate()` 里调 `destroy()` 也无害）。
 
 ## 7. 调试
 

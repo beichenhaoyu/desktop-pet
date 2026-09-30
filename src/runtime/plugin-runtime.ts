@@ -117,7 +117,8 @@ export async function deactivatePlugin(pluginId: string): Promise<void> {
   try {
     if (freed.ble) await invoke("ble_disconnect");
     if (freed["ble-scan"]) await invoke("ble_stop_scan");
-    if (freed.overlay) await invoke("overlay_hide");
+    // 悬浮窗是这个插件为自己开的，它停了就整扇收掉，不涉及别的插件
+    await invoke("overlay_destroy", { pluginId });
   } catch (err) {
     reportError(pluginId, err);
   }

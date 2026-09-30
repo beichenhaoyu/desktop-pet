@@ -137,6 +137,16 @@ try {
   await c.ev(`window.__verifyToken = ${JSON.stringify(token)}; true`);
   pumpDone = consentPump.run(600_000); // 应答窗口必须比整轮长：宿主对同意框有 60 秒超时即视为拒绝 // 宿主对同意框有 60 秒超时即视为拒绝，应答窗口必须比整轮测试更长
 
+  /** 本插件那扇悬浮窗：标签 overlay-<id>，但 Tauri 不允许点号，id 里的点被换成 `-`
+   *  （与 Rust 的 overlay_label 同式）；标题带原 id，用来在 CDP 里认出是哪一扇 */
+  const overlayLabelFor = (id) => `overlay-${id.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+  const OVERLAY_LABEL = overlayLabelFor(AGENT_ID);
+  const OVERLAY_TITLE = `DesktopPet Overlay · ${AGENT_ID}`;
+  const findOverlayTarget = async () =>
+    (await listPages(PORT).catch(() => [])).find(
+      (t) => /overlay\.html/.test(t.url) && t.title === OVERLAY_TITLE,
+    );
+
   /**
    * overlay 窗里是否挂上了本插件的容器。
    * widget 渲染在 closed Shadow DOM 里，外部选择器穿不进去（那是隔离设计的一部分），
@@ -145,7 +155,7 @@ try {
   async function overlayMounted(timeoutMs = 15_000) {
     const until = Date.now() + timeoutMs;
     while (Date.now() < until) {
-      const target = (await listPages(PORT).catch(() => [])).find((t) => /overlay\.html/.test(t.url));
+      const target = await findOverlayTarget();
       if (target) {
         const oc = await attach(
           PORT,
@@ -170,7 +180,7 @@ try {
 
   /** 在 overlay 窗里跑一段求值；窗不存在返回 null */
   async function withOverlayPage(fn) {
-    const target = (await listPages(PORT).catch(() => [])).find((t) => /overlay\.html/.test(t.url));
+    const target = await findOverlayTarget();
     if (!target) return null;
     const oc = await attach(
       PORT,
@@ -188,7 +198,7 @@ try {
   async function overlayVisible(want, timeoutMs = 15_000) {
     const until = Date.now() + timeoutMs;
     while (Date.now() < until) {
-      const v = await invoke("plugin:window|is_visible", { label: "overlay" });
+      const v = await invoke("plugin:window|is_visible", { label: OVERLAY_LABEL });
       if (v.ok && v.v === want) return true;
       await sleep(500);
     }
@@ -355,6 +365,35 @@ try {
   );
   r.check("会话进行中悬浮卡可见", true, await overlayVisible(true));
   r.check("卡片 widget 挂进 overlay 区", true, await overlayMounted());
+
+  r.group("两扇悬浮窗互不抢占：左上角波形与头顶卡片可以同时存在");
+  const HR_ID = "com.pet.hr-ble";
+  const HR_LABEL = overlayLabelFor(HR_ID);
+  // 直接打宿主命令：验的是「窗口按插件分开」这条宿主规则本身，不依赖蓝牙硬件
+  await invoke("overlay_show", { pluginId: HR_ID, placement: "corner", height: 200 });
+  r.check(
+    "两张卡片同时可见",
+    true,
+    await waitUntil(
+      c,
+      `(async () => {
+        const l = await window.__TAURI_INTERNALS__.invoke('overlay_list');
+        const on = (id) => l.some(([p, v]) => p === id && v);
+        return on(${JSON.stringify(AGENT_ID)}) && on(${JSON.stringify(HR_ID)});
+      })()`,
+      12_000,
+    ),
+  );
+  const posAgent = await invoke("plugin:window|outer_position", { label: OVERLAY_LABEL });
+  const posHr = await invoke("plugin:window|outer_position", { label: HR_LABEL });
+  r.check("心率那扇留在桌面左上角", true, (posHr.v?.x ?? 1e9) < 150 && (posHr.v?.y ?? 1e9) < 150);
+  r.check(
+    "两扇窗的位置不是同一个点",
+    true,
+    JSON.stringify(posAgent.v) !== JSON.stringify(posHr.v),
+  );
+  await invoke("overlay_destroy", { pluginId: HR_ID });
+  r.check("销毁只收掉那一扇，状态卡不受影响", true, await overlayVisible(true, 8_000));
   // 位置用 window.screenX/outerHeight 比较：两个窗都在同一 DPI 下，且不需要额外 capability
   const petGeo = await c.ev(`[window.screenX, window.screenY, window.outerWidth, window.outerHeight]`);
   const cardGeo = await withOverlayPage((oc) => oc.ev(`[window.screenX, window.screenY, window.outerWidth, window.outerHeight]`));

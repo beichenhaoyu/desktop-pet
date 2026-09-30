@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "宿主各窗口能力：核心默认集 + 拖拽窗口 + 点击穿透（含穿透期间的光标轮询）",
-  "windows": ["pet", "overlay", "settings", "consent-*"],
+  "windows": ["pet", "overlay-*", "settings", "consent-*"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",

@@ -80,6 +80,8 @@ pub fn run() {
             window::overlay::overlay_show,
             window::overlay::overlay_hide,
             window::overlay::overlay_destroy,
+            window::overlay::overlay_list,
+            window::overlay::overlay_owner,
             commands::plugins::plugins_list,
             commands::agent::agent_hooks_status,
             commands::agent::agent_hooks_install,

@@ -1,12 +1,12 @@
 // 宿主级共享资源的持有者登记。
-// 多个插件跑在同一个窗口、共用同一份 Rust 侧状态（一条 BLE 连接、一个 overlay 窗），
+// 多个插件跑在同一个窗口、共用同一份 Rust 侧状态（同一条 BLE 连接、同一次扫描），
 // 因此任何一方停用时都不能无脑关资源 —— 只有最后一个持有者退出才真正释放。
-export type SharedResource = "ble" | "ble-scan" | "overlay";
+// overlay 不在这里：悬浮窗按插件各开一扇（overlay-<id>），本来就互不共享。
+export type SharedResource = "ble" | "ble-scan";
 
 const holders = new Map<SharedResource, Set<string>>([
   ["ble", new Set()],
   ["ble-scan", new Set()],
-  ["overlay", new Set()],
 ]);
 
 export function claim(kind: SharedResource, pluginId: string): void {
@@ -24,11 +24,10 @@ export function release(kind: SharedResource, pluginId: string): boolean {
   return set.size === 0;
 }
 
-/** 插件停用时一次性释放它占过的所有资源 */
+/** 插件停用时一次性释放它占过的所有共享资源 */
 export function releaseAll(pluginId: string): Record<SharedResource, boolean> {
   return {
     ble: release("ble", pluginId),
     "ble-scan": release("ble-scan", pluginId),
-    overlay: release("overlay", pluginId),
   };
 }
