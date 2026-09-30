@@ -186,14 +186,25 @@ fn backup_once(path: &Path) -> std::io::Result<()> {
     fs::copy(path, &bak).map(|_| ())
 }
 
-/// 原子写：先落同目录临时文件再 rename，避免写一半被打断留下坏配置
+/// 原子写：先落同目录临时文件再 rename，避免写一半被打断留下坏配置。
+/// 临时名必须带 pid —— 固定名会让两个来源同时安装时互相覆盖：
+/// 一方还在写 `settings.json.tmp`，另一方已经把同名文件 rename 走了。
 fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
-    let tmp = path.with_file_name(format!(
-        "{}.tmp",
-        path.file_name().and_then(|s| s.to_str()).unwrap_or("settings.json")
-    ));
-    fs::write(&tmp, text).map_err(|e| format!("写入临时文件失败: {e}"))?;
-    fs::rename(&tmp, path).map_err(|e| format!("替换配置文件失败: {e}"))
+    let base = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("settings.json");
+    let tmp = path.with_file_name(format!("{base}.{}.tmp", std::process::id()));
+    if let Err(e) = fs::write(&tmp, text) {
+        return Err(format!("写入临时文件失败: {e}"));
+    }
+    match fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = fs::remove_file(&tmp);
+            Err(format!("替换配置文件失败: {e}"))
+        }
+    }
 }
 
 /// 读原文；文件不存在返回 Ok(None)

@@ -69,10 +69,20 @@ export async function attach(port, match, timeoutMs = 90_000) {
     }
   };
 
-  const send = (method, params = {}) =>
-    new Promise((res) => {
+  const send = (method, params = {}, timeoutMs = 20_000) =>
+    new Promise((res, rej) => {
       const id = ++seq;
-      pending.set(id, res);
+      // 必须有超时：调试端点一旦失去响应（窗口反复建销、客户端堆积），
+      // 没有超时的话整条断言链会永久挂住，看起来像「构建/测试偶发失败」，
+      // 实际上没有任何输出线索。
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        rej(new Error(`CDP ${method} 超时 ${timeoutMs}ms（调试端点可能已失去响应，重启 dev 实例再试）`));
+      }, timeoutMs);
+      pending.set(id, (msg) => {
+        clearTimeout(timer);
+        res(msg);
+      });
       ws.send(JSON.stringify({ id, method, params }));
     });
 

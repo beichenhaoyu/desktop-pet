@@ -1,8 +1,17 @@
 {
   "id": "com.pet.agent-bridge",
   "name": "Agent 桥",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "entry": "index.js",
-  "permissions": ["bus:publish", "bus:subscribe", "pet:react", "pet:say"],
-  "description": "把编码 Agent 的会话状态映射成宠物反应。数据来自宿主广播的 agent:state / agent:event（由设置窗安装的 Qoder hook 采集），本插件不碰 hook 配置也不发网络请求。"
+  "widget": "widget.js",
+  "permissions": [
+    "bus:publish",
+    "bus:subscribe",
+    "storage",
+    "widget",
+    "overlay",
+    "pet:react",
+    "pet:say"
+  ],
+  "description": "把编码 Agent 的会话状态映射成 petdex 九状态、台词与桌面状态卡。事件来自设置窗安装的 Qoder hook；会话标题与命令摘要默认不显示。"
 }

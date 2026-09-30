@@ -378,7 +378,7 @@ try {
   r.group("渲染几何与帧烘焙（#17 / #20）");
   const geo = await c.ev(`(async () => {
     const s = await import('/src/pet/sprites.ts');
-    const set = await s.loadSpriteSet();
+    const set = await s.loadSpriteSet(''); // 没有皮肤时的兜底路径：帧仍按 dpr 烘焙
     const style = getComputedStyle(document.documentElement);
     const num = (v) => parseInt(style.getPropertyValue(v) || '0', 10);
     return {
@@ -388,7 +388,7 @@ try {
       petSize: num('--pet-size'),
       badgeBottom: num('--pet-badge-bottom'),
       bubbleBottom: num('--pet-bubble-bottom'),
-      walkLoaded: !!set.walk,
+      fallbackKeys: Object.keys(set).sort(),
       innerH: window.innerHeight,
     };
   })()`);
@@ -396,36 +396,113 @@ try {
   // 本机 dpr 可能是 1，上一条退化成 360=360；强制 2× 才真正验证烘焙机制
   const forced = await c.ev(`(async () => {
     const s = await import('/src/pet/sprites.ts');
-    const set = await s.loadSpriteSet(2);
+    const set = await s.loadSpriteSet('', 2);
     return set.idle?.[0]?.width ?? 0;
   })()`);
   r.check("强制 2× 时帧边长翻倍（高分屏不再糊）", geo.frameSize * 2, forced);
+  r.check("兜底只提供 idle，不再伪造其余状态", ["idle"], geo.fallbackKeys);
   r.check("立绘尺寸由 JS 写入 CSS 变量", true, geo.petSize > 0);
   r.check("徽标位置跟随立绘几何而非各自硬编", true, geo.badgeBottom > 0 && geo.badgeBottom < geo.innerH);
   r.check("气泡位置同理", true, geo.bubbleBottom > 0 && geo.bubbleBottom <= geo.innerH);
-  r.check("未注册的 walk 不再白白解码 192KB", false, geo.walkLoaded);
 
-  r.group("状态机优先级与排队上限（#19）");
+  r.group("petdex 图集几何与九状态切片");
+  const slice = await c.ev(`(async () => {
+    const s = await import('/src/pet/sprites.ts');
+    const { PET_STATES, detectSpriteAtlas } = await import('/src/pet/petdex-states.ts');
+    const mk = (w, h) => { const cv = document.createElement('canvas'); cv.width = w; cv.height = h; return cv; };
+    // 每格填一种唯一颜色：r 通道=行号，g 通道=列号×30，取中心像素即可反查它来自哪一格
+    const paint = (w, h, rows) => {
+      const atlas = mk(w, h);
+      const g = atlas.getContext('2d');
+      for (let r = 0; r < rows; r++) for (let col = 0; col < 8; col++) {
+        g.fillStyle = 'rgb(' + r + ',' + (col * 30) + ',0)';
+        g.fillRect(col * (w / 8), r * (h / rows), w / 8, h / rows);
+      }
+      return atlas;
+    };
+    const center = (cv) => { const p = cv.getContext('2d').getImageData(Math.round(cv.width / 2), Math.round(cv.height / 2), 1, 1).data; return [p[0], p[1], p[2]]; };
+    const v1 = paint(1536, 1872, 9);
+    const v2 = paint(1536, 2288, 11);
+    const set = s.sliceAtlas(v1);
+    const counts = {};
+    for (const st of PET_STATES) counts[st.id] = set[st.id]?.length ?? 0;
+    const probe = { idle2: center(set.idle[2]), review0: center(set.review[0]), failed7: center(set.failed[7]) };
+    const set2 = s.sliceAtlas(v2);
+    return {
+      counts,
+      probe,
+      v1: detectSpriteAtlas(1536, 1872),
+      v2: detectSpriteAtlas(1536, 2288),
+      preview: detectSpriteAtlas(1152, 208),
+      odd: detectSpriteAtlas(1500, 1872),
+      v2States: PET_STATES.every((st) => (set2[st.id]?.length ?? 0) === st.frames),
+      v2FrameW: set2.idle[0].width,
+    };
+  })()`);
+  r.check(
+    "九个状态各取到自己那一行的帧数",
+    JSON.stringify({ idle: 6, "running-right": 8, "running-left": 8, waving: 4, jumping: 5, failed: 8, waiting: 6, running: 6, review: 6 }),
+    JSON.stringify(slice.counts),
+  );
+  r.check("idle 第 3 帧取自第 0 行第 2 列", "0,60,0", slice.probe.idle2.join(","));
+  r.check("review 取自第 8 行", "8,0,0", slice.probe.review0.join(","));
+  r.check("failed 第 8 帧取自第 5 行第 7 列", "5,210,0", slice.probe.failed7.join(","));
+  r.check("v1 图集识别为 8×9", JSON.stringify({ version: 1, rows: 9, width: 1536, height: 1872, scale: 1 }), JSON.stringify(slice.v1));
+  r.check("v2 图集识别为 8×11 且只切前九个状态行", true, slice.v2.version === 2 && slice.v2.rows === 11 && slice.v2States);
+  r.check("画廊里的 preview.webp（单行 1152×208）不算图集", null, slice.preview);
+  r.check("列边界不是整数的图不认", null, slice.odd);
+
+  r.group("状态机优先级与排队上限（#19，词表 = petdex 九状态）");
   const sm = await c.ev(`(async () => {
     const { PetStateMachine } = await import('/src/pet/state-machine.ts');
+    const { PET_ACTIONS } = await import('/src/pet/host.ts');
     const mk = () => { const cv = document.createElement('canvas'); cv.width = 1; cv.height = 1; return cv; };
     const sprites = {};
-    for (const a of ['idle','greet','curious','sleep','teasing','blush','angry','react']) sprites[a] = [mk()];
+    for (const a of PET_ACTIONS) sprites[a] = [mk(), mk()];
     const a = new PetStateMachine(sprites);
-    a.request('teasing');
+    a.request('jumping');
     const b = new PetStateMachine(sprites);
-    b.request('curious'); b.request('curious'); b.request('curious');
+    b.request('jumping');
+    for (const act of ['review','review','review']) b.request(act);
     const c2 = new PetStateMachine(sprites);
-    for (const act of ['curious','greet','blush','angry','react','idle','idle']) c2.request(act);
+    c2.request('jumping');
+    for (const act of ['review','running','waving','failed']) c2.request(act);
     const capped = c2.queuedCount; // 必须在排空之前取，否则读到的是排空后的 0
     const seq = [];
-    for (let i = 0; i < 80; i++) { c2.update(0.1); if (seq[seq.length - 1] !== c2.action) seq.push(c2.action); }
-    return { interrupted: a.action, dedup: b.queuedCount, capped, seq };
+    for (let i = 0; i < 40; i++) { c2.update(0.1); if (seq[seq.length - 1] !== c2.action) seq.push(c2.action); }
+    // waiting 承担原来的「长时间无交互」位：进入后只被交互打断，不被计时打断
+    const w = new PetStateMachine(sprites);
+    w.request('waiting');
+    let stuck = true;
+    for (let i = 0; i < 200; i++) { w.update(0.1); if (w.action !== 'waiting') stuck = false; }
+    const woke = w.poke('head');
+    // 可持续状态（running）重复请求只续期，不该排队
+    const d = new PetStateMachine(sprites);
+    d.request('running'); d.request('running'); d.request('running');
+    return {
+      actions: PET_ACTIONS.slice().sort(),
+      interrupted: a.action,
+      dedup: b.queuedCount,
+      capped,
+      seq,
+      stuck,
+      woke,
+      renewQueued: d.queuedCount,
+      renewAction: d.action,
+    };
   })()`);
-  r.check("高优先级请求立即打断当前动作", "teasing", sm.interrupted);
-  r.check("同一动作重复请求不叠加排队", 1, sm.dedup);
+  r.check(
+    "插件可用状态就是 petdex 的九个状态",
+    '["failed","idle","jumping","review","running","running-left","running-right","waiting","waving"]',
+    JSON.stringify(sm.actions),
+  );
+  r.check("高优先级请求立即打断当前动作", "jumping", sm.interrupted);
+  r.check("同一状态重复请求不叠加排队", 1, sm.dedup);
   r.check("队列有上限，不会无限缓冲", true, sm.capped > 0 && sm.capped <= 3);
-  r.check("排队动作会被逐个排空", true, sm.seq.includes("angry") && sm.seq.includes("react"));
+  r.check("排队状态会被逐个排空", true, sm.seq.includes("running"));
+  r.check("waiting 不被计时打断", true, sm.stuck);
+  r.check("交互把 waiting 唤醒成 waving", "waving", sm.woke);
+  r.check("可持续状态重复请求只续期不排队", 0, sm.renewQueued);
 
   r.group("点击穿透判定（#16，注入假光标，不依赖真实鼠标）");
   const ct = await c.ev(`(async () => {

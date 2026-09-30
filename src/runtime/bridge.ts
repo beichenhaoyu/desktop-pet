@@ -164,9 +164,13 @@ export function buildContext(manifest: ManifestLike): PluginContext {
     },
 
     overlay: {
-      show: gated(manifest, "overlay", async () => {
+      // 共享单窗：位置由第一个显示它的人定，后来者只是「确保可见」
+      show: gated(manifest, "overlay", async (options: { placement?: string; height?: number } = {}) => {
         claim("overlay", pid);
-        await invoke("overlay_show");
+        await invoke("overlay_show", {
+          placement: options.placement ?? null,
+          height: options.height ?? null,
+        });
       }),
       hide: gated(manifest, "overlay", async () => {
         // overlay 是全插件共享的单窗，只有最后一个持有者退出才收掉

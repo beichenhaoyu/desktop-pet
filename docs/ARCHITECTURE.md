@@ -6,7 +6,7 @@
 
 搭建一个**插件驱动**的 Windows 桌面宠物框架（当前阶段只做框架 + 示例插件）：
 
-- 宠物本体：透明置顶窗口 + 2D 序列帧动画 + 状态机
+- 宠物本体：透明置顶窗口 + 2D 序列帧动画（Petdex 图集，九状态）+ 状态机
 - 一切功能由插件提供，首批三个示例：心率蓝牙广播、大模型 token 用量、待办事项
 - 面向第三方开放：manifest + 权限声明 + 能力受控 API + SDK 文档
 
@@ -16,7 +16,7 @@
 |---|---|---|
 | 宿主框架 | Tauri 2（Rust） | 体积小、原生窗口/托盘能力完整 |
 | 前端 | TypeScript + Vite（不引入重框架） | 宠物 Canvas 渲染 + 插件 widget 用 Shadow DOM 宿主，vanilla 即可 |
-| 宠物渲染 | Canvas2D 序列帧 + 状态机 | 无需 PixiJS，先内置程序生成的占位帧 |
+| 宠物形象/渲染 | Canvas2D 序列帧 + 状态机，图集来自 Petdex 公开画廊（运行时下载） | 无需 PixiJS；九状态词表与图集规格照搬 petdex，仓库不内置美术，只在图集不可用时退回程序生成的 idle 帧 |
 | BLE | Rust `btleplug`（WinRT 后端） | 支持广播监听 + GATT 连接，覆盖"心率蓝牙广播"两种模式 |
 | 插件形态 | WebView 内 ES Module（进程内） | 第三方门槛最低；Rust 动态库无稳定 ABI，不适合开放生态 |
 
@@ -26,7 +26,7 @@
 
 ```
 ┌────────────────────────── WebView (前端) ──────────────────────────┐
-│  宠物渲染层 (Canvas 状态机: idle/walk/sleep/react + 动画优先级队列)   │
+│  宠物渲染层 (Canvas 状态机: petdex 九状态 + 动画优先级队列)            │
 │  Widget 宿主 (气泡/面板插槽, 每插件一个 Shadow DOM 容器)             │
 │  插件运行时: manifest 扫描 → 动态 import → 生命周期管理              │
 │  事件总线 (命名空间 topic: "plugin-id:topic")                       │
@@ -36,9 +36,10 @@
 │  窗口管理 (透明/置顶/点击穿透/拖拽)  托盘  单实例  自启               │
 │  原生能力服务:                                                      │
 │   · ble      btleplug 广播监听 (ManufacturerData) + GATT 0x180D/2A37│
-│   · store    插件隔离 JSON 存储 (%APPDATA%/DesktopPet/plugins/<id>) │
+│   · store    插件隔离存储 (%APPDATA%/com.desktoppet.pet/plugins/<id>) │
 │   · http     受控 HTTP 代理 (白名单域名, 避免 CORS/暴露密钥)         │
 │   · notify   系统通知                                               │
+│   · skins    Petdex 图集解析下载 + petskin:// 协议                   │
 │  权限管理 (授权记录 + 同意对话框)                                    │
 └────────────────────────────────────────────────────────────────────┘
 ```
@@ -50,26 +51,25 @@
 ├── src-tauri/
 │   ├── src/
 │   │   ├── lib.rs / main.rs
-│   │   ├── commands/        # IPC 命令: ble_*, store_*, http_proxy, notify
-│   │   ├── services/{ble.rs, store.rs, http.rs, permission.rs}
+│   │   ├── commands/        # IPC 命令: ble_*, store_*, http_proxy, notify, pet_skin_*
+│   │   ├── services/{ble.rs, store.rs, http.rs, permission.rs, skins.rs}
 │   │   └── window/{pet.rs, tray.rs}
 │   └── tauri.conf.json      # 透明置顶窗配置
 ├── src/
-│   ├── pet/                 # 序列帧播放器 + 状态机 + 事件触发动作
+│   ├── pet/                 # Petdex 图集切片与九状态规格 + 播放器 + 状态机 + 皮肤解析
 │   ├── runtime/
 │   │   ├── plugin-runtime.ts   # 发现/加载/启停/卸载
 │   │   ├── bridge.ts           # 面向插件的 PetAPI（能力校验在此）
 │   │   ├── event-bus.ts
 │   │   └── widget-host.ts      # Shadow DOM 插槽
-│   ├── settings/            # 设置窗: 插件开关、权限管理
+│   ├── settings/            # 设置窗: 插件开关、权限管理、桌宠形象安装
 │   └── main.ts
 ├── plugins/                 # 运行时插件目录（每个: manifest.json + index.js）
-│   ├── todo/
-│   ├── heart-rate-ble/
-│   └── llm-token-usage/
+│   ├── com.pet.hr-ble/
+│   └── com.pet.agent-bridge/
 ├── docs/
-│   ├── ARCHITECTURE.md      # 本架构文档
-│   └── PLUGIN_SDK.md        # 插件开发指南（实施阶段编写）
+│   └── ARCHITECTURE.md      # 本架构文档
+├── PLUGIN_SDK.md            # 插件开发指南
 ├── AGENTS.md
 └── package.json
 ```
@@ -97,7 +97,7 @@ export default {
   async activate(ctx: PluginContext) {        // ctx 能力按 permissions 裁剪
     ctx.bus.subscribe('ble:heart-rate', e => ctx.widget.update(e));
     const stop = await ctx.ble.watchHeartRate({ mode: 'advertisement+gatt' });
-    ctx.pet.react({ emotion: 'surprised', duration: 2000 });  // 心率飙升时
+    ctx.pet.react('jumping');   // 参数只能是 petdex 九状态之一（心率飙升时）
   },
   async deactivate() { /* 释放订阅/连接 */ }
 }
@@ -107,7 +107,7 @@ export default {
 
 **4. Widget 贡献**：插件注册 widget 到宿主插槽（宠物旁气泡/侧面板），运行在各自 Shadow DOM 中，宿主控制布局与样式隔离；托盘菜单项为另一贡献点。
 
-**5. 动画引擎**：序列帧播放器 + 有限状态机（idle/walk/sleep + react 插播队列，按优先级打断/恢复），插件只能通过 `pet:react` 能力触发动作，不能直接操作画布。
+**5. 动画引擎**：序列帧播放器 + 有限状态机，状态词表完全照搬 petdex 的九个状态（行号/帧数/时长见「8. 桌宠形象」），按优先级打断、同级或更低排队（上限 3）。交互语义：摸头→`waving`、戳肚子→`jumping`、拉尾巴→`failed` 并附加抖动；手势类（waving/jumping/failed）播完一遍整行时长回 idle；循环类（`running`/`review`/`running-left|right`）可被重复请求续期，安静 45 秒后自然回落 idle；长时间无交互（180 秒）进入 `waiting`（取代原来的「睡觉」位），任何交互即唤醒。插件只能通过 `pet:react` 请求这九个状态之一（其余名字被能力桥拒绝），不能直接操作画布。Agent 桥的 phase→状态映射也照搬 petdex：`pre`→`running`（只读工具 Read/Grep/Glob →`review`）、`tool-failure`/`stop-failure`→`failed`、`stop`→`waving`、`user-prompt`/`session-start`→`jumping`、`approval-request`/`notification`→`waiting`；会话仍在进行时 `post` 不把姿势打回 `idle`。
 
 **6. 心率 BLE 服务**：`btleplug` 双模式——
 
@@ -118,11 +118,19 @@ export default {
 
 **7. 权限流**：插件首次调用未授权能力 → 宿主弹同意框（显示插件 id/名称/能力）→ 记录到 %APPDATA% 授权表，设置窗可撤销。
 
+**8. 桌宠形象（Petdex 图集）**：仓库不内置任何美术文件，形象全部来自 Petdex 公开画廊；本项目定位是学习与自娱自乐、非商用，宿主按用户输入的名字在运行时下载，不内嵌、不再分发——
+
+- a) 设置窗输入 Petdex 名字（如 `deepseek`）→ Rust `services/skins.rs` 走公开接口 `https://petdex.dev/api/manifest/v2` 解析 slug（响应里 `pets` 是数组的数组，列序由同响应的 `fields` 给出）；
+- b) 下载 `sprite.webp` 到 `%APPDATA%/com.desktoppet.pet/skins/<slug>/`，经宿主自定义协议 `petskin://<slug>/sprite.webp`（Windows 上即 `http://petskin.localhost/…`）读给 webview——与插件文件的 `petplugin://` 同一条路，dev 与打包版共用同一个磁盘解析点；打包版 CSP 的 `img-src` 要含 `http://petskin.localhost`；
+- c) 当前形象记在 `skins/active.json`，切换后宿主广播 `pet:skin-changed`，宠物窗不重启就换装；首次启动且本地没有皮肤时自动安装默认形象 `deepseek`，图集不可用时才退回程序生成的 idle 帧。
+
+图集规格：8 列 × 9 行（v1，1536×1872）或 8 列 × 11 行（v2，1536×2288，多出的两行是预留空白）的无损 webp，单元格 192×208，行号即状态——row0 `idle`(6 帧/1100ms)、row1 `running-right`(8/1060)、row2 `running-left`(8/1060)、row3 `waving`(4/700)、row4 `jumping`(5/840)、row5 `failed`(8/1220)、row6 `waiting`(6/1010)、row7 `running`(6/820)、row8 `review`(6/1030)，规格定义在 `src/pet/petdex-states.ts`。
+
 ## 六、实施步骤
 
-1. **脚手架 + 宠物窗**：Tauri 2 + Vite/TS 初始化；透明置顶窗、无边框拖拽、右键托盘、单实例；Canvas 占位宠物（程序生成圆形角色）+ 状态机跑通 idle/walk。
+1. **脚手架 + 宠物窗**：Tauri 2 + Vite/TS 初始化；透明置顶窗、无边框拖拽、右键托盘、单实例；Canvas 播放 Petdex 图集序列帧，状态机跑通九个状态（图集不可用时退回程序生成的 idle 帧）。
 2. **插件运行时**：manifest 解析与校验、动态 import、activate/deactivate 生命周期、错误隔离（单个插件抛错不影响宿主）、事件总线、widget Shadow DOM 宿主、插件隔离存储、设置窗（启停 + 权限列表）。
-3. **Rust 能力服务**：store、http 代理（域名白名单）、notify、btleplug BLE 服务 + IPC 命令与事件转发、权限同意框。
+3. **Rust 能力服务**：store、http 代理（域名白名单）、notify、btleplug BLE 服务 + IPC 命令与事件转发、权限同意框、skins（图集解析下载 + `petskin://` 协议）。
 4. **三个示例插件**：
    - `todo`（完整可用）：增删改查 + widget 展示 + `todo:changed` 广播
    - `heart-rate-ble`：扫描展示（无设备时显示广播列表）、连接后 widget 显示实时 BPM
@@ -132,6 +140,7 @@ export default {
 ## 七、验收标准
 
 - `npm run tauri dev` 启动：透明置顶宠物显示并播放 idle 动画，可拖拽，托盘可用
+- 设置窗输入 Petdex 名字（如 `deepseek`）即从公开画廊下载并换装，宠物窗不必重启；本地无皮肤的首次启动自动装默认形象 `deepseek`
 - plugins/ 目录放入/移除插件目录后，经设置窗启用停用生效，单插件异常不崩溃宿主
 - todo 插件完整可用；心率插件能列出扫描到的 BLE 设备广播（有设备则显示 BPM）；token 插件按配置轮询并在 widget 显示
 - 未授权能力调用被拒绝且触发同意框；SDK 文档完整到第三方可照写插件
@@ -144,7 +153,7 @@ export default {
 |---|---|---|
 | 技术栈 | Tauri 2（Rust + WebView） | C# .NET 8 + WPF（BLE/窗口集成最好但生态封闭）、Python + PySide6（迭代快但打包 80MB+）、Electron（内存 150MB+） |
 | 插件隔离 | 进程内加载（WebView 内 ES Module） | 独立进程沙箱（开发量翻倍）、混合模式（v2 预留接口） |
-| 宠物形象 | 2D 序列帧动画 | Live2D（SDK 授权费用 + 模型资源成本）、纯占位 |
+| 宠物形象 | Petdex 公开画廊的九状态图集（2D 序列帧，运行时按名字下载，仓库不内置美术） | Live2D（SDK 授权费用 + 模型资源成本）、自绘美术内嵌分发（非商用学习项目，没必要背美术资产） |
 | 插件生态 | 开放第三方生态（权限声明 + 能力桥） | 仅自研/团队插件 |
 
 补充：选 Tauri + WebView 内 JS 插件的关键理由——Rust 动态库没有稳定 ABI，不适合开放第三方；WebView 内 ES Module 是第三方门槛最低的插件形态（VSCode 式模型），原生能力（BLE 等）由宿主 Rust 服务提供、经能力受控的桥接 API 开放。

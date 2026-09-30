@@ -1,7 +1,9 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import { loadSpriteSet, FRAME_SIZE, type SpriteSet } from "./pet/sprites";
+import { activeSkin } from "./pet/skins";
 import { PetStateMachine, type PokeZone } from "./pet/state-machine";
-import { pickLine, type LineState } from "./pet/dialogue";
+import { pickLine } from "./pet/dialogue";
 import { registerPetController } from "./pet/host";
 import { installClickThrough } from "./pet/click-through";
 import { installGameMode } from "./pet/game-mode";
@@ -22,7 +24,7 @@ const MOTION_MARGIN = 12;
 
 let pet: PetStateMachine;
 let sprites: SpriteSet;
-let lastNight: boolean | null = null;
+let skinUrl: string | null = null;
 
 function fitCanvas(): void {
   const dpr = window.devicePixelRatio || 1;
@@ -94,13 +96,14 @@ document.addEventListener("mouseup", (e) => {
   const wasDrag = dragEngaged;
   const clientX = e.clientX;
   const clientY = e.clientY;
+  const dozing = pet?.action === "waiting";
   resetPress();
   if (!wasPress || wasDrag || e.button !== 0 || !pet) return;
   // 只认落在立绘范围内的一击（原来纵向一条带子无限宽，点窗口角落也会戳到角色）
   if (!insideSprite(clientX, clientY)) return;
   const action = pet.poke(hitZone(clientY));
-  const lineState: LineState | null = action === "greet" ? "wake" : (action as LineState);
-  say(pickLine(lineState ?? "idle"));
+  // 从 waiting 唤醒时配醒来的台词，而不是普通反应
+  say(pickLine(dozing && action === "waving" ? "wake" : action));
 });
 
 function resetPress(): void {
@@ -116,13 +119,25 @@ function hitZone(clientY: number): PokeZone {
   return "belly";
 }
 
-/* ---------- 夜间模式：22:00-7:00 待机换成夜晚姿势 ---------- */
-function applyNightSchedule(): void {
-  const hour = new Date().getHours();
-  const night = hour >= 22 || hour < 7;
-  if (night === lastNight) return; // 状态没变就别重建 FramePlayer
-  lastNight = night;
-  pet.setIdleFrame(night ? sprites.night?.[0] : sprites.idle?.[0]);
+/* ---------- 皮肤：从宿主取当前 Petdex 图集并按 dpr 烘焙 ---------- */
+
+/** 宿主没有可用皮肤（尚未安装/正在下载）时返回 null，渲染层用程序生成兜底帧 */
+async function fetchActiveSkin(): Promise<string | null> {
+  try {
+    const skin = await activeSkin();
+    return skin?.url ?? null;
+  } catch (err) {
+    console.warn("[pet] 读取当前皮肤失败", err);
+    return null;
+  }
+}
+
+/** 换皮肤或改系统缩放后重新烘焙帧，动作与时间轴保持不变 */
+async function applySkin(url: string | null): Promise<void> {
+  skinUrl = url;
+  sprites = await loadSpriteSet(url ?? "");
+  pet?.setSprites(sprites);
+  fitCanvas();
 }
 
 /* ---------- 渲染循环 ---------- */
@@ -201,22 +216,13 @@ function setRunning(running: boolean): void {
   }
 }
 
-async function rebakeForDpr(): Promise<void> {
-  // 源图有缓存，这里只是按新的 dpr 重新烘焙，不重走网络
-  sprites = await loadSpriteSet();
-  pet.setSprites(sprites);
-  lastNight = null;
-  applyNightSchedule();
-  fitCanvas();
-}
-
 /** matchMedia 的 once 监听只会响一次，响应后要按新的 dpr 重新挂一条 */
 function watchDpr(): void {
   const mq = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
   mq.addEventListener(
     "change",
     () => {
-      void rebakeForDpr();
+      void applySkin(skinUrl);
       watchDpr();
     },
     { once: true },
@@ -226,10 +232,10 @@ function watchDpr(): void {
 async function init(): Promise<void> {
   fitCanvas();
   syncLayout();
-  sprites = await loadSpriteSet();
+  skinUrl = await fetchActiveSkin();
+  sprites = await loadSpriteSet(skinUrl ?? "");
   pet = new PetStateMachine(sprites);
-  pet.onSleep = () => say(pickLine("sleep"));
-  applyNightSchedule();
+  pet.onSleep = () => say(pickLine("waiting"));
 
   registerPetController({
     react: (action) => pet.request(action),
@@ -240,6 +246,14 @@ async function init(): Promise<void> {
   setRunning(true);
   void installGameMode({ pause: () => setRunning(false), resume: () => setRunning(true) });
 
+  // 设置窗安装/切换皮肤后由宿主广播，宠物窗无需重启即可换形象
+  void listen("pet:skin-changed", () => {
+    void (async () => {
+      const url = await fetchActiveSkin();
+      if (url !== skinUrl) await applySkin(url);
+    })();
+  });
+
   window.addEventListener("resize", () => {
     fitCanvas();
     syncLayout();
@@ -247,7 +261,7 @@ async function init(): Promise<void> {
   // dpr 变化（换显示器 / 改系统缩放）靠这条媒体查询感知，resize 事件不一定触发
   watchDpr();
   document.addEventListener("visibilitychange", () => setRunning(!document.hidden));
-  window.setTimeout(() => say(pickLine("greet")), 700);
+  window.setTimeout(() => say(pickLine("waving")), 700);
 }
 
 void init();

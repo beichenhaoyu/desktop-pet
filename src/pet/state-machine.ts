@@ -1,26 +1,33 @@
-import type { ActionName, SpriteSet } from "./sprites";
+import { PET_STATES, frameSeconds } from "./petdex-states";
+import type { PetStateId } from "./petdex-states";
+import type { SpriteSet, ActionName } from "./sprites";
 import { FramePlayer } from "./player";
 
 interface StateDef {
-  duration: number; // 秒；到时按规则切换
-  next: ActionName | null; // null = 回 idle
-  priority: number; // 数值越大越适合打断当前动作
-  randomStart?: boolean; // 进入时随机帧（react 表情池）
+  /** 停留时长（秒）：到时按 next 切换。1e9 = 只被交互或新的请求打断 */
+  dwell: number;
+  /** 到时去哪个状态；null = 回 idle */
+  next: ActionName | null;
+  /** 数值越大越适合打断当前状态 */
+  priority: number;
+  /** 可被重复请求续期的状态（插件按事件节奏续命，安静下来后自然回落 idle） */
+  renewable: boolean;
 }
 
-/** 无交互多久进入睡觉（参考原项目 AFK_MS = 180s） */
+/** 无交互多久进入等待（参考原项目 AFK_MS = 180s） */
 const AFK_SECONDS = 180;
-/** idle 结束时随机切「好奇」小动作的概率 */
-const CURIOUS_CHANCE = 0.35;
+/** idle 结束时随机切「思考」小动作的概率 */
+const REVIEW_CHANCE = 0.35;
+/** 可持续状态的默认停留上限：插件不再续期就回落 */
+const RENEW_HOLD_SECONDS = 45;
 
 export type PokeZone = "head" | "belly" | "tail";
 
-// 宠物状态机（交互模型参考 dsh-whale-musume whale-moe-core）：
-// - 原地待机：呼吸/轻摆由渲染层负责，状态机只做姿势切换
-// - idle 到时随机切「好奇」小动作
-// - poke(部位) → 摸头/戳肚子/拉尾巴 三种反应（渲染层配台词气泡）
-// - 3 分钟无交互 → 睡觉；任何交互唤醒
-// - react 为插件预留的插播队列入口（pet:react）
+// 状态词表完全照搬 petdex 的九个状态（见 petdex-states.ts），不再有 sleep/react/greet 等自造动作。
+// - 手势类（waving/jumping/failed）播完一遍整行时长就回 idle，与 petdex 桌面端 dwell 语义一致
+// - 循环类（running/review/running-left/right）可被重复请求续期，安静 RENEW_HOLD_SECONDS 后回落
+// - waiting 是 petdex 的「耐心待机」变体，本项目用它承担原来的睡觉位（长时间无交互）
+// - request 为插件预留的插播队列入口（pet:react）
 export class PetStateMachine {
   private defs: Partial<Record<ActionName, StateDef>> = {};
   private players: Partial<Record<ActionName, FramePlayer>> = {};
@@ -32,47 +39,54 @@ export class PetStateMachine {
 
   private static readonly MAX_QUEUE = 3;
 
-  /** 最近一次姿势切换的时间戳（渲染层做 pose-in 弹跳淡入） */
+  /** 最近一次姿势切换的时间戳（渲染层做弹跳淡入） */
   lastSwitchAt = 0;
-  /** 尾巴反应的抖动截止时间戳（渲染层做 wm-shake 式位移） */
+  /** 拉尾巴的抖动截止时间戳（渲染层做位移抖动） */
   shakeUntil = 0;
-  /** 进入睡觉时回调（渲染层配台词） */
+  /** 进入 waiting（长时间无交互）时回调（渲染层配台词） */
   onSleep?: () => void;
 
   constructor(sprites: SpriteSet) {
-    this.register("idle", sprites.idle, { duration: 9, next: null, priority: 0 });
-    this.register("greet", sprites.greet, { duration: 2.6, next: "idle", priority: 1 });
-    this.register("curious", sprites.curious, { duration: 2.4, next: "idle", priority: 1 });
-    this.register("sleep", sprites.sleep, { duration: 1e9, next: null, priority: 5 });
-    this.register("teasing", sprites.teasing, { duration: 2.4, next: "idle", priority: 10 });
-    this.register("blush", sprites.blush, { duration: 2.4, next: "idle", priority: 10 });
-    this.register("angry", sprites.angry, { duration: 2.4, next: "idle", priority: 10 });
-    this.register("react", sprites.react, {
-      duration: 2.2,
-      next: null,
+    // 每个状态的画面节奏取自 petdex 状态表，行为参数在下面按本项目交互模型给定
+    const def = (id: PetStateId, partial: StateDef): void => {
+      const frames = sprites[id];
+      if (!frames || frames.length === 0) return;
+      this.defs[id] = partial;
+      const state = PET_STATES.find((s) => s.id === id)!;
+      this.players[id] = new FramePlayer(frames, frameSeconds(state));
+    };
+
+    // 手势类的一遍时长直接取表里的 durationMs，与 petdex 桌面端的 dwell 语义对齐
+    const gesture = (id: PetStateId): StateDef => ({
+      dwell: PET_STATES.find((s) => s.id === id)!.durationMs / 1000,
+      next: "idle",
       priority: 10,
-      randomStart: true,
+      renewable: false,
     });
+
+    def("idle", { dwell: 9, next: null, priority: 0, renewable: false });
+    def("running-right", { dwell: RENEW_HOLD_SECONDS, next: "idle", priority: 1, renewable: true });
+    def("running-left", { dwell: RENEW_HOLD_SECONDS, next: "idle", priority: 1, renewable: true });
+    def("waving", gesture("waving"));
+    def("jumping", gesture("jumping"));
+    def("failed", gesture("failed"));
+    def("waiting", { dwell: 1e9, next: null, priority: 5, renewable: false });
+    def("running", { dwell: RENEW_HOLD_SECONDS, next: "idle", priority: 3, renewable: true });
+    def("review", { dwell: RENEW_HOLD_SECONDS, next: "idle", priority: 2, renewable: true });
   }
 
-  private register(
-    action: ActionName,
-    frames: HTMLCanvasElement[] | undefined,
-    def: StateDef,
-  ): void {
-    if (!frames || frames.length === 0) return; // 该动作帧尚未提供
-    this.defs[action] = def;
-    this.players[action] = new FramePlayer(frames, 1);
-  }
-
-  /** 请求插播动作：优先级更高则立即打断，同级或更低则排队 */
+  /** 请求插播状态：优先级更高则立即打断，同级或更低则排队；重复请求当前状态只续期 */
   request(action: ActionName): void {
     this.sinceInteraction = 0;
     const def = this.defs[action];
     if (!def) return;
-    if (this.queue.includes(action)) return; // 同一动作不重复排队
+    if (action === this.current) {
+      if (def.renewable) this.played = 0;
+      return;
+    }
+    if (this.queue.includes(action)) return; // 同一状态不重复排队
     const cur = this.defs[this.current];
-    if (!cur || def.priority > cur.priority || this.current === "sleep") {
+    if (!cur || def.priority > cur.priority || this.current === "waiting") {
       this.switchTo(action);
       return;
     }
@@ -80,43 +94,37 @@ export class PetStateMachine {
     if (this.queue.length > PetStateMachine.MAX_QUEUE) this.queue.shift();
   }
 
-  /** 换上一批重新烘焙的帧（DPI 变化用），保持当前动作 */
+  /** 换上一批重新烘焙的帧（DPI 变化、换皮肤用），保持当前状态 */
   setSprites(sprites: SpriteSet): void {
     const keep: ActionName = this.players[this.current] ? this.current : "idle";
     const played = this.played;
     this.players = {};
     for (const action of Object.keys(this.defs) as ActionName[]) {
       const frames = sprites[action];
-      if (frames && frames.length > 0) this.players[action] = new FramePlayer(frames, 1);
+      if (!frames || frames.length === 0) continue;
+      const state = PET_STATES.find((s) => s.id === action)!;
+      this.players[action] = new FramePlayer(frames, frameSeconds(state));
     }
-    if (!this.players[keep]) this.current = "idle";
-    else this.current = keep;
+    this.current = this.players[keep] ? keep : "idle";
     this.played = played;
     this.players[this.current]?.reset();
   }
 
   /**
-   * 摸头/戳肚子/拉尾巴（部位判定参考原项目 hit-zones）。
-   * 睡觉中任何poke都会先唤醒（切 greet，由渲染层配 wake 台词）。
+   * 摸头/戳肚子/拉尾巴（部位判定沿用原 hit-zones）。
+   * waiting 中任何 poke 都会先唤醒（切 waving，由渲染层配 wake 台词）。
    */
   poke(zone: PokeZone): ActionName {
     this.sinceInteraction = 0;
-    if (this.current === "sleep") {
-      this.switchTo("greet");
-      return "greet";
+    if (this.current === "waiting") {
+      this.switchTo("waving");
+      return "waving";
     }
     const action: ActionName =
-      zone === "head" ? "teasing" : zone === "belly" ? "blush" : "angry";
+      zone === "head" ? "waving" : zone === "belly" ? "jumping" : "failed";
     if (zone === "tail") this.shakeUntil = performance.now() + 320;
     this.switchTo(action);
     return action;
-  }
-
-  /** 夜间模式：把 idle 立绘换成夜晚姿势 */
-  setIdleFrame(frame: HTMLCanvasElement | undefined): void {
-    if (!frame) return;
-    this.players.idle = new FramePlayer([frame], 1);
-    if (this.current === "idle") this.players.idle.reset();
   }
 
   get frame(): HTMLCanvasElement {
@@ -127,7 +135,7 @@ export class PetStateMachine {
     return this.current;
   }
 
-  /** 当前排队等待插播的动作数（诊断与回归断言用） */
+  /** 当前排队等待插播的状态数（诊断与回归断言用） */
   get queuedCount(): number {
     return this.queue.length;
   }
@@ -136,26 +144,26 @@ export class PetStateMachine {
     this.played += dt;
     this.sinceInteraction += dt;
 
-    // 挂机检测：非睡觉状态下 3 分钟无交互 → 睡觉
+    // 挂机检测：非等待状态下 3 分钟无交互 → waiting
     if (
-      this.current !== "sleep" &&
-      this.current !== "react" &&
+      this.current !== "waiting" &&
+      !isRenewable(this.defs[this.current]) &&
       this.sinceInteraction >= AFK_SECONDS
     ) {
-      this.switchTo("sleep");
+      this.switchTo("waiting");
       this.onSleep?.();
     }
 
     this.players[this.current]!.update(dt);
 
     const def = this.defs[this.current]!;
-    if (this.played >= def.duration) {
+    if (this.played >= def.dwell) {
       let next: ActionName;
       if (this.current === "idle") {
-        // 先排空插件请求，再随机切「好奇」小动作
+        // 先排空插件请求，再随机切「思考」小动作
         next =
           this.queue.shift() ??
-          (Math.random() < CURIOUS_CHANCE && this.players.curious ? "curious" : "idle");
+          (Math.random() < REVIEW_CHANCE && this.players.review ? "review" : "idle");
       } else {
         next = this.queue.shift() ?? def.next ?? "idle";
       }
@@ -167,9 +175,11 @@ export class PetStateMachine {
     const target = this.players[action] ? action : "idle";
     this.current = target;
     this.played = 0;
-    const player = this.players[target]!;
-    player.reset();
-    if (this.defs[target]?.randomStart) player.randomize();
+    this.players[target]!.reset();
     this.lastSwitchAt = performance.now();
   }
+}
+
+function isRenewable(def: StateDef | undefined): boolean {
+  return def?.renewable === true;
 }

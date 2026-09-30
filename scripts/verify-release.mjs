@@ -53,6 +53,24 @@ try {
     r.check("script-src 不含 unsafe-inline", false, /script-src[^;]*unsafe-inline/.test(header));
     r.check("script-src 放行了插件协议", true, /script-src[^;]*petplugin\.localhost/.test(header));
 
+    r.group("桌宠图集在打包版 CSP 下真的能解码（dev 不注入 CSP，这条只能在 release 验）");
+    const skin = await invoke("pet_skin_active");
+    r.check("打包版也有默认形象 deepseek", "deepseek", skin.v?.slug ?? null);
+    r.check("img-src 放行 petskin 协议", true, /img-src[^;]*petskin\.localhost/.test(header));
+    // 由页面自己发起的 <img> 加载才受 img-src 约束；被 CSP 拦下会走 onerror
+    const decoded = await c.ev(`(async () => {
+      const url = ${JSON.stringify(skin.v?.url ?? "")};
+      if (!url) return "no-skin";
+      return await new Promise((res) => {
+        const img = new Image();
+        const timer = setTimeout(() => res("timeout"), 20_000);
+        img.onload = () => { clearTimeout(timer); res(img.naturalWidth + 'x' + img.naturalHeight); };
+        img.onerror = () => { clearTimeout(timer); res("blocked"); };
+        img.src = url;
+      });
+    })()`);
+    r.check("图集解码成功且尺寸是 petdex v1 布局", "1536x1872", decoded);
+
     r.group("宿主自身在 CSP 下加载插件（真实启动路径，非 CDP 发起）");
     const prev = await c.ev(`localStorage.getItem('host:enabled-plugins') ?? '[]'`);
     await c.ev(`localStorage.setItem('host:enabled-plugins', JSON.stringify([${JSON.stringify(PROBE_ID)}]))`);

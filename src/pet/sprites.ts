@@ -1,43 +1,26 @@
-// 宠物精灵：优先加载鲸鱼娘立绘（assets/whale/，来源 dsh-whale-musume，MIT，
-// 详见 assets/whale/README.md），加载失败时回退到程序生成的占位宠物。
-// 立绘为单帧状态图：动感由状态机动作切换 + 渲染层呼吸浮动提供。
-// 美术序列帧（真正的多帧动画）就绪后，替换 loadSpriteSet 的帧来源即可，
-// 播放器与状态机接口不变。
+// 精灵来源只有一个：Petdex 画廊下载的图集（8 列 × 9/11 行、单元格 192×208）。
+// 本模块负责把一张图集切成九个状态的多帧序列，帧按 devicePixelRatio 烘焙成正方形画布，
+// 渲染层继续以 CSS 边长 1:1 贴图。图集缺失或尺寸不被识别时退回程序生成的 idle 帧，
+// 保证窗口不会是空白的。
 
-import idleUrl from "./assets/whale/idle.webp";
-import greetUrl from "./assets/whale/greet.webp";
-import sleepUrl from "./assets/whale/sleep.webp";
-import curiousUrl from "./assets/whale/curious.webp";
-import teasingUrl from "./assets/whale/teasing.webp";
-import angryUrl from "./assets/whale/angry.webp";
-import nightUrl from "./assets/whale/night.webp";
-import reactWinkUrl from "./assets/whale/react-wink.webp";
-import reactBlushUrl from "./assets/whale/react-blush.webp";
-import reactCelebrateUrl from "./assets/whale/react-celebrate.webp";
-import reactShockUrl from "./assets/whale/react-shock.webp";
+import {
+  PET_STATES,
+  SPRITE_COLUMNS,
+  SPRITE_FRAME_HEIGHT,
+  SPRITE_FRAME_WIDTH,
+  detectSpriteAtlas,
+} from "./petdex-states";
+import type { PetStateId } from "./petdex-states";
 
-export type ActionName =
-  | "idle"
-  | "walk"
-  | "greet"
-  | "sleep"
-  | "react"
-  | "curious"
-  | "teasing"
-  | "blush"
-  | "angry"
-  | "night";
+export type { PetStateId };
+/** 状态词表完全等同 petdex：原来的 12 个自造状态（walk/greet/sleep/react/…）已取消 */
+export type ActionName = PetStateId;
 
 export type SpriteSet = Partial<Record<ActionName, HTMLCanvasElement[]>>;
 
-/** 立绘统一缩放到的正方形画布的 CSS 边长 */
+/** 帧烘焙成的正方形画布边长（CSS px），乘以 dpr 得到实际像素 */
 export const FRAME_SIZE = 360;
 
-/**
- * 帧的实际烘焙边长 = FRAME_SIZE × devicePixelRatio。
- * 渲染层以 CSS 边长绘制、上下文已按 dpr 缩放，两者对齐后 drawImage 是 1:1 贴图，
- * 不再每帧把 360px 的源双线性上采样（高分屏下糊边的来源）。
- */
 let bakeScale = 1;
 
 function bakeSize(): number {
@@ -45,143 +28,123 @@ function bakeSize(): number {
 }
 
 /** 归一化 dpr：小数倍缩放（125%/150%）也照实烘，避免再被采样一次 */
-function deviceScale(): number {
+export function deviceScale(): number {
   return Math.max(1, window.devicePixelRatio || 1);
 }
 
-// 兜底程序宠物的原始绘制尺寸
-const PROCEDURAL_SIZE = 256;
-
-// 注意不含 walk：鲸鱼娘状态机未注册该动作，兜底宠物的踱步帧由程序绘制（walkPose），
-// 原先这里会额外解码一张 192KB 的 run.webp 并烘焙，结果没有任何地方用到
-const POSE_URLS: Array<[ActionName, string]> = [
-  ["idle", idleUrl],
-  ["greet", greetUrl],
-  ["sleep", sleepUrl],
-  ["curious", curiousUrl],
-  ["teasing", teasingUrl],
-  ["angry", angryUrl],
-  ["night", nightUrl],
-];
-const REACT_URLS = [reactWinkUrl, reactBlushUrl, reactCelebrateUrl, reactShockUrl];
-
-/** 已解码的立绘源图：DPI 变化重新烘焙时不必再走网络/解码 */
-const imageCache = new Map<string, HTMLImageElement>();
+/** 已解码的图集源图：DPI 变化重新烘焙时不必再走一次解码 */
+const atlasCache = new Map<string, HTMLImageElement>();
 
 /**
- * 加载鲸鱼娘立绘；任一失败则整体回退程序生成。
- * `scale` 省略时用当前 devicePixelRatio —— 换显示器/缩放后带新 scale 再调一次即可只重烘焙。
+ * 从图集 URL 装载九个状态的帧序列。
+ * `scale` 省略时用当前 devicePixelRatio —— 换显示器/改缩放后带新 scale 再调一次即可只重烘焙。
+ * URL 由宿主 petskin 协议给出（`http://petskin.localhost/<slug>/sprite.webp`）。
+ * url 为空（还没有任何皮肤）或图集不被识别时，退回程序生成的 idle 帧。
  */
-export async function loadSpriteSet(scale = deviceScale()): Promise<SpriteSet> {
+export async function loadSpriteSet(url: string, scale = deviceScale()): Promise<SpriteSet> {
   bakeScale = scale;
+  if (!url) return buildProceduralSpriteSet();
   try {
-    const frames = await Promise.all(
-      POSE_URLS.map(async ([action, url]) => {
-        const img = await loadImage(url);
-        return [action, toFrame(img)] as const;
-      }),
-    );
-    const reactFrames = await Promise.all(
-      REACT_URLS.map(async (url) => toFrame(await loadImage(url))),
-    );
-    const set: SpriteSet = {};
-    for (const [action, canvas] of frames) {
-      set[action] = [canvas];
-    }
-    set.react = reactFrames;
-    set.blush = [reactFrames[1]]; // 摸肚子反应与 react 表情共用 blush 立绘
+    const img = await loadAtlas(url);
+    const set = sliceAtlas(img);
+    if (!set) throw new Error(`不是受支持的 petdex 图集: ${img.naturalWidth}x${img.naturalHeight}`);
     return set;
   } catch (err) {
-    console.warn("[pet] 立绘加载失败，回退程序生成占位宠物", err);
+    console.warn("[pet] 图集加载失败，退回程序生成占位帧", err);
     return buildProceduralSpriteSet();
   }
 }
 
-function loadImage(url: string): Promise<HTMLImageElement> {
-  const cached = imageCache.get(url);
-  if (cached) return Promise.resolve(cached);
+/** 图集源：真机是解码后的 <img>，回归里可以直接喂一张合成用的 canvas */
+export type AtlasSource = HTMLImageElement | HTMLCanvasElement;
+
+function sourceSize(source: AtlasSource): { width: number; height: number } {
+  return source instanceof HTMLCanvasElement
+    ? { width: source.width, height: source.height }
+    : { width: source.naturalWidth, height: source.naturalHeight };
+}
+
+/** 按当前 dpr 重新烘焙一张已解码的图集；尺寸不被识别时返回 null */
+export function sliceAtlas(img: AtlasSource): SpriteSet | null {
+  const { width: sw, height: sh } = sourceSize(img);
+  const layout = detectSpriteAtlas(sw, sh);
+  if (!layout) return null;
+  const cellW = sw / SPRITE_COLUMNS;
+  const cellH = sh / layout.rows;
+  // petdex 单元格是 192×208（比宽更高），烘焙画布是正方形：按短边等比放入，横向留边，
+  // 这样点击判定/气泡定位仍能沿用正方形几何，不必为每个状态另算一套矩形
+  const size = bakeSize();
+  const fit = Math.min(size / cellW, size / cellH);
+  const dw = cellW * fit;
+  const dh = cellH * fit;
+  const dx = (size - dw) / 2;
+  const dy = (size - dh) / 2;
+
+  const set: SpriteSet = {};
+  for (const state of PET_STATES) {
+    const frames: HTMLCanvasElement[] = [];
+    for (let col = 0; col < state.frames; col++) {
+      const canvas = document.createElement("canvas");
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext("2d")!;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(img, col * cellW, state.row * cellH, cellW, cellH, dx, dy, dw, dh);
+      frames.push(canvas);
+    }
+    set[state.id] = frames;
+  }
+  return set;
+}
+
+export function loadAtlas(url: string): Promise<HTMLImageElement> {
+  const cached = atlasCache.get(url);
+  if (cached && cached.complete) return Promise.resolve(cached);
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
-      imageCache.set(url, img);
+      atlasCache.set(url, img);
       resolve(img);
     };
-    img.onerror = () => reject(new Error(`图片加载失败: ${url}`));
+    img.onerror = () => reject(new Error(`图集加载失败: ${url}`));
     img.src = url;
   });
 }
 
-function toFrame(img: HTMLImageElement): HTMLCanvasElement {
-  const size = bakeSize();
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext("2d")!;
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(img, 0, 0, size, size);
-  return canvas;
+/** 已经解码过的图集 URL（只读诊断面）：回归用它确认换装确实在宠物窗里发生了 */
+export function decodedAtlases(): string[] {
+  return [...atlasCache.keys()];
 }
 
-/* ================= 程序生成占位宠物（兜底） ================= */
+/* ================= 程序生成兜底（仅供 idle） ================= */
 
-interface Pose {
-  bodyDy: number;
-  squash: number;
-  legSwing: number;
-  lean: number;
-  blink: boolean;
-}
+// 兜底宠物的原始绘制尺寸
+const PROCEDURAL_SIZE = 256;
 
+/** 只生成 idle 一个状态的呼吸帧：图集不可用时的最后防线，不提供其余八个状态 */
 export function buildProceduralSpriteSet(): SpriteSet {
-  const frames = (pose: (i: number) => Pose) =>
-    Array.from({ length: 8 }, (_, i) => scaleToFrame(drawProceduralFrame(pose(i))));
   return {
-    idle: frames(idlePose),
-    walk: frames(walkPose),
+    idle: Array.from({ length: 6 }, (_, i) => scaleToFrame(drawProceduralFrame(i))),
   };
 }
 
-function idlePose(i: number): Pose {
-  const t = (i / 8) * Math.PI * 2;
-  return {
-    bodyDy: Math.sin(t) * 2,
-    squash: 1 + Math.sin(t) * 0.02,
-    legSwing: 0,
-    lean: 0,
-    blink: i === 5,
-  };
-}
-
-function walkPose(i: number): Pose {
-  const t = (i / 8) * Math.PI * 2;
-  return {
-    bodyDy: -Math.abs(Math.sin(t)) * 5,
-    squash: 1,
-    legSwing: Math.sin(t) * 10,
-    lean: Math.sin(t) * 0.06,
-    blink: false,
-  };
-}
-
-function drawProceduralFrame(pose: Pose): HTMLCanvasElement {
+function drawProceduralFrame(i: number): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
   canvas.width = PROCEDURAL_SIZE;
   canvas.height = PROCEDURAL_SIZE;
   const ctx = canvas.getContext("2d")!;
 
+  const t = (i / 6) * Math.PI * 2;
+  const bodyDy = Math.sin(t) * 2;
+  const squash = 1 + Math.sin(t) * 0.02;
+
   ctx.translate(PROCEDURAL_SIZE / 2, PROCEDURAL_SIZE / 2);
-  ctx.rotate(pose.lean);
-  ctx.translate(0, pose.bodyDy);
+  ctx.translate(0, bodyDy);
 
   const bodyY = 8;
   const rx = 78;
-  const ry = rx * pose.squash;
-
-  ctx.fillStyle = "#e8862e";
-  const footY = bodyY + ry * 0.86;
-  ellipse(ctx, -26 + pose.legSwing, footY, 20, 10);
-  ellipse(ctx, 26 - pose.legSwing, footY, 20, 10);
+  const ry = rx * squash;
 
   const body = ctx.createRadialGradient(-24, bodyY - 28, 8, 0, bodyY, rx + 6);
   body.addColorStop(0, "#ffc078");
@@ -190,7 +153,7 @@ function drawProceduralFrame(pose: Pose): HTMLCanvasElement {
   ellipse(ctx, 0, bodyY, rx, ry);
 
   const eyeY = bodyY - 18;
-  if (pose.blink) {
+  if (i === 5) {
     ctx.strokeStyle = "#5b3a12";
     ctx.lineWidth = 5;
     ctx.lineCap = "round";
@@ -252,3 +215,5 @@ function ellipse(
   ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
   ctx.fill();
 }
+
+export { SPRITE_FRAME_HEIGHT, SPRITE_FRAME_WIDTH };

@@ -1,26 +1,19 @@
-// 宠物台词库：改写自 dsh-whale-musume 的 whale-moe-core 台词（MIT, © Sutera-Diffusus），
-// 有删改；素材与台词的来源声明见 src/pet/assets/whale/README.md
+// 宠物台词库：按键位是 petdex 的九状态（外加唤醒），原来的 sleep/react 系列已取消。
 
-export type LineState =
-  | "greet"
-  | "teasing"
-  | "blush"
-  | "angry"
-  | "sleep"
-  | "wake"
-  | "idle";
+import type { PetStateId } from "./petdex-states";
 
-const LINES: Record<LineState, string[]> = {
-  greet: ["我来找你啦～今天也一起加油吧✨", "主人主人，鲸鱼娘已上线～🐋"],
-  teasing: [
-    "主人认真工作的样子，很好看哦。",
-    "偷偷给你加一颗糖～",
-    "鲸鱼娘什么都没说，只是嘴角有点压不住😏",
-  ],
-  blush: ["呀、突然戳这里干嘛啦……🥺", "才、才没有脸红呢！"],
-  angry: ["尾巴不可以随便拉的哦！🐋💢", "再拽尾巴我真的要生气了！"],
-  sleep: ["Zzz……有单就叫醒我……🐑"],
-  wake: ["呜哇！我醒着！刚刚只是在闭目养神！", "有单子吗？鲸鱼娘马上营业！🎀"],
+export type LineState = PetStateId | "wake";
+
+const LINES: Partial<Record<LineState, string[]>> = {
+  waving: ["我来找你啦～今天也一起加油吧✨", "在这儿呢，叫我干嘛？🎀"],
+  jumping: ["哇哦！有动静！", "跳一下，证明我还醒着～"],
+  failed: ["唔……这次不太顺利。", "别难过，我先蹲一会儿。"],
+  waiting: ["Zzz……有单就叫醒我……🐑"],
+  wake: ["呜哇！我醒着！刚刚只是在闭目养神！", "有单子吗？马上营业！🎀"],
+  review: ["在看东西，别吵……👀", "让我想想。"],
+  running: ["正在忙，稍等一下下！", "跑起来了～"],
+  "running-left": ["往这边走两步。", "溜达溜达～"],
+  "running-right": ["往那边走两步。", "走走停停，才有精神。"],
   idle: [
     "待机中……耳朵可没闲着，我听见 bug 在远处笑😼",
     "主人要是累了就戳戳我，免费解压，童叟无欺🫧",
@@ -29,6 +22,6 @@ const LINES: Record<LineState, string[]> = {
 };
 
 export function pickLine(state: LineState): string {
-  const lines = LINES[state];
+  const lines = LINES[state] ?? LINES.idle!;
   return lines[Math.floor(Math.random() * lines.length)] ?? "";
 }

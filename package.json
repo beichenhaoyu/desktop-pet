@@ -12,6 +12,7 @@
     "verify": "node scripts/verify-isolation.mjs",
     "verify:agent": "node scripts/verify-agent-bridge.mjs",
     "verify:game": "node scripts/verify-game-mode.mjs",
+    "verify:skin": "node scripts/verify-skins.mjs",
     "verify:release": "node scripts/verify-release.mjs"
   },
   "dependencies": {

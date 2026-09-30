@@ -123,7 +123,19 @@ pub fn hook_ingest(phase: &'static str) {
 struct Session {
     state: &'static str,
     seen: Instant,
+    /// 会话标题：该会话第一条用户输入的前若干字（卡片可选显示，默认不显示）
+    title: String,
+    /// 已发生的工具调用步数
+    steps: u32,
+    /// 最近一次「这轮结束」的时刻。用于吃掉迟到的 post：
+    /// pre/post 相隔约 150ms 到达，post 落在 Stop 之后是常态，
+    /// 若照单处理就会把会话打回 running，而 running 的 TTL 是 90 秒 —— 症状就是
+    /// 「会话早就结束了，卡片还挂着正在执行」。
+    stopped_at: Option<Instant>,
 }
+
+/// Stop 之后多久之内到达的工具事件算「迟到」，不再改变会话状态
+const STOP_GRACE: Duration = Duration::from_secs(2);
 
 #[derive(Default)]
 pub struct AgentState {
@@ -178,27 +190,86 @@ fn bounded_str(payload: &Value, key: &str, max: usize) -> String {
         .unwrap_or_default()
 }
 
+/// 从 tool_input 里挑一个最能说明「在干什么」的字段。
+/// 命令与路径属于敏感内容：宿主照样带出去，是否显示由插件侧的开关决定。
+fn event_detail(payload: &Value) -> String {
+    const KEYS: [&str; 6] = ["command", "file_path", "path", "url", "pattern", "query"];
+    let input = payload.get("tool_input");
+    for key in KEYS {
+        if let Some(value) = input.and_then(|v| v.get(key)).and_then(Value::as_str) {
+            let one_line = value.split_whitespace().collect::<Vec<_>>().join(" ");
+            return one_line.chars().take(120).collect();
+        }
+    }
+    String::new()
+}
+
+/// 会话标题取该会话第一条用户输入；换行压成空格，只留前 48 字
+fn prompt_title(payload: &Value) -> Option<String> {
+    let prompt = payload.get("prompt").and_then(Value::as_str)?;
+    let one_line = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+    let title: String = one_line.chars().take(48).collect();
+    if title.is_empty() { None } else { Some(title) }
+}
+
 impl AgentState {
     /// 记下一件事件并返回该事件的状态（词表之外的事件返回 None，不参与汇总）
-    fn apply(&self, phase: &str, session: &str, kind: &str) -> Option<&'static str> {
+    fn apply(
+        &self,
+        phase: &str,
+        session: &str,
+        kind: &str,
+        title: Option<&str>,
+    ) -> Option<&'static str> {
         let state = state_for_event(phase, kind)?;
         let key = if session.is_empty() { "default".to_string() } else { session.to_string() };
         let mut sessions = self.sessions.lock().unwrap();
-        match state {
-            "idle" => {
-                sessions.remove(&key);
-            }
-            other => {
-                sessions.insert(
-                    key,
-                    Session {
-                        state: other,
-                        seen: Instant::now(),
-                    },
-                );
+        if state == "idle" {
+            sessions.remove(&key);
+            return Some(state);
+        }
+        let now = Instant::now();
+        let entry = sessions.entry(key).or_insert_with(|| Session {
+            state,
+            seen: now,
+            title: String::new(),
+            steps: 0,
+            stopped_at: None,
+        });
+        if matches!(phase, "pre" | "post" | "subagent-start" | "subagent-stop")
+            && entry.stopped_at.is_some_and(|at| now.duration_since(at) < STOP_GRACE)
+        {
+            // 迟到的工具事件：状态保持「刚结束」，但事件照常往外发（卡片仍能更新摘要）
+            return Some(entry.state);
+        }
+        entry.state = state;
+        entry.seen = now;
+        // 标题只认第一次：后续输入会把标题改成最新那句，卡片就该跟着会话走而不是跟着回合走
+        if entry.title.is_empty() {
+            if let Some(title) = title {
+                entry.title = title.to_string();
             }
         }
+        match phase {
+            "stop" => entry.stopped_at = Some(now),
+            // 新一轮开始，宽限期立刻作废
+            "user-prompt" | "session-start" => entry.stopped_at = None,
+            _ => {}
+        }
+        if phase == "pre" {
+            entry.steps += 1;
+        }
         Some(state)
+    }
+
+    /// 当前最活跃那个会话的标题与步数（卡片要显示的就是它）
+    fn active_summary(&self) -> (String, u32) {
+        let sessions = self.sessions.lock().unwrap();
+        sessions
+            .values()
+            .max_by_key(|session| session.seen)
+            .map(|session| (session.title.clone(), session.steps))
+            .unwrap_or_default()
     }
 
     /// 汇总各会话：needs_input 压过 running，都没有则 idle
@@ -226,6 +297,7 @@ impl AgentState {
     /// 只在状态真的变化时广播，返回是否广播了
     fn publish(&self, app: &AppHandle, hint: Option<(&str, &str)>) -> bool {
         let aggregate = self.aggregate();
+        let (title, steps) = self.active_summary();
         let mut emitted = self.emitted.lock().unwrap();
         if *emitted == aggregate {
             return false;
@@ -238,8 +310,10 @@ impl AgentState {
                 "counter": counter,
                 "lastPhase": last_phase,
                 "lastState": last_state,
+                "title": title,
+                "steps": steps,
             }),
-            None => json!({ "state": aggregate, "counter": counter }),
+            None => json!({ "state": aggregate, "counter": counter, "title": title, "steps": steps }),
         };
         drop(emitted);
         app.emit("agent:state", payload).is_ok()
@@ -302,17 +376,26 @@ fn drain_file(state: &Arc<AgentState>, app: &AppHandle, path: &Path) {
             .and_then(Value::as_str)
             .unwrap_or_default();
         let session = bounded_str(&payload, "session_id", 96);
+        let detail = event_detail(&payload);
+        let title = prompt_title(&payload);
 
-        let Some(event_state) = state.apply(phase, &session, kind) else {
+        let Some(event_state) = state.apply(phase, &session, kind, title.as_deref()) else {
             continue;
         };
+        let (title_now, steps_now) = state.active_summary();
         let _ = app.emit(
             "agent:event",
             json!({
                 "phase": phase,
                 "sessionId": session,
                 "toolName": bounded_str(&payload, "tool_name", 64),
+                // 命令/路径摘要：是否显示交给插件侧的开关
+                "detail": detail,
                 "notificationKind": kind,
+                // 总状态只在翻转时广播，插件冷启动（会话已进行中才启用）时拿不到，
+                // 所以每条事件都顺带当前会话的标题与步数，卡片不至于空白
+                "title": title_now,
+                "steps": steps_now,
                 "at": value.get("at").and_then(Value::as_i64).unwrap_or_else(now_ms),
             }),
         );
@@ -411,4 +494,90 @@ pub fn start_agent_ticker(app: &AppHandle) {
         let state = sink.state::<Arc<AgentState>>().inner().clone();
         state.publish(&sink, None);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn payload(json: Value) -> Value {
+        json!({ "phase": "pre", "at": 1, "payload": json })
+    }
+
+    #[test]
+    fn detail_prefers_command_then_path_like_fields() {
+        assert_eq!(event_detail(&json!({"tool_input":{"command":"echo  hi   there"}})), "echo hi there");
+        assert_eq!(event_detail(&json!({"tool_input":{"file_path":"src/main.ts"}})), "src/main.ts");
+        assert_eq!(event_detail(&json!({"tool_input":{"pattern":"TODO"}})), "TODO");
+        assert_eq!(event_detail(&json!({"tool_input":{"todo":[{"content":"x"}]}})), "");
+    }
+
+    #[test]
+    fn detail_is_bounded_and_single_line() {
+        let long = "a".repeat(500);
+        assert_eq!(event_detail(&json!({"tool_input":{"command":long}})).chars().count(), 120);
+        let multi = "first\nsecond\tthird";
+        assert_eq!(event_detail(&json!({"tool_input":{"command":multi}})), "first second third");
+    }
+
+    #[test]
+    fn title_comes_from_first_prompt_and_is_bounded() {
+        assert_eq!(prompt_title(&json!({"prompt":"测试 Agent 桥功能\n第二行"})).as_deref(), Some("测试 Agent 桥功能 第二行"));
+        assert_eq!(prompt_title(&json!({"prompt":"   "})), None);
+        assert_eq!(prompt_title(&json!({"tool_input":{}})), None);
+        assert!(payload(json!({})).get("payload").is_some());
+    }
+
+    #[test]
+    fn steps_count_tool_calls_and_title_survives_later_events() {
+        let state = AgentState::default();
+        state.apply("user-prompt", "s1", "", Some("第一个问题"));
+        state.apply("pre", "s1", "", None);
+        state.apply("post", "s1", "", None);
+        state.apply("pre", "s1", "", Some("不该覆盖标题"));
+        let (title, steps) = state.active_summary();
+        assert_eq!(title, "第一个问题");
+        assert_eq!(steps, 2);
+    }
+
+    #[test]
+    fn session_end_drops_that_session_only() {
+        let state = AgentState::default();
+        state.apply("pre", "s1", "", Some("一"));
+        state.apply("pre", "s2", "", Some("二"));
+        assert_eq!(state.aggregate(), "running");
+        state.apply("session-end", "s1", "", None);
+        assert_eq!(state.aggregate(), "running");
+        let (title, _) = state.active_summary();
+        assert_eq!(title, "二");
+        state.apply("session-end", "s2", "", None);
+        assert_eq!(state.aggregate(), "idle");
+    }
+}
+
+#[cfg(test)]
+mod grace_tests {
+    use crate::services::agent::AgentState;
+
+    #[test]
+    fn straggler_post_does_not_reopen_a_stopped_session() {
+        let s = AgentState::default();
+        s.apply("pre", "g1", "", None);
+        assert_eq!(s.aggregate(), "running");
+        s.apply("stop", "g1", "", None);
+        assert_eq!(s.aggregate(), "completed");
+        // post 比 stop 晚到 ~150ms 是常态：不该把会话打回 running 再挂 90 秒
+        s.apply("post", "g1", "", None);
+        assert_eq!(s.aggregate(), "completed");
+    }
+
+    #[test]
+    fn new_prompt_voids_the_grace_window() {
+        let s = AgentState::default();
+        s.apply("stop", "g2", "", None);
+        s.apply("user-prompt", "g2", "", Some("第二问"));
+        assert_eq!(s.aggregate(), "running");
+        s.apply("stop", "g2", "", None);
+        assert_eq!(s.aggregate(), "completed");
+    }
 }

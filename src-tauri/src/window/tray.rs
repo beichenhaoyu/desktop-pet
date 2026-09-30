@@ -47,6 +47,17 @@ fn toggle_pet(app: &AppHandle) {
     }
 }
 
+/// 打开（或唤起）设置窗。托盘菜单与回归脚本共用这一个入口。
+#[tauri::command]
+pub async fn settings_show(window: tauri::Window, app: AppHandle) -> Result<(), String> {
+    // 只让宠物窗请求：插件页面不该有把设置窗弹出来的能力
+    if window.label() != "pet" {
+        return Err("只有宠物窗可以打开设置窗".into());
+    }
+    open_settings(&app);
+    Ok(())
+}
+
 fn open_settings(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("settings") {
         let _ = win.show();

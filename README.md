@@ -6,10 +6,11 @@ Tauri 2 + TypeScript/Vite 实现的桌面宠物框架：宠物本体只提供窗
 
 **宠物本体**
 
-- 透明置顶宠物窗（Canvas2D 序列帧）、按 hit-zone 启用点击穿透、可拖拽、托盘、单实例
-- 10 个动作的状态机（idle / walk / greet / sleep / react / curious / teasing / blush / angry / night）与优先级队列（去重、排队上限 3）
+- 透明置顶宠物窗（Canvas2D 图集序列帧）、按 hit-zone 启用点击穿透、可拖拽、托盘、单实例
+- **九个状态的状态机，词表照搬 Petdex**：`idle` / `running-right` / `running-left` / `waving` / `jumping` / `failed` / `waiting` / `running` / `review`，带优先级队列（去重、排队上限 3、可持续状态只续期不排队）
+- **桌宠形象来自 Petdex 公开画廊**：设置窗输入名字（如 `deepseek`）即下载并切换，默认形象 `deepseek`；本项目不内置、不再分发任何美术文件，仅供学习与自娱自乐
+- 呼吸/轻摆渲染层叠加在真序列帧之上，插件经 `ctx.pet.*` 受控驱动本体
 - 精灵帧按设备像素比烘焙并响应 DPI 变化；渲染循环节流（脏矩形、可见性门控、定时器清理）
-- 鲸鱼娘立绘 + 呼吸/轻摆渲染层，插件经 `ctx.pet.*` 受控驱动本体
 
 **游戏模式**
 
@@ -61,17 +62,30 @@ npm run dev:debug      # 带 WebView2 远程调试端口启动，供断言脚本
 npm run verify         # 隔离与安全回归断言（需另一个终端先跑 dev:debug）
 npm run verify:agent   # Agent 事件链路断言（脚本自己写收件目录）
 npm run verify:game    # 游戏模式断言（会真的起一个铺满显示器的窗口约 10 秒）
+                   # 注意：该脚本会反复抢前台，其他置顶程序可能短暂闪动
+npm run verify:skin    # 桌宠资源安装链路（会真的连 petdex.dev 下载图集，临时装一个第二形象后删掉）
 npm run verify:release # 验打包产物的 CSP，每波次收尾手工跑一次
 ```
 
 ## 目录速览
 
-- `src/pet/` 宠物渲染：立绘加载（含程序生成兜底）+ 播放器 + 状态机
+- `src/pet/` 宠物渲染：Petdex 图集切片加载（含程序生成兜底）+ 播放器 + 九状态状态机 + 皮肤解析
 - `src/runtime/` 插件运行时（manifest 校验、能力桥、事件总线、widget 宿主）
 - `src-tauri/` Rust 宿主：窗口/托盘/单实例 + BLE/存储/权限/overlay 服务
 - `plugins/` 示例插件（心率蓝牙、Agent 桥）
 
+## 更换桌宠形象
+
+宠物形象不再内置在仓库里，而是从 [Petdex](https://petdex.dev/) 公开画廊按需下载：
+
+1. 打开设置窗 → 「桌宠形象」→ 输入画廊里的名字（例如 `deepseek`）→ 安装。
+2. 安装成功后宠物窗立即换装，之后可在同一区块切换或删除。
+3. 首次启动且本地没有任何皮肤时，宿主会自动安装默认形象 `deepseek`；离线则退回程序生成的占位帧。
+
+技术口径：图集是 `8 列 × 9 行`（v1）或 `8 列 × 11 行`（v2）的无损 webp，单元格 192×208，每行对应一个状态、行内帧数与整行时长见 `src/pet/petdex-states.ts`。下载的文件落在 `%APPDATA%/com.desktoppet.pet/skins/<slug>/`，经宿主自定义协议 `petskin://<slug>/sprite.webp` 读给 webview，与插件文件的 `petplugin://` 同一条路，dev 与打包版都不内嵌第二份副本。
+
 ## 致谢
 
-- 宠物立绘「鲸鱼娘」来自开源项目 [dsh-whale-musume](https://github.com/Sutera-Diffusus/dsh-whale-musume)（© Sutera-Diffusus，MIT 协议），素材清单见 [src/pet/assets/whale/README.md](src/pet/assets/whale/README.md)
+- 状态词表、图集规格与 Agent 阶段→状态的映射照搬 [petdex](https://github.com/crafter-station/petdex)（`src/lib/pet-states.ts`、`src/lib/sprite-atlas.ts`、`packages/petdex-cli/src/hooks/bubble-runner.ts`）；本项目只做下载与渲染，不再分发任何美术文件，仅供学习与自娱自乐。
+- 原「鲸鱼娘」单帧立绘（来自 [dsh-whale-musume](https://github.com/Sutera-Diffusus/dsh-whale-musume)）已随九状态图集重构一并移除，需要时在 git 历史里可以找回。
 

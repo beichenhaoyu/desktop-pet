@@ -126,12 +126,23 @@ try {
   }
 
   r.group("前置");
-  // 清场：上一轮可能留下同名会话仍是 running，那样本轮「写一条让它变 running」就看不到状态变化
-  appendFileSync(
-    `${INBOX}\\session-end.jsonl`,
-    JSON.stringify({ phase: "session-end", at: Date.now(), payload: { session_id: "game-mode-hidden" } }) + "\n",
-  );
-  await sleep(2000);
+  // 装了 hook 之后这台机器是活的：跑断言的 agent 自己每次工具调用都在写 pre/post，
+  // 宿主总状态会一直停在 running。不清干净的话「写一条事件应当让状态翻转」必然假失败。
+  for (const phase of ["user-prompt", "pre", "post", "stop", "approval-request"]) {
+    let text = "";
+    try {
+      text = readFileSync(`${INBOX}\\${phase}.jsonl`, "utf8");
+    } catch {
+      continue;
+    }
+    for (const id of new Set([...text.matchAll(/"session_id":"([^"]+)"/g)].map((m) => m[1]))) {
+      appendFileSync(
+        `${INBOX}\\session-end.jsonl`,
+        JSON.stringify({ phase: "session-end", at: Date.now(), payload: { session_id: id } }) + "\n",
+      );
+    }
+  }
+  await sleep(2500);
   const status = await invoke("fullscreen_watch_status");
   r.check("宿主在检测前台全屏（默认开）", true, status.ok && status.v === true);
   await resetRaf();
@@ -156,14 +167,20 @@ try {
   r.check("隐藏后动画停止", 0, await rafCount());
 
   r.group("隐身不影响事件通路");
+  // 探针用 needs_input 而不是 running：这台机器的 hook 是活的，总状态可能已经是
+  // running，那就看不到变化；needs_input 在汇总里压过 running，一定是次变化。
   appendFileSync(
-    `${INBOX}\\user-prompt.jsonl`,
-    JSON.stringify({ phase: "user-prompt", at: Date.now(), payload: { session_id: "game-mode-hidden" } }) + "\n",
+    `${INBOX}\\approval-request.jsonl`,
+    JSON.stringify({ phase: "approval-request", at: Date.now(), payload: { session_id: "game-mode-hidden" } }) + "\n",
   );
   r.check(
     "隐藏时宿主事件仍能进总线",
     true,
-    await waitUntil(c, `(window.__topics.slice().some(p => p.state === 'running'))`, 12_000),
+    await waitUntil(c, `(window.__topics.slice().some(p => p.state === 'needs_input'))`, 12_000),
+  );
+  appendFileSync(
+    `${INBOX}\\session-end.jsonl`,
+    JSON.stringify({ phase: "session-end", at: Date.now(), payload: { session_id: "game-mode-hidden" } }) + "\n",
   );
 
   r.group("全屏结束 → 恢复显示与动画");

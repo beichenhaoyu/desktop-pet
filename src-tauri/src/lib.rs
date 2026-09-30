@@ -22,8 +22,10 @@ pub fn run() {
         return;
     }
 
-    // 插件文件协议必须在窗口创建前注册
-    let builder = commands::plugins::register_plugin_protocol(tauri::Builder::default());
+    // 插件与形象的文件协议必须在窗口创建前注册
+    let builder = services::skins::register_skin_protocol(
+        commands::plugins::register_plugin_protocol(tauri::Builder::default()),
+    );
     builder
         // 单实例必须最先注册：重复启动时唤起已有宠物窗
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -65,11 +67,16 @@ pub fn run() {
             app.manage(std::sync::Mutex::new(agent_watcher));
             services::agent::start_agent_ticker(app.handle());
             services::fullscreen::start(app.handle());
+            window::overlay::start_follow_timer(app.handle());
+            // 首启且本地什么都没有时自动装默认形象（后台跑，离线只留一条 warn）
+            services::skins::ensure_default(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             window::pet::set_click_through,
+            window::pet::set_pet_hidden,
             window::pet::quit_app,
+            window::tray::settings_show,
             window::overlay::overlay_show,
             window::overlay::overlay_hide,
             window::overlay::overlay_destroy,
@@ -81,6 +88,11 @@ pub fn run() {
             services::fullscreen::fullscreen_watch_status,
             services::fullscreen::fullscreen_probe,
             commands::bus::bus_publish,
+            services::skins::pet_skin_active,
+            services::skins::pet_skin_list,
+            services::skins::pet_skin_install,
+            services::skins::pet_skin_use,
+            services::skins::pet_skin_remove,
             services::store::store_get,
             services::store::store_set,
             services::store::store_delete,

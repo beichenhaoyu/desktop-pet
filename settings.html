@@ -12,6 +12,20 @@
         <p class="hint">启停即时生效；未授权能力首次调用时会弹出确认框</p>
       </header>
       <main id="plugin-list"></main>
+      <section id="skins" class="agent-box">
+        <h2>桌宠形象</h2>
+        <p class="hint" id="skin-status">正在读取已安装形象…</p>
+        <div class="agent-actions">
+          <input type="text" id="skin-name" placeholder="Petdex 名字，例如 deepseek" />
+          <button type="button" id="skin-install">安装</button>
+          <button type="button" id="skin-refresh">刷新</button>
+        </div>
+        <ul id="skin-list"></ul>
+        <p class="hint">
+          形象来自 Petdex 公开画廊：输入画廊里的名字（例如 deepseek）即下载图集并立即换装，宠物不必重启。
+          默认形象 deepseek 在首次启动时自动安装。本项目仅供学习与自娱自乐，仓库不内置、也不再分发任何美术文件。
+        </p>
+      </section>
       <section id="game-mode" class="agent-box">
         <h2>游戏模式</h2>
         <label class="agent-row">

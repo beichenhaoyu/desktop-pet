@@ -5,7 +5,6 @@
 // 所以不玩这个功能的人不会多一份轮询开销。
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const KEY = "host:game-mode";
 
@@ -27,7 +26,6 @@ export async function installGameMode(control: {
   pause: () => void;
   resume: () => void;
 }): Promise<void> {
-  const win = getCurrentWindow();
   let hiddenByMode = false;
 
   await invoke("fullscreen_watch_set", { enabled: gameModeEnabled() });
@@ -36,10 +34,11 @@ export async function installGameMode(control: {
     if (active && !hiddenByMode) {
       hiddenByMode = true;
       control.pause();
-      await win.hide();
+      // 交给宿主：宠物窗与贴在它身上的悬浮 UI（状态卡、波形图）一起收
+      await invoke("set_pet_hidden", { hidden: true });
     } else if (!active && hiddenByMode) {
       hiddenByMode = false;
-      await win.show();
+      await invoke("set_pet_hidden", { hidden: false });
       control.resume();
     }
   }

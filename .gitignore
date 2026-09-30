@@ -16,6 +16,9 @@ pnpm-debug.log*
 src-tauri/target
 src-tauri/gen/schemas
 
+# 开发过程中的临时文件（探针、下载样本、抓图）统一进 temp/，任务收尾删除
+temp/
+
 # 本地打包产物（便携包/安装器输出）
 release-package/
 

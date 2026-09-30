@@ -220,6 +220,107 @@ function wireAgentBox(): void {
   });
 }
 
+/* ---------- 桌宠形象（Petdex 图集） ---------- */
+
+interface SkinInfo {
+  slug: string;
+  displayName: string;
+  spriteVersionNumber: number;
+  url: string;
+}
+
+const skinStatus = () => document.getElementById("skin-status");
+const skinNameInput = () => document.getElementById("skin-name") as HTMLInputElement | null;
+const skinInstallBtn = () => document.getElementById("skin-install") as HTMLButtonElement | null;
+
+function setSkinStatus(text: string): void {
+  const el = skinStatus();
+  if (el) el.textContent = text;
+}
+
+function skinButton(label: string, onClick: () => void): HTMLButtonElement {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.textContent = label;
+  btn.addEventListener("click", onClick);
+  return btn;
+}
+
+/** 形象名与 displayName 都是外部数据：一律 textContent 建节点，不进 innerHTML */
+function skinRow(skin: SkinInfo, current: boolean): HTMLLIElement {
+  const li = document.createElement("li");
+  const label = document.createElement("span");
+  label.textContent = `${skin.displayName}（${skin.slug} · 图集 v${skin.spriteVersionNumber}）${current ? " · 使用中" : ""}`;
+  li.appendChild(label);
+  if (!current) {
+    li.appendChild(
+      skinButton("使用", () => void runSkinCommand("pet_skin_use", skin.slug, `已切换到 ${skin.displayName}`)),
+    );
+  }
+  li.appendChild(
+    skinButton("删除", () => void runSkinCommand("pet_skin_remove", skin.slug, `已删除 ${skin.slug}`)),
+  );
+  return li;
+}
+
+async function renderSkins(): Promise<void> {
+  const list = document.getElementById("skin-list");
+  if (!list) return;
+  try {
+    const [items, active] = await Promise.all([
+      invoke<SkinInfo[]>("pet_skin_list"),
+      invoke<SkinInfo | null>("pet_skin_active"),
+    ]);
+    setSkinStatus(
+      items.length === 0
+        ? "还没有安装任何形象。输入名字点「安装」即可从 Petdex 画廊下载。"
+        : `已安装 ${items.length} 个，当前使用：${active?.displayName ?? "（无）"}。`,
+    );
+    list.replaceChildren(...items.map((s) => skinRow(s, s.slug === active?.slug)));
+  } catch (e) {
+    setSkinStatus(`读取形象失败：${String(e)}`);
+  }
+}
+
+/** 安装/切换/删除三个命令同形：install 收 name，其余收 slug */
+async function runSkinCommand(
+  command: "pet_skin_install" | "pet_skin_use" | "pet_skin_remove",
+  arg: string,
+  okText: string,
+): Promise<void> {
+  const btn = skinInstallBtn();
+  if (btn) btn.disabled = true;
+  try {
+    await invoke(command, command === "pet_skin_install" ? { name: arg } : { slug: arg });
+    setSkinStatus(`${okText}。`);
+  } catch (e) {
+    setSkinStatus(`操作失败：${String(e)}`);
+  } finally {
+    if (btn) btn.disabled = false;
+    await renderSkins();
+  }
+}
+
+function wireSkins(): void {
+  const install = skinInstallBtn();
+  const input = skinNameInput();
+  install?.addEventListener("click", () => {
+    const name = input?.value?.trim() ?? "";
+    if (!name) {
+      setSkinStatus("先输入一个 Petdex 名字，例如 deepseek。");
+      return;
+    }
+    setSkinStatus(`正在从 Petdex 画廊下载 ${name}…`);
+    void runSkinCommand("pet_skin_install", name, `已安装 ${name}`);
+  });
+  input?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") install?.click();
+  });
+  document.getElementById("skin-refresh")?.addEventListener("click", () => {
+    void renderSkins();
+  });
+}
+
 const GAME_MODE_KEY = "host:game-mode";
 
 function wireGameMode(): void {
@@ -255,6 +356,8 @@ async function main(): Promise<void> {
   void renderGameMode();
   wireAgentBox();
   void renderAgent();
+  wireSkins();
+  void renderSkins();
 
   // 宠物窗运行时上报的插件异常 → 顶部红条
   banner = document.createElement("div");
@@ -270,6 +373,11 @@ async function main(): Promise<void> {
   // 插件目录变动 → 重新拉列表（新增/移除即时可见）
   await listen("host:plugins-changed", () => {
     void render().catch((e) => console.error("[settings] render", e));
+  });
+
+  // 首启自动装默认形象、或宠物窗那边换了形象 → 刷新形象列表
+  await listen("pet:skin-changed", () => {
+    void renderSkins();
   });
 
   // 其他窗口触发的启停（目前只有设置窗自己，保留下述同步逻辑以防扩展）
