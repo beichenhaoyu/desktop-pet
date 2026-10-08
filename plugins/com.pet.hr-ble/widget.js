@@ -254,6 +254,8 @@ function mountChart(root, ctx, cleanups) {
 
   cleanups.push(
     ctx.bus.subscribe(TOPIC_BPM, ({ bpm }) => {
+      // 一个 NaN 进 history 之后 min/max 全变 NaN，波形要再攒 60 个有效点才自愈
+      if (!Number.isFinite(bpm)) return;
       num.textContent = String(bpm);
       // 心形图标按真实心率节奏跳动
       card.style.setProperty("--beat", `${(60 / Math.max(30, bpm)).toFixed(2)}s`);
@@ -310,7 +312,6 @@ function mountSettings(root, ctx, cleanups) {
   const $ = (sel) => panel.querySelector(sel);
   const statusEl = $(".status");
   const devicesSel = $(".devices");
-  let selectedName = null;
 
   function setStatus(text, level = "info") {
     statusEl.textContent = text;
@@ -324,7 +325,10 @@ function mountSettings(root, ctx, cleanups) {
       setStatus("请先扫描并选择设备", "error");
       return;
     }
-    ctx.bus.publish(TOPIC_CMD, { action: "connect", deviceId: id, deviceName: selectedName });
+    // 设备名就在选中项的文本里，点连接时现取：原来声明了 selectedName 却没有任何地方赋值，
+    // 连接状态、回显与持久化里的设备名恒为 null
+    const name = devicesSel.selectedOptions[0]?.textContent ?? null;
+    ctx.bus.publish(TOPIC_CMD, { action: "connect", deviceId: id, deviceName: name });
   });
   $(".disconnect").addEventListener("click", () => ctx.bus.publish(TOPIC_CMD, { action: "disconnect" }));
   panel.querySelectorAll('input[name="hr-mode"]').forEach((radio) => {

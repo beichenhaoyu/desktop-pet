@@ -80,9 +80,14 @@ function buildCard(manifest: PluginManifest, enabled: boolean): Elements {
     revoke.className = "btn-revoke";
     revoke.textContent = "撤销授权";
     revoke.addEventListener("click", async () => {
-      await invoke("permission_revoke", { pluginId: manifest.id });
-      revoke.textContent = "已撤销";
-      revoke.disabled = true;
+      try {
+        await invoke("permission_revoke", { pluginId: manifest.id });
+        revoke.textContent = "已撤销";
+        revoke.disabled = true;
+      } catch (err) {
+        // 撤销现在是宿主端会失败的命令（门禁、非法 id），不能装成成功
+        revoke.textContent = `撤销失败：${String(err instanceof Error ? err.message : err)}`;
+      }
     });
     permRow.append(revoke);
     body.append(permRow);
@@ -152,7 +157,12 @@ async function render(): Promise<void> {
   }
 
   const count = document.getElementById("nav-plugin-count");
-  if (count) count.textContent = `${enabled.size}/${manifests.length}`;
+  // 只数「既装着又启用」的：启用清单是 localStorage 里的历史值，插件被移走后还留着，
+  // 直接拿 enabled.size 会显示成 "3/2"
+  if (count) {
+    const installed = manifests.filter((m) => enabled.has(m.id)).length;
+    count.textContent = `${installed}/${manifests.length}`;
+  }
   applyFilter();
 }
 

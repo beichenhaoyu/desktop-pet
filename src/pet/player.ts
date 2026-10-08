@@ -1,15 +1,17 @@
 // 序列帧播放器：按固定间隔推进当前状态的帧下标。
 // 间隔来自 petdex 状态表：整行时长 / 该行帧数。
+import type { SpriteFrame } from "./sprites";
+
 export class FramePlayer {
   private index = 0;
   private acc = 0;
 
   constructor(
-    private readonly frames: HTMLCanvasElement[],
+    private readonly frames: SpriteFrame[],
     private readonly interval: number,
   ) {}
 
-  get current(): HTMLCanvasElement {
+  get current(): SpriteFrame {
     return this.frames[Math.min(this.index, this.frames.length - 1)];
   }
 

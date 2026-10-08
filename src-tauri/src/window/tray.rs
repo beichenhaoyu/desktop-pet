@@ -11,8 +11,7 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&toggle, &settings, &quit])?;
 
-    TrayIconBuilder::with_id("pet-tray")
-        .icon(app.default_window_icon().expect("missing default window icon").clone())
+    let mut builder = TrayIconBuilder::with_id("pet-tray")
         .tooltip("DesktopPet")
         .menu(&menu)
         .show_menu_on_left_click(false)
@@ -31,8 +30,13 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
             "settings" => open_settings(app),
             "quit" => app.exit(0),
             _ => {}
-        })
-        .build(app)?;
+        });
+    // 图标缺失就按系统默认图标建托盘，不该因为一个资源没打进去而启动即崩
+    match app.default_window_icon() {
+        Some(icon) => builder = builder.icon(icon.clone()),
+        None => log::warn!("[tray] 没有默认窗口图标，托盘使用系统默认图标"),
+    }
+    builder.build(app)?;
     Ok(())
 }
 
@@ -51,9 +55,7 @@ fn toggle_pet(app: &AppHandle) {
 #[tauri::command]
 pub async fn settings_show(window: tauri::Window, app: AppHandle) -> Result<(), String> {
     // 只让宠物窗请求：插件页面不该有把设置窗弹出来的能力
-    if window.label() != "pet" {
-        return Err("只有宠物窗可以打开设置窗".into());
-    }
+    crate::gate::pet(&window, "打开设置窗")?;
     open_settings(&app);
     Ok(())
 }

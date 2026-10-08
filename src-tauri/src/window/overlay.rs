@@ -45,11 +45,17 @@ fn table() -> &'static Mutex<HashMap<String, OverlayState>> {
 /// 窗口标签只允许字母数字与 `-` `/` `:` `_`，而插件 id 里带点号（`com.pet.hr-ble`），
 /// 所以标签是净化过的、**不能反推**出 id：页面要确认自己服务哪个插件得回头问宿主
 /// （`overlay_owner`），注册表才是归属的唯一来源。
+///
+/// `.` 编码成 `_` 而不是同样压成 `-`：插件 id 的字符集（见 commands::plugins::is_safe_id）
+/// 里没有下划线，所以这个映射是单射。原先把两者都压成 `-` 会让 `a.b` 与 `a-b`
+/// 撞进同一个标签，`owner_of_label` 按 HashMap 迭代序取第一个，归属就张冠李戴了。
 pub fn overlay_label(plugin_id: &str) -> String {
     let cleaned: String = plugin_id
         .chars()
         .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+            if c == '.' {
+                '_'
+            } else if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
                 c
             } else {
                 '-'
@@ -60,7 +66,7 @@ pub fn overlay_label(plugin_id: &str) -> String {
 }
 
 fn owner_of_label(label: &str) -> Option<String> {
-    let guard = table().lock().unwrap();
+    let guard = table().lock().unwrap_or_else(|p| p.into_inner());
     guard
         .keys()
         .find(|id| overlay_label(id) == label)
@@ -81,7 +87,7 @@ fn clamp_height(h: u32) -> u32 {
 }
 
 fn snapshot(plugin_id: &str) -> Option<OverlayState> {
-    table().lock().unwrap().get(plugin_id).copied()
+    table().lock().unwrap_or_else(|p| p.into_inner()).get(plugin_id).copied()
 }
 
 fn place_above_pet(app: &AppHandle, label: &str) {
@@ -118,7 +124,7 @@ fn apply_visibility(app: &AppHandle, plugin_id: &str) {
         let _ = win.hide();
     }
     if state.visible != show {
-        if let Some(entry) = table().lock().unwrap().get_mut(plugin_id) {
+        if let Some(entry) = table().lock().unwrap_or_else(|p| p.into_inner()).get_mut(plugin_id) {
             entry.visible = show;
         }
     }
@@ -129,7 +135,7 @@ fn apply_visibility(app: &AppHandle, plugin_id: &str) {
 /// 恢复时按各插件当时的意愿决定显不显示。
 pub fn set_suppressed(app: &AppHandle, suppressed: bool) {
     SUPPRESSED.store(suppressed, Ordering::SeqCst);
-    let ids: Vec<String> = table().lock().unwrap().keys().cloned().collect();
+    let ids: Vec<String> = table().lock().unwrap_or_else(|p| p.into_inner()).keys().cloned().collect();
     for id in ids {
         apply_visibility(app, &id);
     }
@@ -185,12 +191,20 @@ pub async fn overlay_show(
     height: Option<u32>,
 ) -> Result<(), String> {
     check_id(&plugin_id)?;
+    // 只为确实装着的插件开窗：凭空的 id 会留下一扇没人认领、也没人能收掉的窗
+    // （插件之间的越权仍拦不住，那是自报 plugin_id 的固有问题，见 gate.rs 与 R2）
+    let installed = crate::commands::plugins::installed_plugin_ids(&app)
+        .map(|ids| ids.contains(&plugin_id))
+        .unwrap_or(false);
+    if !installed {
+        return Err(format!("插件 {plugin_id} 没有安装，不能开悬浮层"));
+    }
     let placement = if placement.as_deref() == Some("above-pet") {
         PLACEMENT_ABOVE_PET
     } else {
         PLACEMENT_CORNER
     };
-    table().lock().unwrap().insert(
+    table().lock().unwrap_or_else(|p| p.into_inner()).insert(
         plugin_id.clone(),
         OverlayState {
             placement,
@@ -206,7 +220,7 @@ pub async fn overlay_show(
 #[tauri::command]
 pub async fn overlay_hide(app: AppHandle, plugin_id: String) -> Result<(), String> {
     check_id(&plugin_id)?;
-    if let Some(entry) = table().lock().unwrap().get_mut(&plugin_id) {
+    if let Some(entry) = table().lock().unwrap_or_else(|p| p.into_inner()).get_mut(&plugin_id) {
         entry.wanted = false;
     }
     apply_visibility(&app, &plugin_id);
@@ -217,7 +231,7 @@ pub async fn overlay_hide(app: AppHandle, plugin_id: String) -> Result<(), Strin
 #[tauri::command]
 pub async fn overlay_destroy(app: AppHandle, plugin_id: String) -> Result<(), String> {
     check_id(&plugin_id)?;
-    table().lock().unwrap().remove(&plugin_id);
+    table().lock().unwrap_or_else(|p| p.into_inner()).remove(&plugin_id);
     if let Some(win) = app.get_webview_window(&overlay_label(&plugin_id)) {
         let _ = win.close();
     }
@@ -227,7 +241,7 @@ pub async fn overlay_destroy(app: AppHandle, plugin_id: String) -> Result<(), St
 /// 当前有哪些悬浮层在显示（回归与诊断用）
 #[tauri::command]
 pub async fn overlay_list(app: AppHandle) -> Result<Vec<(String, bool, String)>, String> {
-    let guard = table().lock().unwrap();
+    let guard = table().lock().unwrap_or_else(|p| p.into_inner());
     Ok(guard
         .iter()
         .map(|(id, s)| {
@@ -251,7 +265,7 @@ pub fn start_follow_timer(app: &AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(150));
         // 顺手清掉「窗已经没了、意愿也收了」的死条目
-        table().lock().unwrap().retain(|id, s| {
+        table().lock().unwrap_or_else(|p| p.into_inner()).retain(|id, s| {
             s.wanted || s.visible || sink.get_webview_window(&overlay_label(id)).is_some()
         });
         if SUPPRESSED.load(Ordering::SeqCst) {
@@ -269,4 +283,29 @@ pub fn start_follow_timer(app: &AppHandle) {
             place_above_pet(&sink, &overlay_label(&id));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::overlay_label;
+
+    #[test]
+    fn dots_and_hyphens_do_not_share_a_label() {
+        assert_eq!(overlay_label("com.pet.hr-ble"), "overlay-com_pet_hr-ble");
+        // 早先两者都压成 `-`，a.b 与 a-b 会抢同一扇窗，归属按迭代序乱认
+        assert_ne!(overlay_label("a.b"), overlay_label("a-b"));
+    }
+
+    #[test]
+    fn labels_stay_inside_the_tauri_charset() {
+        for id in ["todo", "com.pet.hr-ble", "zz.probe", "a1.2-3"] {
+            let label = overlay_label(id);
+            assert!(
+                label
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '/' | ':' | '_')),
+                "{label} 含非法字符"
+            );
+        }
+    }
 }

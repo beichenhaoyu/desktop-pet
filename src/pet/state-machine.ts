@@ -1,6 +1,6 @@
 import { PET_STATES, frameSeconds } from "./petdex-states";
 import type { PetStateId } from "./petdex-states";
-import type { SpriteSet, ActionName } from "./sprites";
+import type { SpriteFrame, SpriteSet, ActionName } from "./sprites";
 import { FramePlayer } from "./player";
 
 interface StateDef {
@@ -127,7 +127,7 @@ export class PetStateMachine {
     return action;
   }
 
-  get frame(): HTMLCanvasElement {
+  get frame(): SpriteFrame {
     return this.players[this.current]!.current;
   }
 
@@ -145,8 +145,11 @@ export class PetStateMachine {
     this.sinceInteraction += dt;
 
     // 挂机检测：非等待状态下 3 分钟无交互 → waiting
+    // 兜底皮肤只有 idle 帧（players.waiting 不存在）时这条整体不成立：
+    // 否则 switchTo 每帧回落 idle、onSleep 每帧重放，台词被 60fps 反复触发
     if (
       this.current !== "waiting" &&
+      this.players.waiting &&
       !isRenewable(this.defs[this.current]) &&
       this.sinceInteraction >= AFK_SECONDS
     ) {

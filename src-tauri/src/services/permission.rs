@@ -4,10 +4,11 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tokio::sync::oneshot;
 
 use super::store::StoreState;
+use crate::fsutil::write_atomic;
 
 /// 插件权限管理：授权表持久化 + 首次调用未授权能力时弹同意框。
 /// 进程内插件不是硬安全边界，这里是策略层（见 ARCHITECTURE.md 信任模型）。
@@ -46,18 +47,18 @@ impl PermissionState {
         let file = dir.join("authorizations.json");
         if let Ok(s) = fs::read_to_string(&file) {
             if let Ok(map) = serde_json::from_str::<HashMap<String, Vec<String>>>(&s) {
-                *self.granted.lock().unwrap() = map;
+                *self.granted.lock().unwrap_or_else(|p| p.into_inner()) = map;
             } else {
                 // 授权表读坏了不能就地覆盖：留着原文件，本次按空表运行并打日志
                 log::error!("authorizations.json 解析失败，本次启动按空授权表运行: {file:?}");
             }
         }
-        *self.file.lock().unwrap() = Some(file);
+        *self.file.lock().unwrap_or_else(|p| p.into_inner()) = Some(file);
         Ok(())
     }
 
     fn save(&self) {
-        let Some(file) = self.file.lock().unwrap().clone() else {
+        let Some(file) = self.file.lock().unwrap_or_else(|p| p.into_inner()).clone() else {
             log::warn!("授权存储尚未初始化，本次授权变更未落盘");
             return;
         };
@@ -66,7 +67,7 @@ impl PermissionState {
                 log::warn!("创建授权目录失败: {e}");
             }
         }
-        let json = match serde_json::to_string_pretty(&*self.granted.lock().unwrap()) {
+        let json = match serde_json::to_string_pretty(&*self.granted.lock().unwrap_or_else(|p| p.into_inner())) {
             Ok(j) => j,
             Err(e) => {
                 log::error!("序列化授权表失败: {e}");
@@ -74,23 +75,32 @@ impl PermissionState {
             }
         };
         // 原子写：半截的 authorizations.json 会让下次启动把所有授权当成空表
-        let tmp = file.with_extension("json.tmp");
-        if let Err(e) = fs::write(&tmp, &json).and_then(|()| fs::rename(&tmp, &file)) {
-            let _ = fs::remove_file(&tmp);
+        if let Err(e) = write_atomic(&file, json.as_bytes()) {
             log::warn!("授权落盘失败: {e}");
         }
     }
 
     pub fn is_granted(&self, plugin_id: &str, cap: &str) -> bool {
         self.granted
-            .lock().unwrap()
+            .lock().unwrap_or_else(|p| p.into_inner())
             .get(plugin_id)
             .map(|caps| caps.iter().any(|c| c == cap))
             .unwrap_or(false)
     }
 
+    /// 某插件当前已授权的能力快照。阻塞线程里拿不到 `State`，
+    /// 需要在别处逐跳复核域名的话（见 services::http）带这份快照过去。
+    pub fn granted_caps(&self, plugin_id: &str) -> Vec<String> {
+        self
+            .granted
+            .lock().unwrap_or_else(|p| p.into_inner())
+            .get(plugin_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     pub fn grant(&self, plugin_id: &str, caps: &[String]) {
-        let mut map = self.granted.lock().unwrap();
+        let mut map = self.granted.lock().unwrap_or_else(|p| p.into_inner());
         let entry = map.entry(plugin_id.to_string()).or_default();
         for c in caps {
             if !entry.contains(c) {
@@ -102,7 +112,7 @@ impl PermissionState {
     }
 
     pub fn revoke_all(&self, plugin_id: &str) -> Vec<String> {
-        let revoked = self.granted.lock().unwrap().remove(plugin_id).unwrap_or_default();
+        let revoked = self.granted.lock().unwrap_or_else(|p| p.into_inner()).remove(plugin_id).unwrap_or_default();
         self.save();
         revoked
     }
@@ -110,20 +120,20 @@ impl PermissionState {
     /// 丢弃挂起的同意请求：drop sender 后等待方立刻按「拒绝」返回，
     /// 不必空等 60s 超时。同意框被关闭时由 on_window_event 调用。
     pub fn discard_pending(&self, req_id: &str) {
-        let dropped = self.pending.lock().unwrap().remove(req_id);
+        let dropped = self.pending.lock().unwrap_or_else(|p| p.into_inner()).remove(req_id);
         if dropped.is_some() {
             log::info!("同意框未作答即关闭，按拒绝处理: {req_id}");
         }
     }
 
     pub fn list(&self) -> HashMap<String, Vec<String>> {
-        self.granted.lock().unwrap().clone()
+        self.granted.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     /// 只保留仍在盘的插件的授权，返回被回收的 id。
     pub fn retain_known(&self, known: &HashSet<String>) -> Vec<String> {
         let gone: Vec<String> = {
-            let mut map = self.granted.lock().unwrap();
+            let mut map = self.granted.lock().unwrap_or_else(|p| p.into_inner());
             let gone: Vec<String> = map
                 .keys()
                 .filter(|id| !known.contains(*id))
@@ -202,7 +212,7 @@ pub async fn permission_request(
 
     let req_id = format!("r{}", uuid::Uuid::new_v4().simple());
     let (tx, rx) = oneshot::channel::<bool>();
-    state.pending.lock().unwrap().insert(
+    state.pending.lock().unwrap_or_else(|p| p.into_inner()).insert(
         req_id.clone(),
         PendingConsent { sender: tx, plugin_id: plugin_id.clone(), plugin_name: plugin_name.clone(), caps: capabilities.clone() },
     );
@@ -216,7 +226,7 @@ pub async fn permission_request(
         .decorations(false)
         .build()
         .map_err(|e| {
-            state.pending.lock().unwrap().remove(&req_id);
+            state.pending.lock().unwrap_or_else(|p| p.into_inner()).remove(&req_id);
             e.to_string()
         })?;
     let _ = win.set_focus();
@@ -242,7 +252,7 @@ pub async fn permission_request(
     if let Some(w) = app.get_webview_window(&label) {
         let _ = w.close();
     }
-    let pending = state.pending.lock().unwrap().remove(&req_id);
+    let pending = state.pending.lock().unwrap_or_else(|p| p.into_inner()).remove(&req_id);
     match answer {
         Ok(Ok(true)) => {
             state.grant(&plugin_id, &capabilities);
@@ -275,7 +285,7 @@ pub fn consent_details(
     assert_consent_caller(&window, &req_id)?;
     state
         .pending
-        .lock().unwrap()
+        .lock().unwrap_or_else(|p| p.into_inner())
         .get(&req_id)
         .map(|p| ConsentDetails {
             req_id: req_id.clone(),
@@ -295,32 +305,40 @@ pub fn consent_answer(
     granted: bool,
 ) -> Result<(), String> {
     assert_consent_caller(&window, &req_id)?;
-    let sender = state.pending.lock().unwrap().remove(&req_id).map(|p| p.sender);
+    let sender = state.pending.lock().unwrap_or_else(|p| p.into_inner()).remove(&req_id).map(|p| p.sender);
     match sender {
         Some(tx) => tx.send(granted).map_err(|_| "receiver dropped".into()),
         None => Err("request not found".into()),
     }
 }
 
-/// 设置窗：列出全部授权
+/// 授权表：只认设置窗。插件 JS 就跑在宠物窗里，
+/// 不门禁的话任意插件一行 invoke 就能抹掉别人的授权并连带清掉其存储。
 #[tauri::command]
-pub fn permission_list(state: tauri::State<PermissionState>) -> HashMap<String, Vec<String>> {
-    state.list()
+pub fn permission_list(window: tauri::Window, state: tauri::State<PermissionState>) -> Result<HashMap<String, Vec<String>>, String> {
+    crate::gate::settings(&window, "查看授权表")?;
+    Ok(state.list())
 }
 
 /// 设置窗：撤销某插件的全部授权，并连带清掉它落盘的存储
 #[tauri::command]
 pub fn permission_revoke(
+    app: AppHandle,
+    window: tauri::Window,
     plugin_id: String,
     state: tauri::State<PermissionState>,
     store: tauri::State<StoreState>,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
+    crate::gate::settings(&window, "撤销授权")?;
     if !valid_id(&plugin_id) {
-        return Vec::new();
+        return Err("invalid plugin id".into());
     }
     let revoked = state.revoke_all(&plugin_id);
     if let Err(e) = store.clear_plugin(&plugin_id) {
         log::warn!("清理 {plugin_id} 存储失败: {e}");
     }
-    revoked
+    // 前端桥会缓存「这个能力已授权」来省掉逐次 IPC（见 runtime/bridge.ts）。
+    // 撤销必须让这份缓存失效，否则已加载的插件还能继续用刚被收回的能力。
+    let _ = app.emit("host:permission-revoked", &plugin_id);
+    Ok(revoked)
 }

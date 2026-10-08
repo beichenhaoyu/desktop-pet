@@ -1,4 +1,6 @@
 mod commands;
+mod fsutil;
+mod gate;
 mod services;
 mod window;
 
@@ -93,7 +95,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             window::pet::set_click_through,
             window::pet::set_pet_hidden,
-            window::pet::quit_app,
             window::tray::settings_show,
             window::overlay::overlay_show,
             window::overlay::overlay_hide,
@@ -101,6 +102,7 @@ pub fn run() {
             window::overlay::overlay_list,
             window::overlay::overlay_owner,
             commands::plugins::plugins_list,
+            commands::plugins::plugin_file_version,
             commands::agent::agent_hooks_status,
             commands::agent::agent_hooks_install,
             commands::agent::agent_hooks_uninstall,

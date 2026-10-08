@@ -7,7 +7,26 @@ import { PID, TOPIC_BPM, TOPIC_CMD, TOPIC_DEVICES, TOPIC_STATUS } from "./topics
 let ctx = null;
 let config = { device: null, deviceName: null, mode: "badge" };
 let connected = false;
-const unsubs = [];
+const timers = new Set();
+
+// 总线订阅不用自己记账：宿主在插件停用时统一回收（见 src/runtime/subscriptions.ts）。
+// ctx.bus.subscribe 返回的是 Promise（要先过权限），旧代码把它当退订函数 push 进数组，
+// 停用时 off() 必然抛错被吞 —— 那份记账从来没生效过。
+
+/** 受管理的定时器：deactivate 一律清掉，不留「插件已经停了但回调还在跑」 */
+function later(ms, fn) {
+  const id = setTimeout(() => {
+    timers.delete(id);
+    fn();
+  }, ms);
+  timers.add(id);
+  return id;
+}
+
+function clearTimers() {
+  for (const id of timers) clearTimeout(id);
+  timers.clear();
+}
 
 function status(text, level = "info") {
   ctx?.bus.publish(TOPIC_STATUS, { text, level });
@@ -32,6 +51,25 @@ async function syncOverlay() {
   ctx.widget.update({ mode: config.mode, connected, deviceName: config.deviceName });
 }
 
+/** 意外掉线的自动重连：退避几轮就收手，别把蓝牙栈打爆 */
+const RETRY_DELAYS = [2000, 5000, 10000, 20000, 30000];
+let retries = 0;
+
+function scheduleReconnect() {
+  if (!ctx || !config.device || retries >= RETRY_DELAYS.length) {
+    if (config.device) status("自动重连没成功，请到设置窗里重新连接");
+    return;
+  }
+  const wait = RETRY_DELAYS[retries];
+  retries += 1;
+  status(`连接断了，${Math.round(wait / 1000)} 秒后自动重连（第 ${retries}/${RETRY_DELAYS.length} 次）`);
+  later(wait, () => {
+    // 期间用户手动断开（config.device 置空）或插件已停用就别再连
+    if (!ctx || !config.device) return;
+    void handleCmd({ action: "connect", deviceId: config.device, deviceName: config.deviceName });
+  });
+}
+
 async function handleCmd(cmd) {
   try {
     switch (cmd.action) {
@@ -45,6 +83,7 @@ async function handleCmd(cmd) {
         config.device = cmd.deviceId;
         config.deviceName = cmd.deviceName ?? null;
         connected = true;
+        retries = 0;
         await persist();
         await syncOverlay();
         status(`已连接 ${config.deviceName ?? cmd.deviceId}`, "ok");
@@ -52,9 +91,11 @@ async function handleCmd(cmd) {
       }
       case "disconnect": {
         await ctx.ble.disconnect();
+        // config.device 置空即可：排在路上的自动重连回调看到没有目标设备就自己收手
         config.device = null;
         config.deviceName = null;
         connected = false;
+        retries = 0;
         await persist();
         await syncOverlay(); // 断开即自动关闭悬浮窗
         status("已断开连接");
@@ -98,46 +139,35 @@ export async function activate(context) {
     ctx.log("读取配置失败", err);
   }
 
-  // 事件接线
-  unsubs.push(
-    ctx.bus.subscribe("ble:heart-rate", (e) => {
-      ctx.bus.publish(TOPIC_BPM, { bpm: e.bpm });
-    }),
-  );
-  unsubs.push(
-    ctx.bus.subscribe("ble:device-found", (d) => {
-      ctx.bus.publish(TOPIC_DEVICES, d);
-    }),
-  );
-  unsubs.push(
-    ctx.bus.subscribe("ble:disconnected", async () => {
-      connected = false;
-      await syncOverlay(); // 设备掉线自动关闭悬浮窗
-      status("设备连接已断开", "error");
-    }),
-  );
-  unsubs.push(ctx.bus.subscribe(TOPIC_CMD, handleCmd));
+  // 事件接线（退订由宿主在停用时统一回收）
+  ctx.bus.subscribe("ble:heart-rate", (e) => {
+    ctx.bus.publish(TOPIC_BPM, { bpm: e.bpm });
+  });
+  ctx.bus.subscribe("ble:device-found", (d) => {
+    ctx.bus.publish(TOPIC_DEVICES, d);
+  });
+  ctx.bus.subscribe("ble:disconnected", () => {
+    connected = false;
+    void syncOverlay(); // 设备掉线自动关闭悬浮窗
+    status("设备连接已断开", "error");
+    scheduleReconnect();
+  });
+  ctx.bus.subscribe(TOPIC_CMD, handleCmd);
 
   // 恢复显示状态
   await syncOverlay();
   if (config.device) {
     // 稍等 BLE 子系统就绪后自动重连
-    setTimeout(() => {
+    later(800, () => {
       void handleCmd({ action: "connect", deviceId: config.device, deviceName: config.deviceName });
-    }, 800);
+    });
   } else {
     status("就绪，请选择蓝牙设备");
   }
 }
 
 export async function deactivate() {
-  for (const off of unsubs.splice(0)) {
-    try {
-      off();
-    } catch {
-      /* 忽略 */
-    }
-  }
+  clearTimers();
   try {
     await ctx?.overlay.destroy();
   } catch {
@@ -150,5 +180,6 @@ export async function deactivate() {
     /* 忽略 */
   }
   connected = false;
+  retries = 0;
   ctx = null;
 }

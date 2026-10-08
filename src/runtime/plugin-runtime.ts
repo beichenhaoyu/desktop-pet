@@ -3,10 +3,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { bus } from "./event-bus";
-import { buildContext } from "./bridge";
-import { pluginFileUrl } from "./plugin-url";
+import { buildContext, invalidatePermissions } from "./bridge";
+import { pluginFileUrl, pluginFileVersion } from "./plugin-url";
 import { widgetHost } from "./widget-host";
 import { releaseAll } from "./resources";
+import { disposeAll } from "./subscriptions";
 
 export interface PluginManifest {
   id: string;
@@ -51,6 +52,30 @@ interface ActiveInstance {
 
 const active = new Map<string, ActiveInstance>();
 
+/**
+ * 每个插件一条串行执行链。
+ *
+ * activate 里有两处会长时间等待：用户点同意框、动态 import。此前它们不设防，
+ * 于是「等同意框期间把开关关掉」会走完 activate 却没人 deactivate 它（当时它还不算 active），
+ * 两个事件源（开关 + 目录变动）并发也可能把 activate 跑两遍。排队到同一条链上，
+ * 启停就是可预期的先后顺序，而不是交错的竞态。
+ */
+const chains = new Map<string, Promise<void>>();
+
+function enqueue<T>(pluginId: string, task: () => Promise<T>): Promise<T> {
+  const prev = chains.get(pluginId) ?? Promise.resolve();
+  const run = prev.then(task, task);
+  // 链尾吞掉结果：上一次的失败不该让下一次的启停直接 reject
+  chains.set(
+    pluginId,
+    run.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return run;
+}
+
 function reportError(plugin: string, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   console.error(`[runtime] ${plugin}:`, error);
@@ -61,7 +86,15 @@ export function isActive(pluginId: string): boolean {
   return active.has(pluginId);
 }
 
-export async function activatePlugin(manifest: PluginManifest): Promise<void> {
+export function activatePlugin(manifest: PluginManifest): Promise<void> {
+  return enqueue(manifest.id, () => doActivate(manifest));
+}
+
+export function deactivatePlugin(pluginId: string): Promise<void> {
+  return enqueue(pluginId, () => doDeactivate(pluginId));
+}
+
+async function doActivate(manifest: PluginManifest): Promise<void> {
   const invalid = validateManifest(manifest);
   if (invalid) {
     reportError(manifest.id ?? "?", invalid);
@@ -89,8 +122,11 @@ export async function activatePlugin(manifest: PluginManifest): Promise<void> {
         return;
       }
     }
+    // 弹框期间开关可能已经被关掉：那就别把一个「已被停用」的插件装起来
+    if (!getEnabled().includes(manifest.id)) return;
 
-    const url = pluginFileUrl(manifest.id, manifest.entry);
+    const bust = await pluginFileVersion(manifest.id, manifest.entry);
+    const url = pluginFileUrl(manifest.id, manifest.entry, bust);
     const mod = (await import(/* @vite-ignore */ url)) as ActiveInstance["module"];
     await mod.activate?.(buildContext(manifest));
     active.set(manifest.id, { manifest, module: mod });
@@ -101,7 +137,7 @@ export async function activatePlugin(manifest: PluginManifest): Promise<void> {
   }
 }
 
-export async function deactivatePlugin(pluginId: string): Promise<void> {
+async function doDeactivate(pluginId: string): Promise<void> {
   const instance = active.get(pluginId);
   if (!instance) return;
   active.delete(pluginId);
@@ -110,13 +146,15 @@ export async function deactivatePlugin(pluginId: string): Promise<void> {
   } catch (err) {
     reportError(pluginId, err);
   }
+  // 插件自己漏掉的订阅由宿主兜底回收：留着闭包收事件，它捕获的界面也 GC 不掉
+  disposeAll(pluginId);
   await widgetHost.unmount(pluginId);
   // 只回收该插件确实持有、且已无其他持有者的共享资源。
   // 早先这里是无条件 ble_disconnect + stop_scan，会掐断别的插件正在用的会话。
   const freed = releaseAll(pluginId);
   try {
-    if (freed.ble) await invoke("ble_disconnect");
-    if (freed["ble-scan"]) await invoke("ble_stop_scan");
+    if (freed.ble) await invoke("ble_disconnect", { pluginId });
+    if (freed["ble-scan"]) await invoke("ble_stop_scan", { pluginId });
     // 悬浮窗是这个插件为自己开的，它停了就整扇收掉，不涉及别的插件
     await invoke("overlay_destroy", { pluginId });
   } catch (err) {
@@ -163,6 +201,10 @@ export async function initRuntime(): Promise<void> {
     } else {
       await deactivatePlugin(id);
     }
+  });
+  // 撤销授权后必须丢掉桥的能力缓存，否则已经加载的插件还能继续用它刚被收回的权限
+  await listen<string>("host:permission-revoked", (e) => {
+    invalidatePermissions(e.payload);
   });
   // 插件目录变动（放入/移除插件）即时生效，不必重启宿主
   await listen("host:plugins-changed", async () => {

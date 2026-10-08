@@ -119,11 +119,28 @@ try {
     c.close();
   }
 } catch (err) {
+  // 内层 finally 已经把 exitCode 按断言结果算过一次，异常路径必须覆盖回非零：
+  // 否则「跑到一半崩了、但已跑的断言全绿」会以 0 退出，CI 看到的是绿
+  exitCode = 1;
   console.error("\n校验未启动:", String(err?.message ?? err).split("\n")[0]);
   console.error("若一直连不上 CDP：多半是 dev 实例还开着，单实例插件让 release 直接退出。");
 } finally {
   app.kill();
-  if (process.platform === "win32") spawn("taskkill", ["/IM", "desktop-pet.exe", "/F"], { stdio: "ignore", shell: true });
+  // 只按「可执行路径正好是本次要验的那个 exe」收残留进程。
+  // /IM 按镜像名一刀切会连用户自己开着的那份一起杀掉。
+  if (process.platform === "win32") {
+    spawn(
+      "powershell",
+      [
+        "-NoProfile",
+        "-Command",
+        `Get-Process -Name desktop-pet -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq ${JSON.stringify(
+          EXE,
+        )} } | ForEach-Object { Stop-Process -Id $_.Id -Force }`,
+      ],
+      { stdio: "ignore", shell: false },
+    );
+  }
   removeFixtures(PLUGINS_DIR);
 }
 

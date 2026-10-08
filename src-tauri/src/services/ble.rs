@@ -11,6 +11,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+use super::permission::PermissionState;
+
 const HR_SERVICE: Uuid = Uuid::from_u128(0x0000180d_0000_1000_8000_00805f9b34fb);
 const HR_MEASUREMENT: Uuid = Uuid::from_u128(0x00002a37_0000_1000_8000_00805f9b34fb);
 
@@ -83,24 +85,26 @@ fn find_hr_char(peripheral: &Peripheral) -> Option<Characteristic> {
 }
 
 /// 通知流任务：流结束（断开）后自清理。
-/// `gen` 是本次连接的代际号：只有仍属于自己这一代时才清状态，
+/// `gen` 是本次连接的代际号：只有仍属于自己那一代时才清状态，
 /// 否则同设备重连后，旧流退出会把新连接的状态抹掉。
 async fn notify_pump(app: AppHandle, peripheral: Peripheral, device_id: String, gen: u64) {
+    // 无论走到哪条退出路径，都要把「我这一代」的连接记录清掉：
+    // 否则 ble_connect 已经成功、但订阅失败时 ble_connected_device 会永久谎报已连接
     let hr_char = match find_hr_char(&peripheral) {
         Some(c) => c,
         None => {
-            let _ = app.emit("ble:error", "设备没有心率服务 (0x180D)");
+            fail_pump(&app, &device_id, gen, "设备没有心率服务 (0x180D)").await;
             return;
         }
     };
     if let Err(e) = peripheral.subscribe(&hr_char).await {
-        let _ = app.emit("ble:error", format!("订阅心率通知失败: {e}"));
+        fail_pump(&app, &device_id, gen, &format!("订阅心率通知失败: {e}")).await;
         return;
     }
     let mut stream = match peripheral.notifications().await {
         Ok(s) => s,
         Err(e) => {
-            let _ = app.emit("ble:error", format!("打开通知流失败: {e}"));
+            fail_pump(&app, &device_id, gen, &format!("打开通知流失败: {e}")).await;
             return;
         }
     };
@@ -112,6 +116,17 @@ async fn notify_pump(app: AppHandle, peripheral: Peripheral, device_id: String, 
         }
     }
     let _ = app.emit("ble:disconnected", device_id.clone());
+    clear_generation(&app, &device_id, gen).await;
+}
+
+/// 订阅前就失败：报错误 + 报断开，并清掉这一代的连接状态
+async fn fail_pump(app: &AppHandle, device_id: &str, gen: u64, reason: &str) {
+    let _ = app.emit("ble:error", reason);
+    let _ = app.emit("ble:disconnected", device_id.to_string());
+    clear_generation(app, device_id, gen).await;
+}
+
+async fn clear_generation(app: &AppHandle, device_id: &str, gen: u64) {
     let state = app.state::<BleState>();
     {
         let mut task = state.notify_task.lock().await;
@@ -120,7 +135,7 @@ async fn notify_pump(app: AppHandle, peripheral: Peripheral, device_id: String, 
         }
     }
     let mut connected = state.connected.lock().await;
-    if connected.as_deref() == Some(device_id.as_str()) {
+    if connected.as_deref() == Some(device_id) {
         *connected = None;
     }
 }
@@ -146,9 +161,33 @@ async fn init_ble(state: &BleState) -> Result<(), String> {
     Ok(())
 }
 
+/// BLE 命令一律带调用方插件 id，并逐项查授权表。
+/// JS 能力桥本来就按 manifest 校验，这一步是为了让「绕过桥直接 invoke」也拿不到别人的权限；
+/// 插件之间仍无法区分（同一个宠物窗），那要等 Web Worker 宿主。
+fn require_granted(
+    perms: &tauri::State<'_, PermissionState>,
+    plugin_id: &str,
+    cap: &str,
+) -> Result<(), String> {
+    if !crate::commands::plugins::is_safe_id(plugin_id) {
+        return Err("invalid plugin id".into());
+    }
+    if perms.is_granted(plugin_id, cap) {
+        Ok(())
+    } else {
+        Err(format!("未授权 {cap}：需要 manifest 声明且已同意"))
+    }
+}
+
 /// 开始扫描；发现的新设备通过 ble:device-found 事件广播
 #[tauri::command]
-pub async fn ble_start_scan(app: AppHandle, state: tauri::State<'_, BleState>) -> Result<(), String> {
+pub async fn ble_start_scan(
+    app: AppHandle,
+    state: tauri::State<'_, BleState>,
+    perms: tauri::State<'_, PermissionState>,
+    plugin_id: String,
+) -> Result<(), String> {
+    require_granted(&perms, &plugin_id, "ble:scan")?;
     init_ble(&state).await?;
 
     // 只重置去重集合：已上报过的设备允许重新上报（设置窗重开后也能刷新列表）。
@@ -177,27 +216,42 @@ pub async fn ble_start_scan(app: AppHandle, state: tauri::State<'_, BleState>) -
     let scanning = state.scanning.clone();
     tauri::async_runtime::spawn(async move {
         while scanning.load(Ordering::SeqCst) {
-            let mut report: Vec<DeviceFound> = Vec::new();
-            {
+            // 锁内只借一次 adapter 句柄； peripherals / properties 都是 WinRT 往返，
+            // 占着 core 锁会让连接路径全程排队
+            let adapter = {
                 let app_state = app.state::<BleState>();
-                let mut core_guard = app_state.core.lock().await;
-                if let Some(core) = core_guard.as_mut() {
-                    if let Ok(peripherals) = core.adapter.peripherals().await {
-                        for p in peripherals {
-                            let id = format!("{}", p.id());
-                            let is_new = !core.seen.contains(&id);
-                            if is_new {
-                                core.seen.insert(id.clone());
-                                let (name, rssi) = match p.properties().await {
-                                    Ok(Some(props)) => (props.local_name, props.rssi),
-                                    _ => (None, None),
-                                };
-                                core.peripherals.insert(id.clone(), p.clone());
-                                report.push(DeviceFound { id, name, rssi });
-                            }
-                        }
+                let core_guard = app_state.core.lock().await;
+                match core_guard.as_ref() {
+                    Some(core) => core.adapter.clone(),
+                    None => break,
+                }
+            };
+            let known = {
+                let app_state = app.state::<BleState>();
+                let core_guard = app_state.core.lock().await;
+                core_guard.as_ref().map(|core| core.seen.clone()).unwrap_or_default()
+            };
+            let peripherals = adapter.peripherals().await.unwrap_or_default();
+
+            let mut report: Vec<DeviceFound> = Vec::new();
+            for p in peripherals {
+                let id = format!("{}", p.id());
+                if known.contains(&id) {
+                    continue;
+                }
+                let (name, rssi) = match p.properties().await {
+                    Ok(Some(props)) => (props.local_name, props.rssi),
+                    _ => (None, None),
+                };
+                {
+                    let app_state = app.state::<BleState>();
+                    let mut core_guard = app_state.core.lock().await;
+                    if let Some(core) = core_guard.as_mut() {
+                        core.seen.insert(id.clone());
+                        core.peripherals.insert(id.clone(), p.clone());
                     }
                 }
+                report.push(DeviceFound { id, name, rssi });
             }
             for d in report {
                 let _ = app.emit("ble:device-found", d);
@@ -209,7 +263,12 @@ pub async fn ble_start_scan(app: AppHandle, state: tauri::State<'_, BleState>) -
 }
 
 #[tauri::command]
-pub async fn ble_stop_scan(state: tauri::State<'_, BleState>) -> Result<(), String> {
+pub async fn ble_stop_scan(
+    state: tauri::State<'_, BleState>,
+    perms: tauri::State<'_, PermissionState>,
+    plugin_id: String,
+) -> Result<(), String> {
+    require_granted(&perms, &plugin_id, "ble:scan")?;
     state.scanning.store(false, Ordering::SeqCst);
     let core_guard = state.core.lock().await;
     if let Some(core) = core_guard.as_ref() {
@@ -220,7 +279,14 @@ pub async fn ble_stop_scan(state: tauri::State<'_, BleState>) -> Result<(), Stri
 
 /// 连接指定设备并订阅心率通知（会自动断开旧连接）
 #[tauri::command]
-pub async fn ble_connect(app: AppHandle, state: tauri::State<'_, BleState>, device_id: String) -> Result<(), String> {
+pub async fn ble_connect(
+    app: AppHandle,
+    state: tauri::State<'_, BleState>,
+    perms: tauri::State<'_, PermissionState>,
+    plugin_id: String,
+    device_id: String,
+) -> Result<(), String> {
+    require_granted(&perms, &plugin_id, "ble:connect")?;
     init_ble(&state).await?;
 
     // 一律先摘掉旧连接：同设备重连也必须换下旧通知流，
@@ -287,7 +353,12 @@ async fn ble_disconnect_inner(state: &BleState, device_id: String) -> Result<(),
 }
 
 #[tauri::command]
-pub async fn ble_disconnect(state: tauri::State<'_, BleState>) -> Result<(), String> {
+pub async fn ble_disconnect(
+    state: tauri::State<'_, BleState>,
+    perms: tauri::State<'_, PermissionState>,
+    plugin_id: String,
+) -> Result<(), String> {
+    require_granted(&perms, &plugin_id, "ble:connect")?;
     let current = state.connected.lock().await.clone();
     match current {
         Some(id) => ble_disconnect_inner(&state, id).await,
@@ -296,6 +367,11 @@ pub async fn ble_disconnect(state: tauri::State<'_, BleState>) -> Result<(), Str
 }
 
 #[tauri::command]
-pub async fn ble_connected_device(state: tauri::State<'_, BleState>) -> Result<Option<String>, String> {
+pub async fn ble_connected_device(
+    state: tauri::State<'_, BleState>,
+    perms: tauri::State<'_, PermissionState>,
+    plugin_id: String,
+) -> Result<Option<String>, String> {
+    require_granted(&perms, &plugin_id, "ble:connect")?;
     Ok(state.connected.lock().await.clone())
 }

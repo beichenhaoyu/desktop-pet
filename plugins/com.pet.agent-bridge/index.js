@@ -66,7 +66,6 @@ function lineFor(state, tool) {
 }
 
 let ctx = null;
-const unsubs = [];
 let lastState = null;
 let lastTool = null;
 let seenCounter = -1;
@@ -249,22 +248,17 @@ export async function activate(context) {
     /* 读不到就用默认值（默认不显示敏感内容） */
   }
 
-  unsubs.push(ctx.bus.subscribe("agent:state", (p) => void onState(p)));
-  unsubs.push(ctx.bus.subscribe("agent:event", (p) => void onEvent(p)));
-  unsubs.push(ctx.bus.subscribe(TOPIC_CMD, (p) => void handleCmd(p)));
+  ctx.bus.subscribe("agent:state", (p) => void onState(p));
+  ctx.bus.subscribe("agent:event", (p) => void onEvent(p));
+  ctx.bus.subscribe(TOPIC_CMD, (p) => void handleCmd(p));
   push();
   status("已接管宿主 Agent 事件");
 }
 
 function stop() {
+  // 总线订阅由宿主在插件停用时统一回收（见 src/runtime/subscriptions.ts）；
+  // 这里只管自己的定时器。
   cancelHide();
-  for (const off of unsubs.splice(0)) {
-    try {
-      off();
-    } catch {
-      /* 忽略 */
-    }
-  }
 }
 
 export async function deactivate() {

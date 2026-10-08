@@ -4,7 +4,7 @@
 // widget 与插件其余文件一样经 petplugin 协议按目录提供，因此可以用相对 import
 // 拆分子模块（示例插件把 topic 常量抽进 topics.js 就是这个用法）。
 import { bus } from "./event-bus";
-import { pluginFileUrl } from "./plugin-url";
+import { pluginFileUrl, pluginFileVersion } from "./plugin-url";
 import { createScopedBus, type ScopedBus } from "./topic-acl";
 
 export interface WidgetManifest {
@@ -29,7 +29,13 @@ interface MountRecord {
 
 class WidgetHost {
   private mounted = new Map<string, MountRecord[]>(); // pluginId → 该窗口内已挂载插槽
-  private mounting = new Set<string>(); // `${id}#${region}`，挡住并发重复挂载
+  private mounting = new Map<string, Promise<void>>(); // `${id}#${region}` → 在途挂载
+  /** 每次 unmount 递增：在途的挂载完成后据此判断「我该不该真的留下来」 */
+  private epoch = new Map<string, number>();
+
+  private epochOf(pluginId: string): number {
+    return this.epoch.get(pluginId) ?? 0;
+  }
 
   /** 把插件 widget 挂载到指定区域；容器缺省按 id 约定 widget-<region> 查找 */
   async mount(
@@ -42,14 +48,34 @@ class WidgetHost {
     const root = container ?? document.getElementById(`widget-${region}`);
     if (!root) return;
 
-    const url = pluginFileUrl(manifest.id, manifest.widget);
-    this.mounting.add(key);
+    const startedAt = this.epochOf(manifest.id);
+    const run = this.doMount(manifest, manifest.widget, region, root, startedAt);
+    this.mounting.set(key, run);
+    try {
+      await run;
+    } finally {
+      this.mounting.delete(key);
+    }
+  }
+
+  private async doMount(
+    manifest: WidgetManifest,
+    widgetPath: string,
+    region: string,
+    root: HTMLElement,
+    startedAt: number,
+  ): Promise<void> {
+    const bust = await pluginFileVersion(manifest.id, widgetPath);
+    const url = pluginFileUrl(manifest.id, widgetPath, bust);
     let host: HTMLDivElement | undefined;
     try {
       const mod = (await import(/* @vite-ignore */ url)) as WidgetExports;
       if (typeof mod.mount !== "function") {
         throw new Error(`widget.js 缺少 mount() 导出: ${url}`);
       }
+      // 等 import 期间可能已经有人 unmount 过这个插件（设置窗重开、插件被停用）：
+      // 那时 mounted 里还没有记录，unmount 管不到这次挂载，不复查就会留下挂在 DOM 上的孤儿
+      if (this.epochOf(manifest.id) !== startedAt) return;
 
       host = document.createElement("div");
       host.dataset.pluginId = manifest.id;
@@ -63,6 +89,10 @@ class WidgetHost {
         bus: createScopedBus(manifest.id, manifest.permissions ?? [], bus),
       });
 
+      if (this.epochOf(manifest.id) !== startedAt) {
+        host.remove();
+        return;
+      }
       const list = this.mounted.get(manifest.id) ?? [];
       list.push({ host, mod, shadow });
       this.mounted.set(manifest.id, list);
@@ -70,8 +100,6 @@ class WidgetHost {
     } catch (err) {
       host?.remove(); // 半途失败的容器不能留下删不掉的孤儿节点
       throw err;
-    } finally {
-      this.mounting.delete(key);
     }
   }
 
@@ -83,6 +111,13 @@ class WidgetHost {
   }
 
   async unmount(pluginId: string): Promise<void> {
+    // 先作废这一轮的在途挂载，再等它们落地：顺序反了的话等的是一个「已经不算数」的 Promise
+    this.epoch.set(pluginId, this.epochOf(pluginId) + 1);
+    const inflight = [...this.mounting.entries()]
+      .filter(([key]) => key.startsWith(`${pluginId}#`))
+      .map(([, run]) => run.catch(() => undefined));
+    if (inflight.length) await Promise.all(inflight);
+
     const list = this.mounted.get(pluginId);
     if (!list) return;
     this.mounted.delete(pluginId);
@@ -94,6 +129,11 @@ class WidgetHost {
       }
       record.host.remove();
     }
+  }
+
+  /** 在途挂载的插槽数（只读诊断，供回归断言竞态窗口） */
+  get inflightCount(): number {
+    return this.mounting.size;
   }
 }
 

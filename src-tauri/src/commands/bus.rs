@@ -33,7 +33,7 @@ fn retained() -> &'static Mutex<(HashMap<String, serde_json::Value>, VecDeque<St
 }
 
 fn remember(topic: &str, payload: &serde_json::Value) {
-    let mut guard = retained().lock().unwrap();
+    let mut guard = retained().lock().unwrap_or_else(|p| p.into_inner());
     if !guard.0.contains_key(topic) {
         guard.1.push_back(topic.to_string());
         while guard.1.len() > MAX_RETAINED {
@@ -58,7 +58,7 @@ pub fn bus_peek(window: tauri::Window, topic: String) -> Option<serde_json::Valu
     if !hosts_widgets || !is_widget_topic(&topic) {
         return None;
     }
-    retained().lock().unwrap().0.get(&topic).cloned()
+    retained().lock().unwrap_or_else(|p| p.into_inner()).0.get(&topic).cloned()
 }
 
 #[cfg(test)]
@@ -76,7 +76,7 @@ mod tests {
     fn retention_keeps_only_the_latest_per_topic() {
         remember("t:widget", &serde_json::json!({ "v": 1 }));
         remember("t:widget", &serde_json::json!({ "v": 2 }));
-        let guard = retained().lock().unwrap();
+        let guard = retained().lock().unwrap_or_else(|p| p.into_inner());
         assert_eq!(guard.0.get("t:widget").unwrap()["v"], 2);
         assert_eq!(guard.1.iter().filter(|k| k.as_str() == "t:widget").count(), 1);
     }
@@ -86,7 +86,7 @@ mod tests {
         for i in 0..(MAX_RETAINED + 10) {
             remember(&format!("cap{i}:widget"), &serde_json::json!(i));
         }
-        let guard = retained().lock().unwrap();
+        let guard = retained().lock().unwrap_or_else(|p| p.into_inner());
         assert!(guard.0.len() <= MAX_RETAINED, "实际留下 {}", guard.0.len());
         assert!(!guard.0.contains_key("cap0:widget"), "最早的应当被挤掉");
         assert!(guard.0.contains_key(&format!("cap{}:widget", MAX_RETAINED + 9)));

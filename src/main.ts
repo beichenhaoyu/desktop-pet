@@ -31,6 +31,10 @@ function fitCanvas(): void {
   canvas.width = Math.round(window.innerWidth * dpr);
   canvas.height = Math.round(window.innerHeight * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  // 改 width 会连带重置绘图状态，所以每次都要重设：
+  // 帧现在是从 192×208 的单元格直接放大，采样质量决定它糊不糊
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
 }
 
 /** 立绘矩形（CSS px）——点击判定、点击穿透、气泡/徽标定位共用同一份几何 */
@@ -132,10 +136,17 @@ async function fetchActiveSkin(): Promise<string | null> {
   }
 }
 
-/** 换皮肤或改系统缩放后重新烘焙帧，动作与时间轴保持不变 */
+/** 换皮肤时重新切片，动作与时间轴保持不变。
+ * 帧不再按 dpr 烘焙（源矩形直接 drawImage），所以改系统缩放只需要重设画布，见 watchDpr。
+ * 换肤事件可能与别的触发交错：只有最后一次调用可以生效，
+ * 否则先发起的那次带着旧图集回来会更晚落地，把新皮肤盖回旧帧。 */
+let skinSeq = 0;
 async function applySkin(url: string | null): Promise<void> {
+  const seq = ++skinSeq;
   skinUrl = url;
-  sprites = await loadSpriteSet(url ?? "");
+  const next = await loadSpriteSet(url ?? "");
+  if (seq !== skinSeq) return;
+  sprites = next;
   pet?.setSprites(sprites);
   fitCanvas();
 }
@@ -170,7 +181,20 @@ function tick(now: number): void {
   ctx.translate(cx + shake, cy + bob);
   ctx.rotate(sway);
   if (k < 1) ctx.scale(pop, pop); // 弹跳结束后不再重采样
-  ctx.drawImage(pet.frame, -size / 2, -size / 2, size, size);
+  // 帧是「图集上的一块源矩形 + 单位化目标矩形」：直接从源图切片，
+  // 不再为每一帧留一张烘焙画布（dpr=2 时那是约 118 MB）
+  const f = pet.frame;
+  ctx.drawImage(
+    f.source,
+    f.sx,
+    f.sy,
+    f.sw,
+    f.sh,
+    -size / 2 + f.nx * size,
+    -size / 2 + f.ny * size,
+    f.nw * size,
+    f.nh * size,
+  );
   ctx.restore();
 
   rafId = requestAnimationFrame(tick);
@@ -222,7 +246,8 @@ function watchDpr(): void {
   mq.addEventListener(
     "change",
     () => {
-      void applySkin(skinUrl);
+      // 帧是源矩形切片，与 dpr 无关：改缩放只需要按新的 devicePixelRatio 重设画布
+      fitCanvas();
       watchDpr();
     },
     { once: true },

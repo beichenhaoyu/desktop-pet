@@ -37,6 +37,16 @@ export async function deactivate() { /* 停用/移除时调用 */ }
 
 - `activate` 抛错只隔离该插件，宿主把错误广播给设置窗红条，不会崩宿主。
 - 插件的 `permissions` 在首次激活时**一次性**弹框请求；用户拒绝则该插件本次不激活。
+- 同一个插件的 activate / deactivate 由宿主排在**一条串行链**上：弹同意框期间把开关关掉，
+  不会出现「在已停用状态下激活」，也不会并发跑两遍 `activate`。
+- **停用时宿主替你收尾**：你在 `ctx.bus.subscribe` 上挂出去的订阅会被统一回收，
+  widget 会卸载，本插件占着的共享 BLE 资源按持有者释放。你自己的 `setInterval` /
+  `setTimeout` 不在回收范围内，仍要在 `deactivate()` 里清掉。
+- 覆盖 `index.js` / `widget.js` 后在设置窗里关掉再打开就生效（宿主按文件修改时间给
+  模块 URL 加版本串，不会命中旧的模块缓存），不必重启宿主。改 `manifest.json` 里的
+  `version` 不是必要条件。
+- 用户在设置窗点「撤销授权」后，该插件已缓存的授权会立刻失效：下一次调用任何能力
+  会重新弹同意框，同时它的存储目录已被连带清空。
 
 ## 2.1 隐身期间
 
@@ -70,7 +80,8 @@ export async function activate(ctx) {
   const cfg = (await ctx.storage.get("config")) ?? {};
   await ctx.storage.set("config", { ...cfg, mode: "badge" });
 
-  // 事件总线
+  // 事件总线。subscribe 返回的是 Promise（要先过权限校验），
+  // 需要提前退订就 await 它拿到退订函数；不处理的话停用时宿主会回收
   ctx.bus.subscribe("ble:heart-rate", ({ bpm }) => ctx.widget.update({ bpm }));
   ctx.bus.publish(`${ctx.pluginId}:status`, { text: "已连接" });
 
@@ -129,13 +140,19 @@ overlay 的**摆放与尺寸属于你自己那扇窗**：`show()` 传什么就�
 
 ```bash
 npm run dev:debug     # 终端 1：带 WebView2 远程调试端口启动
-npm run verify        # 终端 2：跑隔离/权限回归（79 条断言）
+npm run verify        # 终端 2：跑隔离/权限/渲染回归（130 条断言）
 ```
 
-- 插件代码改动后刷新宠物窗即可（`Ctrl+R`）；Vite 不再 watch `plugins/`，不会自动热重载。
+- 插件代码改动后在设置窗里把该插件关掉再打开即可生效（模块 URL 带文件修改时间，不会命中旧缓存）；
+  也可以刷新宠物窗（`Ctrl+R`）。Vite 不 watch `plugins/`，不会自动热重载。
 - 宿主侧日志：`%LOCALAPPDATA%\com.desktoppet.pet\logs\host.log`，以及 dev 终端与 webview console。
 - **CSP 只在打包版生效**（`tauri dev` 的页面由 Vite 直出，Tauri 无从注入策略）。要验证 CSP，跑 `npm run verify:release`。
 
 ## 8. 已知边界
 
-插件是**同 realm 的普通 JS**，不是硬安全边界：一个蓄意恶意的插件可以绕过 JS 能力桥直接调宿主命令。宿主侧能强制的部分（manifest 声明校验、目录名一致性、同意框来源绑定、存储路径隔离、topic 归属）已在 Rust 侧落实并有回归覆盖；真正的进程级隔离需要切换到 Web Worker 宿主，届时本 SDK 的 API 面保持不变。
+插件是**同 realm 的普通 JS**，不是硬安全边界：一个蓄意恶意的插件可以绕过 JS 能力桥直接调宿主命令。宿主侧能强制的部分（manifest 声明校验、目录名一致性、同意框来源绑定、存储路径隔离、topic 归属、BLE 与 http 的授权表校验、跨会话开关只认设置窗）已在 Rust 侧落实并有回归覆盖；真正的进程级隔离需要切换到 Web Worker 宿主，届时本 SDK 的 API 面保持不变。
+
+两点具体口径，写插件时值得知道：
+
+- `ctx.http.request` 的重定向由宿主**逐跳**跟进并重新校验域名：你授权过的域名 302 到一个没授权的主机，请求会失败（而不是悄悄访问到内网或元数据端点）。跨主机跳转时 `authorization` / `cookie` 头不会带过去。
+- 撤销授权、查看授权表、装形象、改快捷键、开自启这一类命令**只认设置窗**。你自己的插件页面在 overlay/settings 窗里跑，也拿不到这些命令。

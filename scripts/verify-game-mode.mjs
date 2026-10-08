@@ -3,13 +3,19 @@
 //   终端 1: npm run dev:debug      终端 2: npm run verify:game
 // 注意：测试期间屏幕上会短暂出现一个铺满主显示器的深灰窗口（非置顶、任务栏里能看到，
 // 每次约 10~16 秒后自动关闭；抢前台期间别的置顶程序可能短暂闪动）。
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { argv, env } from "node:process";
 import { attach, createReport, hostInvoke, reloadAndWait, waitForPage, waitUntil } from "./cdp.mjs";
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
 const GAME_KEY = "host:game-mode";
+// 没有 APPDATA 的话这里会拼出 `undefined\com...`，脚本就在一个不存在的路径上跑断言：
+// 那种失败和被测行为的失败长得一模一样，必须当场拒绝开跑
+if (!env.APPDATA) {
+  console.error("缺 APPDATA 环境变量：找不到宿主收件目录，拒绝开跑。");
+  process.exit(2);
+}
 const INBOX = `${env.APPDATA}\\com.desktoppet.pet\\agent\\inbox`;
 const isPetPage = (t) => /localhost:1420\/(index\.html)?$/.test(t.url);
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
@@ -160,7 +166,10 @@ try {
     let text = "";
     try {
       text = readFileSync(`${INBOX}\\${phase}.jsonl`, "utf8");
-    } catch {
+    } catch (err) {
+      // 文件还没被写过是正常情况；其余错误（权限、路径）要说出来，
+      // 否则「清场没做成」和「这台机器根本没有事件」看起来一模一样
+      if (err?.code !== "ENOENT") console.log(`  · 清场时读不到 ${phase}.jsonl：${String(err?.message ?? err).slice(0, 80)}`);
       continue;
     }
     for (const id of new Set([...text.matchAll(/"session_id":"([^"]+)"/g)].map((m) => m[1]))) {
@@ -236,6 +245,10 @@ try {
   r.check("测试期间宠物窗未被重载", token, await c.ev(`window.__verifyToken ?? null`));
   await sleep(500);
   r.check("零噪音", [], c.noise);
+} catch (err) {
+  // 断言中途抛错绝不能以 0 收场：对回归工具来说，「崩了但退出码 0」比一条红断言危险得多
+  r.check("脚本未抛异常", true, false);
+  console.error("\n验证中断: " + String(err?.message ?? err).split("\n").slice(0, 3).join(" | "));
 } finally {
   // 先收掉自己起的触发窗，再管别的：屏幕上有扇铺满的窗挂着是最不能留给用户的状态
   killCovers();

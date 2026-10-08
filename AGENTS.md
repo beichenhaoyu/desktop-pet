@@ -4,9 +4,10 @@
 
 ## 当前状态
 
-- **阶段**：框架与插件运行时已落地并有运行时回归（2026-09-29）。
+- **阶段**：框架与插件运行时已落地并有运行时回归（2026-09-29）。按 [docs/CODE-REVIEW.md](docs/CODE-REVIEW.md) 的 45 条评审意见做完一波修复（2026-10-08）：P0/P1/P2 里成立的部分全部落地并有断言，评审自身的两条误判记在「约定」末尾。
 - **已完成**：宠物窗（Petdex 图集九状态 + 状态机 + 呼吸/轻摆渲染层 + 点击穿透）、Petdex 桌宠资源安装（设置窗按名字下载、默认 `deepseek`）、插件运行时、Rust 能力服务（ble / store / http / notify / 权限同意框 / Agent hook 收件）、设置窗（分区导航 + 插件搜索 + 桌宠形象 + 全局快捷键 + 开机自启 + Agent hook + 游戏模式）、按插件分开的透明 overlay 悬浮窗、心率蓝牙 / Agent 桥 / 待办三个示例插件。
 - **未完成**：`llm-token-usage` 示例插件（用户已明确暂缓）。
+- **评审波次（2026-10-08）**：[docs/CODE-REVIEW.md](docs/CODE-REVIEW.md) 的 45 条已逐条核过并修掉可复现的部分。两条不成立，别再照着"修"：P0 #1（Tauri 2 的 `Window::emit` 走 `manager().emit`，本来就向全部 webview 广播，跨窗总线一直是通的，`verify:todo` 的桌面卡片就是它的运行时证据）；P2 #32（`request()` 里 includes 与优先级判断的先后没有可观察差异 —— 会打断的请求根本不进队列）。
 - 完整设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；插件作者文档见 [PLUGIN_SDK.md](PLUGIN_SDK.md)。
 
 ## 技术决策（已确认，勿重新选型）
@@ -48,13 +49,13 @@
 - plugins/ 目录放入/移除插件后生效 ✅（目录 watcher + 设置窗启停）；单插件异常不崩溃宿主 ✅
 - 有应用全屏时宠物自动隐身并停止动画，退出后恢复 ✅（`npm run verify:game` 15 条）。隐身由宿主命令 `set_pet_hidden` 统一负责：宠物窗与贴在它身上的 overlay 悬浮 UI（状态卡、心率波形）一起收放，恢复时按插件当时的意愿重新显示
 - 心率插件可扫描/连接并显示实时 BPM ✅；`llm-token-usage` 未做
-- 待办插件可增删改勾、桌面卡片、到期提醒，并广播标准 topic `todo:changed` ✅（`npm run verify:todo` 27 条）。字段照 todo.txt 约定，数据只存插件自己的隔离存储
+- 待办插件可增删改勾、桌面卡片、到期提醒，并广播标准 topic `todo:changed` ✅（`npm run verify:todo` 30 条）。字段照 todo.txt 约定，数据只存插件自己的隔离存储
 - 断开后可直接重连同一设备，不必重新扫描（代码级修复：扫描不再清空句柄缓存，缓存未命中时回落 `adapter.peripherals()`）。**本机无蓝牙硬件，未经真实心率设备验证**
-- 设置窗安装 Qoder hook 后，Agent 的工具调用/等确认/结束/失败能驱动宠物 ✅（`npm run verify:agent` 43 条断言）。**已用真实 Qoder 会话验证**：hook 确实被调用、事件按形状落盘并驱动宠物；状态卡贴在宠物头顶显示会话状态、工具名与步数，一轮结束 3 秒后自动收起
+- 设置窗安装 Qoder hook 后，Agent 的工具调用/等确认/结束/失败能驱动宠物 ✅（`npm run verify:agent` 50 条断言）。**已用真实 Qoder 会话验证**：hook 确实被调用、事件按形状落盘并驱动宠物；状态卡贴在宠物头顶显示会话状态、工具名与步数，一轮结束 3 秒后自动收起
 - 设置窗分区导航（插件 / 桌宠形象 / 快捷键 / 启动 / Agent 接入 / 游戏模式）、按名称与权限搜索插件、全局快捷键唤出插件页、开机自启 ✅（`npm run verify` 的「设置窗」组：切页只留一个面板、搜索过滤、非法组合键被拒、`CommandOrControl` 这类跨平台 token 可用、改键成功并归一化、自启与快捷键只认设置窗）
 - 未授权能力调用被拒绝且触发同意框 ✅；SDK 文档 ✅
 - 宠物按 petdex 九状态播放真序列帧（图集 8×9 / 8×11、单元格 192×208）✅（`npm run verify` 的「petdex 图集几何与九状态切片」组）
-- 设置窗输入 Petdex 名字（如 `deepseek`）即从公开画廊下载并换装，默认形象 `deepseek`，切换不必重启 ✅（`npm run verify:skin` 25 条：真网络安装 boba、目录穿越被拒、安装类命令只认设置窗、换装后宠物窗不重启就解码新图集、删掉当前形象回落默认）。已用真实截图确认宠物窗里播的就是画廊下载的 deepseek
+- 设置窗输入 Petdex 名字（如 `deepseek`）即从公开画廊下载并换装，默认形象 `deepseek`，切换不必重启 ✅（`npm run verify:skin` 26 条：真网络安装 boba、目录穿越被拒、安装类命令只认设置窗、换装后宠物窗不重启就解码新图集、删掉当前形象回落默认）。已用真实截图确认宠物窗里播的就是画廊下载的 deepseek
 - 上述大部分由 `npm run verify` 的运行时断言把守（见「约定」），不是靠人工回归
 
 ## 约定
@@ -72,6 +73,16 @@
 - Agent 接入约定：hook 事件由宿主自己收 —— `--pet-hook <phase>` 分支在建窗之前分流，落成 `agent/inbox/<phase>.jsonl`，watcher 读增量并归一化成会话状态后广播。不读 petdex、不开本地端口。phase 必须命中白名单（它同时是文件名与 CLI 参数）；安装/卸载只按 `--pet-hook` 标记增删自己的条目，不动其他 hook，写配置前先备份且原子落盘。
 - 状态词表：**只有 petdex 的九个状态** `idle / running-right / running-left / waving / jumping / failed / waiting / running / review`（行号、每行帧数与整行时长见 `src/pet/petdex-states.ts`）。原来的 12 个自造状态（walk/greet/sleep/react/curious/teasing/blush/angry/night）已取消，别再往回加。`ctx.pet.react()` 只认这九个名字，Agent 桥的 phase→状态映射也照搬 petdex 的 `stateForEvent`
 - 桌宠资源：磁盘位置只有 Rust `services/skins.rs` 的 skins 目录一个解析点，经 `petskin://<slug>/sprite.webp`（Windows 上即 `http://petskin.localhost/…`）读给 webview；打包版 CSP 的 `img-src` 必须包含 `http://petskin.localhost`，否则只有 `tauri build` 产物会黑屏（dev 不注入 CSP，测不出来）。名字解析走公开接口 `https://petdex.dev/api/manifest/v2`（`pets` 是数组的数组，列序由其 `fields` 给出，别硬编下标）
-- 跨会话生效的系统级开关一律**只认设置窗**：`autostart_set`、`hotkey_set`（与 `pet_skin_install/use/remove`、`agent_hooks_*` 同一套 `window.label()` 门禁）；`settings_show` 反过来只认宠物窗，免得插件页面把设置窗弹来弹去
+- 跨会话生效的系统级开关一律**只认设置窗**：`autostart_set`、`hotkey_set`、`hotkey_test`、`permission_list`、`permission_revoke`（与 `pet_skin_install/use/remove`、`agent_hooks_*` 同一套门禁，判定收在 `src-tauri/src/gate.rs`，新增这类命令在那儿加一行即可）；`settings_show` 反过来只认宠物窗，免得插件页面把设置窗弹来弹去。回归要调这些「只认设置窗」的命令，就用 `scripts/cdp.mjs::openSettingsInvoker` 从设置窗发起，别在宠物窗里指望它放行
+- **BLE 命令也查授权表**：`ble_start_scan/stop_scan/connect/disconnect/connected_device` 都收 `pluginId` 并逐项校验 `ble:scan`/`ble:connect`（JS 桥负责传）。以前只有桥上面挡着，绕过桥的插件可以自由扫描连接
+- **http 的重定向由宿主逐跳跟**：ureq 设 `redirects(0)`，`http.rs::send_following_redirects` 自己走，每一跳的新 host 都要重新过 `http:<host>` 授权（否则授权一个域名就能被 302 弹到内网 / `169.254.169.254`）；跨主机时不带 `authorization`/`cookie`
+- **插件身份仍是自报的**：`store_*`、`overlay_*`、`http_request` 的 `pluginId` 由调用方给出，同 realm 里插件 A 冒名 B 仍然拦不住（见上面「仍然拦不住的」，要等 Web Worker 宿主）。已收紧的两条边角：`overlay_show` 只给确实装着的插件开窗；`is_safe_id` 在 Rust 侧与前端 `validateManifest` 的字符集对齐
+- overlay 窗口标签把 id 里的 `.` 编码成 `_`（不是 `-`）：id 词表里没有下划线，所以 `a.b` 与 `a-b` 不再抢同一扇窗；回归里的 `overlayLabelFor` 要跟着改
+- Agent watcher 的偏移只在**真的消费掉整行**之后才前进（`complete_line_prefix` 有单测）：以前先写偏移再读，hook 写一半时那批事件永久丢
+- 运行时的异步生命周期收在三个地方：`plugin-runtime.ts` 每个插件一条串行链（activate/deactivate 排队，弹同意框期间切开关不再产生幽灵激活）、`subscriptions.ts` 由宿主回收插件的总线订阅、`bridge.ts` 缓存会话内已授权的能力并在 `host:permission-revoked` 时失效。插件自己的 `setInterval` 不在回收范围内，仍要自己清
+- 插件代码覆盖后免重启：`plugin_file_version` 给出文件 mtime，`pluginFileUrl` 给 `import()` 的 URL 拼 `?v=`（petplugin 协议按 path 找文件，查询串不影响）
+- 渲染层不再逐帧烘焙：`SpriteFrame = 源矩形 + 单位化目标矩形`，57 帧共用一份已解码图集（原先 57 张 360×dpr 画布在 dpr=2 时约 118 MB），DPI 变化只需 `fitCanvas` 不必重切片；解码图集缓存按 LRU 限 2 份
+- 原子写只有一份实现：`src-tauri/src/fsutil.rs::write_atomic`（tmp 名带 pid），形象 / hook 配置 / 授权表 / 插件存储都走它，别再复制第四份
+- std Mutex 一律 `unwrap_or_else(|p| p.into_inner())`：`panic = "abort"` 下释放版是当场 abort，但 dev 与将来可能的 catch 路径里，锁中毒不该放大成整进程退出
 - 加速键字符串必须过 `services/hotkeys.rs::normalize_accel` 再注册：至少一个修饰键、恰好一个主键，`CommandOrControl`/`CmdOrCtrl` 这类跨平台 token 要认（默认值本身就用它写成，不认就会导致「恢复默认」失败）
 - 宿主日志：`%LOCALAPPDATA%\com.desktoppet.pet\logs\host.log`

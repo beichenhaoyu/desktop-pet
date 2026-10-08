@@ -10,7 +10,10 @@ let tasks = [];
 let config = { card: false, remind: true };
 let notified = {}; // { 任务 id: 已提醒过的日期 }，一天最多提醒一次
 let timer = 0;
-const unsubs = [];
+
+// 总线订阅不用自己记账：宿主在插件停用时统一回收（见 src/runtime/subscriptions.ts）。
+// 原先这里 push 的是 ctx.bus.subscribe 返回的 Promise（它是异步的，要先过权限），
+// 停用时 off() 必然抛错被吞掉，等于从来没退订过。
 
 const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
@@ -71,11 +74,18 @@ async function checkDue(force = false) {
     if (!due || due > now) continue;
     if (!force && notified[task.id] === now) continue;
     const overdue = due < now;
+    // 三条都得成功才算「今天已经提醒过」：原先先写标记再 await，
+    // 通知一抛错这条任务今天就再也不提醒，而且循环整个断掉、异常没人接
+    try {
+      await ctx.notify.show(overdue ? "待办已逾期" : "待办今天到期", formatLine(task));
+      await ctx.pet.react(overdue ? "failed" : "waiting");
+      await ctx.pet.say(overdue ? `「${task.text}」已经逾期了……` : `「${task.text}」今天到期哦`);
+    } catch (err) {
+      ctx?.log?.("到期提醒失败", err);
+      continue;
+    }
     notified[task.id] = now;
     fired += 1;
-    await ctx.notify.show(overdue ? "待办已逾期" : "待办今天到期", formatLine(task));
-    await ctx.pet.react(overdue ? "failed" : "waiting");
-    await ctx.pet.say(overdue ? `「${task.text}」已经逾期了……` : `「${task.text}」今天到期哦`);
   }
   if (fired > 0) await persist();
 }
@@ -152,20 +162,25 @@ async function afterChange(note) {
 }
 
 export async function activate(context) {
+  // 重复激活不叠定时器（宿主已把启停排进同一串行链，这里再兜一层）
+  if (timer) clearInterval(timer);
   ctx = context;
-  unsubs.push(ctx.bus.subscribe(TOPIC_CMD, (p) => void handleCmd(p)));
+  ctx.bus.subscribe(TOPIC_CMD, (p) => void handleCmd(p));
 
-  for (const [key, fallback] of [
-    ["tasks", []],
-    ["config", config],
-    ["notified", {}],
-  ]) {
+  for (const key of ["tasks", "config", "notified"]) {
     try {
       const saved = await ctx.storage.get(key);
-      if (Array.isArray(saved) && key === "tasks") tasks = saved.filter((t) => t && typeof t.id === "string");
-      else if (saved && typeof saved === "object") {
-        if (key === "config") config = { ...config, ...saved };
-        if (key === "notified") notified = saved;
+      if (key === "tasks") {
+        if (Array.isArray(saved)) tasks = saved.filter((t) => t && typeof t.id === "string");
+      } else if (saved && typeof saved === "object") {
+        // 逐字段严格恢复：存储里混进什么类型都不该让 config.card 变成 truthy 的怪值
+        if (key === "config") config = { card: saved.card === true, remind: saved.remind !== false };
+        if (key === "notified") {
+          notified = {};
+          for (const [id, day] of Object.entries(saved)) {
+            if (typeof day === "string") notified[id] = day;
+          }
+        }
       }
     } catch (err) {
       ctx.log?.(`读取 ${key} 失败`, err);
@@ -183,13 +198,6 @@ export async function activate(context) {
 export async function deactivate() {
   if (timer) clearInterval(timer);
   timer = 0;
-  for (const off of unsubs.splice(0)) {
-    try {
-      off();
-    } catch {
-      /* 忽略 */
-    }
-  }
   try {
     await ctx?.overlay.destroy();
   } catch {

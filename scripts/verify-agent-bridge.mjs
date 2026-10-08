@@ -8,13 +8,19 @@ import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { argv, env } from "node:process";
 import { spawnSync } from "node:child_process";
-import { attach, createReport, hostInvoke, listPages, reloadAndWait, waitForPage, waitUntil } from "./cdp.mjs";
+import { attach, createReport, hostInvoke, listPages, openSettingsInvoker, reloadAndWait, waitForPage, waitUntil } from "./cdp.mjs";
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
 const AGENT_ID = "com.pet.agent-bridge";
 const ENABLED_KEY = "host:enabled-plugins";
 const EXE = join(import.meta.dirname, "../src-tauri/target/debug/desktop-pet.exe");
-const INBOX = join(env.APPDATA ?? "", "com.desktoppet.pet", "agent", "inbox");
+// 没有 APPDATA 就拼不出收件目录，断言会打在 cwd 下一个同名相对路径上 ——
+// 那种失败和「宿主真的没收到事件」长得一模一样，必须当场拒绝开跑
+if (!env.APPDATA) {
+  console.error("缺 APPDATA 环境变量：找不到宿主收件目录，拒绝开跑。");
+  process.exit(2);
+}
+const INBOX = join(env.APPDATA, "com.desktoppet.pet", "agent", "inbox");
 const isPetPage = (t) => /localhost:1420\/(index\.html)?$/.test(t.url);
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
@@ -60,6 +66,7 @@ function makeConsentPump(seen) {
 }
 
 let c = null;
+let settings = null;
 let origEnabled = null;
 let pumpDone = null;
 const grantedCaps = [];
@@ -137,9 +144,10 @@ try {
   await c.ev(`window.__verifyToken = ${JSON.stringify(token)}; true`);
   pumpDone = consentPump.run(600_000); // 应答窗口必须比整轮长：宿主对同意框有 60 秒超时即视为拒绝 // 宿主对同意框有 60 秒超时即视为拒绝，应答窗口必须比整轮测试更长
 
-  /** 本插件那扇悬浮窗：标签 overlay-<id>，但 Tauri 不允许点号，id 里的点被换成 `-`
-   *  （与 Rust 的 overlay_label 同式）；标题带原 id，用来在 CDP 里认出是哪一扇 */
-  const overlayLabelFor = (id) => `overlay-${id.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+  /** 本插件那扇悬浮窗：标签 overlay-<id>，但 Tauri 不允许点号，id 里的点被编码成 `_`
+   *  （与 Rust 的 overlay_label 同式：id 词表里没有下划线，所以这是一一对应）；
+   *  标题带原 id，用来在 CDP 里认出是哪一扇 */
+  const overlayLabelFor = (id) => `overlay-${id.replace(/\./g, "_").replace(/[^A-Za-z0-9_-]/g, "-")}`;
   const OVERLAY_LABEL = overlayLabelFor(AGENT_ID);
   const OVERLAY_TITLE = `DesktopPet Overlay · ${AGENT_ID}`;
   const findOverlayTarget = async () =>
@@ -271,11 +279,12 @@ try {
   /**
    * 等某个能力真的被授权。插件在 activate 时第一次 publish、第一次 react 各自会弹一个
    * 同意框，不先等它们落定就把首个事件发出去，断言测的其实是「应答对话框有多快」。
+   * 授权表只认设置窗（见 gate.rs），所以这份查询走设置页；宠物窗问同样的命令必须被拒。
    */
   async function awaitGranted(cap, timeoutMs = 30_000) {
     const until = Date.now() + timeoutMs;
     while (Date.now() < until) {
-      const list = await invoke("permission_list");
+      const list = await settings.invoke("permission_list");
       if (list.ok && (list.v[AGENT_ID] ?? []).includes(cap)) return true;
       await sleep(500);
     }
@@ -283,6 +292,10 @@ try {
   }
 
   r.group("插件上线与授权");
+  // 撤销授权、读授权表都是「只认设置窗」的命令，先把设置窗唤出来
+  settings = await openSettingsInvoker(PORT, c);
+  const fromPet = await invoke("permission_list");
+  r.check("宠物窗读授权表被门禁拒绝", true, !fromPet.ok && /设置窗/.test(String(fromPet.e)));
   r.check("总线授权已就位（activate 时的首次发布）", true, await awaitGranted("bus:publish"));
 
   r.group("插件不再需要任何网络能力");
@@ -452,31 +465,49 @@ try {
   r.check("测试期间宠物窗未被重载", token, await c.ev(`window.__verifyToken ?? null`));
   await sleep(500); // console 事件异步送达
   r.check("零噪音", [], c.noise);
+} catch (err) {
+  // 断言中途抛错绝不能以 0 收场：对回归工具来说，「崩了但退出码 0」比一条红断言危险得多
+  r.check("脚本未抛异常", true, false);
+  console.error("\n验证中断: " + String(err?.message ?? err).split("\n").slice(0, 3).join(" | "));
 } finally {
   // 收尾顺序：停同意框应答 → 趁一切还在把插件下线（不要拿重载当下线手段）→ 撤销授权
   // → 最后重载换新文档，把本跑的 console 输出连同旧文档一起丢掉，别污染下一次 attach
   consentPump.stop();
   await pumpDone?.catch(() => undefined);
   if (c) {
-    const invoke = hostInvoke(c);
+    const wasEnabled = origEnabled !== null && JSON.parse(origEnabled).includes(AGENT_ID);
     if (origEnabled !== null) {
+      // 原样恢复用户那份清单。先前这里会把 agent-bridge 从清单里摘掉，
+      // 用户本来开着它，跑完一轮回归它就悄悄下线了
       await c
         .ev(`(async () => {
           const rt = await import('/src/runtime/plugin-runtime.ts');
-          rt.setEnabledIds(JSON.parse(${JSON.stringify(origEnabled)}).filter((x) => x !== ${JSON.stringify(AGENT_ID)}));
-          await rt.deactivatePlugin(${JSON.stringify(AGENT_ID)});
+          rt.setEnabledIds(JSON.parse(${JSON.stringify(origEnabled)}));
+          ${wasEnabled ? "" : `await rt.deactivatePlugin(${JSON.stringify(AGENT_ID)});`}
           return true;
         })()`)
         .catch(() => undefined);
       await sleep(1200);
     }
-    const revoked = await invoke("permission_revoke", { pluginId: AGENT_ID });
-    r.info("已撤销授权", JSON.stringify(revoked.ok ? revoked.v : revoked.e));
+    if (!wasEnabled) {
+      // 只撤销本跑自己申请到的授权；撤销只认设置窗，所以走那一页的命令通道
+      if (!settings) settings = await openSettingsInvoker(PORT, c).catch(() => null);
+      const revoked = settings
+        ? await settings.invoke("permission_revoke", { pluginId: AGENT_ID })
+        : { ok: false, e: "设置窗没开起来，授权留在原地" };
+      r.info("已撤销授权", JSON.stringify(revoked.ok ? revoked.v : revoked.e));
+    } else {
+      r.info("用户本来就开着它", "授权与启用清单原样保留");
+    }
+    settings?.close();
+    settings = null;
     await reloadAndWait(c).catch(() => undefined);
     // 等这一轮的收尾彻底落地再退出：下一套断言脚本紧跟着 attach 的话，
     // 会撞在这次重载的尾巴上，红在一堆与本跑无关的断言上
     await waitUntil(c, `!!window.__TAURI_INTERNALS__ && !!document.querySelector('#pet-canvas')`, 10_000);
     await sleep(1200);
+  } else {
+    settings?.close();
   }
   const failed = r.summary();
   c?.close();

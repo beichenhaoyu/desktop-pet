@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
-use super::skins::write_atomic;
+use crate::fsutil::write_atomic;
 
 pub const DEFAULT_ACCEL: &str = "CommandOrControl+Alt+P";
 
@@ -136,9 +136,7 @@ pub fn hotkey_status(app: AppHandle) -> Result<Value, String> {
 /// 换键：只认设置窗。先注册新键，成功才注销旧键并落盘。
 #[tauri::command]
 pub fn hotkey_set(app: AppHandle, window: tauri::Window, accelerator: String) -> Result<String, String> {
-    if window.label() != "settings" {
-        return Err("只有设置窗可以改动快捷键".into());
-    }
+    crate::gate::settings(&window, "改动快捷键")?;
     let next = normalize_accel(&accelerator)?;
     let current = read_saved(&app).unwrap_or_else(|| DEFAULT_ACCEL.to_string());
     if current == next {
@@ -152,12 +150,16 @@ pub fn hotkey_set(app: AppHandle, window: tauri::Window, accelerator: String) ->
     Ok(next)
 }
 
-/// 只测一下能不能注册（不改变现状）：给界面上的「测试」按钮用
+/// 只测一下能不能注册（不改变现状）：给界面上的「测试」按钮用。
+/// 注册这一步会短暂占用系统级快捷键，所以同样只认设置窗。
 #[tauri::command]
-pub fn hotkey_test(app: AppHandle, accelerator: String) -> Result<bool, String> {
+pub fn hotkey_test(app: AppHandle, window: tauri::Window, accelerator: String) -> Result<bool, String> {
+    crate::gate::settings(&window, "试注册快捷键")?;
     let probe = normalize_accel(&accelerator)?;
-    // 试的就是当前生效的那个键：注册必然报「已占用」，那不是冲突
-    if read_saved(&app).as_deref() == Some(probe.as_str()) {
+    // 试的就是当前生效的那个键：注册必然报「已占用」，那不是冲突。
+    // 比较对象必须是「当前生效」的键，而不是「已落盘」的 —— 没落盘时生效的是默认值
+    let current = read_saved(&app).unwrap_or_else(|| DEFAULT_ACCEL.to_string());
+    if current == probe {
         return Ok(true);
     }
     match apply(&app, &probe) {

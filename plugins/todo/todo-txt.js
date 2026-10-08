@@ -80,9 +80,21 @@ export function dueRank(task) {
   return 2;
 }
 
+/** 订阅方拿 open[0] 当「下一个到期」，所以同档内必须先按到期日排，
+ *  否则 rank 2（将来到期）里谁是第一个取决于插入顺序，报出来的日期可能不是最近的 */
 export function sortOpen(tasks) {
   return tasks
     .filter((t) => !t.done)
     .slice()
-    .sort((a, b) => dueRank(a) - dueRank(b) || (a.priority ?? "Z").localeCompare(b.priority ?? "Z"));
+    .sort(
+      (a, b) =>
+        dueRank(a) - dueRank(b) ||
+        dueOf(a).localeCompare(dueOf(b)) ||
+        (a.priority ?? "Z").localeCompare(b.priority ?? "Z"),
+    );
+}
+
+function dueOf(task) {
+  const due = task.meta?.due;
+  return DATE.test(due ?? "") ? due : "9999-12-31";
 }

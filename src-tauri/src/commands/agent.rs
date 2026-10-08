@@ -13,11 +13,7 @@ use crate::services::agent::HOOK_PHASES;
 use crate::services::agent_hooks;
 
 fn assert_settings_caller(window: &tauri::Window) -> Result<(), String> {
-    if window.label() == "settings" {
-        Ok(())
-    } else {
-        Err("只有设置窗可以查询或改动 Agent hook".into())
-    }
+    crate::gate::settings(window, "查询或改动 Agent hook")
 }
 
 fn home_dir(app: &AppHandle) -> Result<PathBuf, String> {

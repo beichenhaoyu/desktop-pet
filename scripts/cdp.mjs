@@ -161,6 +161,27 @@ export async function waitUntil(c, expression, timeoutMs = 20_000) {
 }
 
 /**
+ * 「只认设置窗」的命令就从设置窗发起：撤销授权、看授权表、装形象这一类门禁
+ * 按窗口 label 判定，从宠物窗调用必然被拒 —— 那正是门禁本身，不是脚本写错了。
+ * 由宠物窗自己把设置窗唤出来（settings_show 只认宠物窗），跟用户点托盘是同一条路。
+ */
+export async function openSettingsInvoker(port, petClient, timeoutMs = 25_000) {
+  const invoke = hostInvoke(petClient);
+  await invoke("settings_show");
+  const target = await waitForPage(port, (t) => /localhost:1420\/settings\.html/.test(t.url), timeoutMs);
+  const client = await attach(port, (t) => t.webSocketDebuggerUrl === target.webSocketDebuggerUrl, 15_000);
+  await new Promise((res) => setTimeout(res, 1200)); // 等设置页把列表渲染出来，别抢它的首屏
+  return {
+    client,
+    invoke: hostInvoke(client),
+    async close() {
+      await hostInvoke(client)("plugin:window|close").catch(() => undefined);
+      client.close();
+    },
+  };
+}
+
+/**
  * 重载并确认文档真的加载完。
  * 导航刚发生时 CDP 的隐式上下文可能仍指向旧文档，直接轮询会一路拿到旧结果（实测偶发假失败）。
  */

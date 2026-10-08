@@ -17,12 +17,21 @@ fn plugins_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     }
 }
 
-/// 插件 id / 文件名的安全字符集：只允许 [A-Za-z0-9._-] 且不含 .. 与路径分隔符
+/// 插件 id 规则，与前端 `validateManifest` 的 `/^[a-z0-9][a-z0-9.-]{2,63}$/` 保持一致：
+/// 首字符字母数字、其后只允许小写字母/数字/点/连字符，总长 3~64。
+/// 这条规则同时是 overlay 窗口标签净化的前提 —— id 里不可能出现 `_`，
+/// 所以 `.` → `_` 是可逆编码，`a.b` 与 `a-b` 不会被压成同一个标签。
 pub fn is_safe_id(plugin_id: &str) -> bool {
-    !plugin_id.is_empty()
-        && !plugin_id.contains("..")
-        && !plugin_id.contains('/')
-        && !plugin_id.contains('\\')
+    let bytes = plugin_id.as_bytes();
+    if !(3..=64).contains(&bytes.len()) {
+        return false;
+    }
+    let head = bytes[0];
+    let ok_head = head.is_ascii_lowercase() || head.is_ascii_digit();
+    ok_head
+        && bytes[1..]
+            .iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'.' | b'-'))
 }
 
 fn read_manifest(dir: &PathBuf, plugin_id: &str) -> Result<Value, String> {
@@ -65,6 +74,23 @@ fn collect_manifests(app: &tauri::AppHandle) -> Result<Vec<Value>, String> {
 #[tauri::command]
 pub fn plugins_list(app: tauri::AppHandle) -> Result<Vec<Value>, String> {
     collect_manifests(&app)
+}
+
+/// 插件文件的修改时间（毫秒）。前端拿它给 `import()` 拼 cache-busting 查询串：
+/// 「放进目录即生效」要对代码变更也成立，否则同名 URL 永远命中模块缓存，
+/// 覆盖 entry.js 之后非重启 webview 不可。
+#[tauri::command]
+pub fn plugin_file_version(app: tauri::AppHandle, plugin_id: String, rel: String) -> Result<u64, String> {
+    if !is_safe_id(&plugin_id) || !is_safe_rel(&rel) {
+        return Err("invalid plugin file".into());
+    }
+    let path = plugins_dir(&app)?.join(&plugin_id).join(&rel);
+    let meta = std::fs::metadata(&path).map_err(|e| format!("读取 {path:?} 失败: {e}"))?;
+    let modified = meta.modified().map_err(|e| e.to_string())?;
+    Ok(modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0))
 }
 
 /// 当前实际安装的插件 id 集合，用于回收已删除插件留下的授权。
@@ -110,7 +136,9 @@ pub fn register_plugin_protocol(
             .filter(|o| is_local_origin(o))
             .map(str::to_string);
         let path = request.uri().path().to_string();
-        std::thread::spawn(move || responder.respond(file_response(&app, &path, origin)));
+        // 读盘走 blocking 线程池，不与 tokio worker 抢时间；一条请求一条裸线程的话
+        // 插件页一刷新就是十几条线程
+        tauri::async_runtime::spawn_blocking(move || responder.respond(file_response(&app, &path, origin)));
     })
 }
 
@@ -170,8 +198,9 @@ fn file_response(
         }
     }
 
-    let mut resp = tauri::http::Response::new(body.clone().unwrap_or_default());
-    if body.is_none() {
+    let found = body.is_some();
+    let mut resp = tauri::http::Response::new(body.unwrap_or_default());
+    if !found {
         *resp.status_mut() = tauri::http::StatusCode::NOT_FOUND;
     }
     if let Ok(value) = content_type(url_path).parse() {
@@ -228,4 +257,33 @@ pub fn spawn_plugins_watcher(app: &tauri::AppHandle) -> Result<PluginWatcher, St
         .watch(&dir, RecursiveMode::NonRecursive)
         .map_err(|e| e.to_string())?;
     Ok(PluginWatcher(watcher))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_safe_id;
+
+    #[test]
+    fn accepts_the_same_ids_as_the_frontend_rule() {
+        for id in ["todo", "zz.probe", "com.pet.hr-ble", "a1.2-3"] {
+            assert!(is_safe_id(id), "{id} 应当合法");
+        }
+    }
+
+    #[test]
+    fn rejects_what_the_frontend_rule_rejects() {
+        for id in [
+            "",           // 空
+            "ab",         // 太短（{2,63} 加首字符至少 3）
+            "Todo",       // 大写
+            "a_b",        // 下划线留给 overlay 标签做转义，不能出现在 id 里
+            "../etc",     // 路径穿越
+            "a/b",        // 分隔符
+            r"a\b",
+            "a b",        // 空格
+            "a:b",        // 窗口标签里合法，但不在 id 词表内
+        ] {
+            assert!(!is_safe_id(id), "{id} 应当被拒");
+        }
+    }
 }

@@ -4,13 +4,19 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { argv, env } from "node:process";
-import { attach, createReport, hostInvoke, reloadAndWait, waitForPage, waitUntil } from "./cdp.mjs";
+import { attach, createReport, hostInvoke, openSettingsInvoker, reloadAndWait, waitForPage, waitUntil } from "./cdp.mjs";
 import { NET_ID, PROBE_ID, SPOOF_DIR, removeFixtures, writeFixtures } from "./fixtures.mjs";
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
 const PLUGINS_DIR = resolve(import.meta.dirname, "../plugins");
+// 没有 APPDATA 时 join('', ...) 会把存储路径指到 cwd 下的相对路径，
+// 「文件不在」会被读成「隔离没生效」—— 这类失败必须当场拒绝开跑
+if (!env.APPDATA) {
+  console.error("缺 APPDATA 环境变量：定位不到插件存储目录，拒绝开跑。");
+  process.exit(2);
+}
 // store.rs 落在 app_data_dir()/plugins/<id>/；Windows 上 app_data_dir = %APPDATA%/<identifier>
-const STORE_DIR = join(env.APPDATA ?? "", "com.desktoppet.pet", "plugins", PROBE_ID);
+const STORE_DIR = join(env.APPDATA, "com.desktoppet.pet", "plugins", PROBE_ID);
 const probeManifest = (permissions) =>
   `{ id: ${JSON.stringify(PROBE_ID)}, widget: 'widget.js', permissions: ${JSON.stringify(permissions)} }`;
 const MOUNT_BARE = `window.__wh.mount(${probeManifest([])}, 'badge')`;
@@ -59,6 +65,14 @@ try {
 // 装上的宿主句柄仍可能被随后的重载冲掉，故下面的安装带退避重试。
 let c;
 let aborted = false;
+// 撤销授权与查看授权表只认设置窗（见 gate.rs：插件 JS 就跑在宠物窗里，
+// 不设门禁的话一行 invoke 就能抹掉任意插件的授权并连带清掉其存储）。
+// 脚本要撤销时就把设置窗唤出来走这条真实通道，顺带证明宠物窗问同样的命令会被拒。
+let settings = null;
+async function revoke(pluginId) {
+  if (!settings) settings = await openSettingsInvoker(PORT, c);
+  return settings.invoke("permission_revoke", { pluginId });
+}
 try {
   writeFixtures(PLUGINS_DIR);
   await sleep(2500);
@@ -211,9 +225,39 @@ try {
   r.check("放入目录后免重启即激活", true, await waitUntil(c, `(window.__probeActivated ?? 0) >= 1`, 20_000));
   r.check("widget 容器随之出现", true, await c.ev(`!!document.querySelector('div[data-plugin-id=${JSON.stringify(PROBE_ID)}]')`));
   r.check("期间页面未重载（激活确实来自 watcher）", "armed", await c.ev(`window.__hotSentinel ?? '页面被重载了'`));
+
+  r.group("覆盖插件代码后不必重载即生效（import 带 cache-busting）");
+  // 版本号一字不改、只改代码 —— 这正是 ESM 模块缓存会坑人的形状：URL 恒定的话
+  // 关掉再打开拿到的还是内存里那份旧模块，「放进目录即生效」对代码变更就不成立了
+  const ver = await invoke_("plugin_file_version", { pluginId: PROBE_ID, rel: "index.js" });
+  r.check("宿主能给出文件修改时间", true, Number.isInteger(ver.v) && ver.v > 0);
+  const badRel = await invoke_("plugin_file_version", { pluginId: PROBE_ID, rel: "../manifest.json" });
+  r.check("越出插件目录的路径拿不到", true, !badRel.ok);
+  writeFileSync(
+    join(PLUGINS_DIR, PROBE_ID, "index.js"),
+    `export function activate(ctx) { window.__probeFlavor = 'B'; }\n` +
+      `export function deactivate() { window.__probeDeactivated = (window.__probeDeactivated || 0) + 1; }\n`,
+  );
+  const swapped = await c.ev(`(async () => {
+    const rt = await import('/src/runtime/plugin-runtime.ts');
+    await rt.deactivatePlugin(${JSON.stringify(PROBE_ID)});
+    const ms = await window.__TAURI_INTERNALS__.invoke('plugins_list');
+    await rt.activatePlugin(ms.find((m) => m.id === ${JSON.stringify(PROBE_ID)}));
+    return window.__probeFlavor ?? null;
+  })()`);
+  r.check("关掉再打开就跑的是新代码", "B", swapped);
+  const sameVersion = (await invoke_("plugins_list")).v?.find((m) => m.id === PROBE_ID)?.version;
+  r.check("前后是同一个版本号（改的只有代码）", "0.0.0", sameVersion);
+  // 上面那次「关掉再打开」本身会跑一次 deactivate：计数器归零再往下断言，
+  // 否则下面等的就是上一次的结果，热移除那条路径根本没被等到
+  await c.ev(`window.__probeFlavor = null; window.__probeDeactivated = 0; true`);
+
   removeFixtures(PLUGINS_DIR);
   r.check("移走目录后自动 deactivate", true, await waitUntil(c, `(window.__probeDeactivated ?? 0) >= 1`, 20_000));
-  r.check("widget 容器随之移除", 0, await c.ev(`document.querySelectorAll('div[data-plugin-id=${JSON.stringify(PROBE_ID)}]').length`));
+  // 容器消失是 deactivate 之后异步拆的，等它真的没了再断言（原来只 sleep 赌一把）
+  const removedSelector = `div[data-plugin-id=${JSON.stringify(PROBE_ID)}]`;
+  await waitUntil(c, `document.querySelectorAll(${JSON.stringify(removedSelector)}).length === 0`, 10_000);
+  r.check("widget 容器随之移除", 0, await c.ev(`document.querySelectorAll(${JSON.stringify(removedSelector)}).length`));
 
   r.group("撤销授权连带清理插件存储");
   await invoke_("store_set", { pluginId: PROBE_ID, key: "prefs", value: { mode: "badge" } });
@@ -223,9 +267,25 @@ try {
     );
   r.check("写入可读回", "badge", await readBack());
   r.check("宿主的落盘目录已建", true, existsSync(STORE_DIR));
-  await invoke_("permission_revoke", { pluginId: PROBE_ID });
+  const petRevoke = await invoke_("permission_revoke", { pluginId: PROBE_ID });
+  r.check("宠物窗撤销授权被门禁拒绝", true, !petRevoke.ok && /设置窗/.test(String(petRevoke.e)));
+  const petList = await invoke_("permission_list");
+  r.check("宠物窗读授权表同样被拒", true, !petList.ok && /设置窗/.test(String(petList.e)));
+  await revoke(PROBE_ID);
   r.check("撤销后存储读不到旧值", null, await readBack());
   r.check("落盘目录随之删除", false, existsSync(STORE_DIR));
+
+  r.group("BLE 命令也查授权表（不再是有桥无门的后门）");
+  // JS 能力桥一直按 manifest 校验，但 Rust 侧命令原先不认调用者：
+  // 绕过桥直接 invoke 的插件扫描/连接任何设备都不需要授权，与自述的能力模型不符
+  const scanDenied = await invoke_("ble_start_scan", { pluginId: PROBE_ID });
+  r.check("未授权 ble:scan 就扫不动", true, !scanDenied.ok && /未授权/.test(String(scanDenied.e)));
+  const connectDenied = await invoke_("ble_connect", { pluginId: PROBE_ID, deviceId: "aa:bb" });
+  r.check("未授权 ble:connect 就连不上", true, !connectDenied.ok && /未授权/.test(String(connectDenied.e)));
+  const readDenied = await invoke_("ble_connected_device", { pluginId: PROBE_ID });
+  r.check("读连接状态同样要授权", true, !readDenied.ok && /未授权/.test(String(readDenied.e)));
+  const badId = await invoke_("ble_start_scan", { pluginId: "a/b" });
+  r.check("非法插件 id 直接拒", true, !badId.ok && /invalid plugin id/.test(String(badId.e)));
 
   r.group("总线自递归必须被深度上限截断");
   // 嵌套调用走 inject 而不是 publish：两者共用同一个 dispatch（被测的就是它），
@@ -252,7 +312,7 @@ try {
   const HR = "com.pet.hr-ble";
   const hrManifest = (await invoke_("plugins_list")).v?.find((m) => m.id === HR);
   const savedConfig = await invoke_("store_get", { pluginId: HR, key: "config" });
-  await invoke_("permission_revoke", { pluginId: HR });
+  await revoke(HR);
   const pending = c.ev(
     `window.__TAURI_INTERNALS__.invoke('permission_request', { pluginId: ${JSON.stringify(HR)}, pluginName: '心率蓝牙', capabilities: ['ble:scan'] })`,
   );
@@ -270,7 +330,9 @@ try {
     new Promise((res) => setTimeout(() => res({ done: false }), 15_000)),
   ]);
   r.check("关窗后调用立即返回（未卡满超时）", true, consentClosed && raced.done);
-  r.check("按拒绝处理", false, raced.v === true);
+  // 期望值就是「false」这个返回值本身：写成断言 raced.v === false 的话，
+  // 抛错（v 是 "ERR …"）和超时（v 是 undefined）也会算通过
+  r.check("按拒绝处理", false, raced.v);
 
   // 还原用户授权：重新走一次同意框并点「允许」
   if (hrManifest?.permissions?.length) {
@@ -361,7 +423,7 @@ try {
   r.check("非 http/https 协议被拒", true, !badScheme.ok && /只允许 http/.test(String(badScheme.e)));
   const notifyDenied = await invoke_("notify_show", { pluginId: NET_ID, title: "t", body: "b" });
   r.check("未声明 notify 的插件发不出系统通知", true, !notifyDenied.ok && /未授权/.test(String(notifyDenied.e)));
-  await invoke_("permission_revoke", { pluginId: NET_ID });
+  await revoke(NET_ID);
 
   r.group("示例插件真实挂载（含相对 import 的 topics.js）");
   await c.ev(INSTALL); // 热安装那组末尾重载过页面，宿主句柄要重装（INSTALL 幂等）
@@ -375,16 +437,21 @@ try {
   );
   await c.ev(`window.__wh.unmount('com.pet.hr-ble')`);
 
-  r.group("渲染几何与帧烘焙（#17 / #20）");
+  r.group("渲染几何与帧切片（单份图集 + 每帧源矩形）");
   const geo = await c.ev(`(async () => {
     const s = await import('/src/pet/sprites.ts');
-    const set = await s.loadSpriteSet(''); // 没有皮肤时的兜底路径：帧仍按 dpr 烘焙
+    const set = await s.loadSpriteSet(''); // 没有皮肤时的兜底路径
     const style = getComputedStyle(document.documentElement);
     const num = (v) => parseInt(style.getPropertyValue(v) || '0', 10);
+    const f = set.idle?.[0];
     return {
       dpr: window.devicePixelRatio || 1,
-      baked: set.idle?.[0]?.width ?? 0,
-      frameSize: s.FRAME_SIZE,
+      // 帧必须是「源矩形 + 单位化目标矩形」，不是一张烘焙画布：
+      // 57 帧 × (360×dpr)² 的画布在 dpr=2 时约 118 MB，而图集本身才 12 MB
+      isCanvas: !!f && typeof HTMLCanvasElement !== 'undefined' && f instanceof HTMLCanvasElement,
+      hasRect: !!f && ['sx','sy','sw','sh','nx','ny','nw','nh'].every((k) => typeof f[k] === 'number'),
+      unitRect: f ? [f.nx, f.ny, f.nw, f.nh].every((v) => v >= 0 && v <= 1) : false,
+      frameKeys: Object.keys(set),
       petSize: num('--pet-size'),
       badgeBottom: num('--pet-badge-bottom'),
       bubbleBottom: num('--pet-bubble-bottom'),
@@ -392,18 +459,34 @@ try {
       innerH: window.innerHeight,
     };
   })()`);
-  r.check("帧按 devicePixelRatio 烘焙（不再每帧上采样）", Math.round(geo.frameSize * geo.dpr), geo.baked);
-  // 本机 dpr 可能是 1，上一条退化成 360=360；强制 2× 才真正验证烘焙机制
-  const forced = await c.ev(`(async () => {
-    const s = await import('/src/pet/sprites.ts');
-    const set = await s.loadSpriteSet('', 2);
-    return set.idle?.[0]?.width ?? 0;
-  })()`);
-  r.check("强制 2× 时帧边长翻倍（高分屏不再糊）", geo.frameSize * 2, forced);
+  r.check("帧不再是烘焙出来的画布", false, geo.isCanvas);
+  r.check("每帧带源矩形与单位化目标矩形", true, geo.hasRect);
+  r.check("目标矩形落在立绘单位方块内", true, geo.unitRect);
   r.check("兜底只提供 idle，不再伪造其余状态", ["idle"], geo.fallbackKeys);
   r.check("立绘尺寸由 JS 写入 CSS 变量", true, geo.petSize > 0);
   r.check("徽标位置跟随立绘几何而非各自硬编", true, geo.badgeBottom > 0 && geo.badgeBottom < geo.innerH);
   r.check("气泡位置同理", true, geo.bubbleBottom > 0 && geo.bubbleBottom <= geo.innerH);
+
+  r.group("已解码图集缓存有上限（换装不再一份份攒下去）");
+  const atlasCap = await c.ev(`(async () => {
+    const s = await import('/src/pet/sprites.ts');
+    const mk = (r, g, b) => {
+      // 8×8 的真图，走的是和 petdex 图集同一条 loadAtlas 路径
+      const cv = document.createElement('canvas'); cv.width = 8; cv.height = 8;
+      const g2 = cv.getContext('2d'); g2.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')'; g2.fillRect(0, 0, 8, 8);
+      return cv.toDataURL('image/png');
+    };
+    const urls = [mk(1, 1, 1), mk(2, 2, 2), mk(3, 3, 3), mk(4, 4, 4)];
+    for (const u of urls) { try { await s.loadAtlas(u); } catch (e) { return { err: String(e) }; } }
+    const after = s.decodedAtlases();
+    // 再取一次最近用过的：命中不该新增条目
+    await s.loadAtlas(urls[3]);
+    return { count: after.length, hasRecent: after.includes(urls[3]), dropped: !after.includes(urls[0]) };
+  })()`);
+  r.check("加载本身没有报错", undefined, atlasCap.err);
+  r.check("四张图装完只留下上限内的份数", true, atlasCap.count > 0 && atlasCap.count <= 2);
+  r.check("最近使用的图集留在缓存里", true, atlasCap.hasRecent);
+  r.check("最早那张被挤掉了", true, atlasCap.dropped);
 
   r.group("petdex 图集几何与九状态切片");
   const slice = await c.ev(`(async () => {
@@ -420,13 +503,23 @@ try {
       }
       return atlas;
     };
-    const center = (cv) => { const p = cv.getContext('2d').getImageData(Math.round(cv.width / 2), Math.round(cv.height / 2), 1, 1).data; return [p[0], p[1], p[2]]; };
     const v1 = paint(1536, 1872, 9);
     const v2 = paint(1536, 2288, 11);
     const set = s.sliceAtlas(v1);
     const counts = {};
     for (const st of PET_STATES) counts[st.id] = set[st.id]?.length ?? 0;
-    const probe = { idle2: center(set.idle[2]), review0: center(set.review[0]), failed7: center(set.failed[7]) };
+    // 帧是「图集上的源矩形」，所以断言直接查它落在第几行第几列：
+    // 列 = round(sx / (1536/8))，行 = round(sy / (h/rows))
+    const at = (f, w, h, rows) => ({ col: Math.round(f.sx / (w / 8)), row: Math.round(f.sy / (h / rows)) });
+    const probe = {
+      idle2: at(set.idle[2], 1536, 1872, 9),
+      review0: at(set.review[0], 1536, 1872, 9),
+      failed7: at(set.failed[7], 1536, 1872, 9),
+      // 全部帧共用同一份源图：这才是「不再逐帧烘焙」的关键
+      sharesSource: Object.values(set).flat().every((f) => f.source === v1),
+      // contain 进正方形：192×208 的单元格按长边缩放，窄边居中留边
+      fits: set.idle.map((f) => f.nw <= 1 && f.nh <= 1 && Math.abs(Math.max(f.nw, f.nh) - 1) < 1e-6),
+    };
     const set2 = s.sliceAtlas(v2);
     return {
       counts,
@@ -436,7 +529,7 @@ try {
       preview: detectSpriteAtlas(1152, 208),
       odd: detectSpriteAtlas(1500, 1872),
       v2States: PET_STATES.every((st) => (set2[st.id]?.length ?? 0) === st.frames),
-      v2FrameW: set2.idle[0].width,
+      v2Idle8Row: at(set2.idle[0], 1536, 2288, 11).row,
     };
   })()`);
   r.check(
@@ -444,11 +537,14 @@ try {
     JSON.stringify({ idle: 6, "running-right": 8, "running-left": 8, waving: 4, jumping: 5, failed: 8, waiting: 6, running: 6, review: 6 }),
     JSON.stringify(slice.counts),
   );
-  r.check("idle 第 3 帧取自第 0 行第 2 列", "0,60,0", slice.probe.idle2.join(","));
-  r.check("review 取自第 8 行", "8,0,0", slice.probe.review0.join(","));
-  r.check("failed 第 8 帧取自第 5 行第 7 列", "5,210,0", slice.probe.failed7.join(","));
+  r.check("idle 第 3 帧取自第 0 行第 2 列", JSON.stringify({ col: 2, row: 0 }), JSON.stringify(slice.probe.idle2));
+  r.check("review 取自第 8 行", JSON.stringify({ col: 0, row: 8 }), JSON.stringify(slice.probe.review0));
+  r.check("failed 第 8 帧取自第 5 行第 7 列", JSON.stringify({ col: 7, row: 5 }), JSON.stringify(slice.probe.failed7));
+  r.check("所有帧共用同一份源图（没有逐帧画布）", true, slice.probe.sharesSource);
+  r.check("contain 缩放：长边占满单位方块、没有超出", true, slice.probe.fits.every(Boolean) && slice.probe.fits.length === 6);
   r.check("v1 图集识别为 8×9", JSON.stringify({ version: 1, rows: 9, width: 1536, height: 1872, scale: 1 }), JSON.stringify(slice.v1));
   r.check("v2 图集识别为 8×11 且只切前九个状态行", true, slice.v2.version === 2 && slice.v2.rows === 11 && slice.v2States);
+  r.check("v2 的行高按 11 行算（idle 仍在第 0 行）", 0, slice.v2Idle8Row);
   r.check("画廊里的 preview.webp（单行 1152×208）不算图集", null, slice.preview);
   r.check("列边界不是整数的图不认", null, slice.odd);
 
@@ -457,8 +553,9 @@ try {
     const { PetStateMachine } = await import('/src/pet/state-machine.ts');
     const { PET_ACTIONS } = await import('/src/pet/host.ts');
     const mk = () => { const cv = document.createElement('canvas'); cv.width = 1; cv.height = 1; return cv; };
+    const frame = () => ({ source: mk(), sx: 0, sy: 0, sw: 1, sh: 1, nx: 0, ny: 0, nw: 1, nh: 1 });
     const sprites = {};
-    for (const a of PET_ACTIONS) sprites[a] = [mk(), mk()];
+    for (const a of PET_ACTIONS) sprites[a] = [frame(), frame()];
     const a = new PetStateMachine(sprites);
     a.request('jumping');
     const b = new PetStateMachine(sprites);
@@ -479,6 +576,13 @@ try {
     // 可持续状态（running）重复请求只续期，不该排队
     const d = new PetStateMachine(sprites);
     d.request('running'); d.request('running'); d.request('running');
+    // 兜底皮肤只有 idle 帧（没有 waiting 那一行）：挂机检测整条不该成立，
+    // 否则 switchTo 每帧回落 idle、onSleep 每帧重放，台词被 60fps 反复触发
+    const only = { idle: [frame(), frame()] };
+    const e = new PetStateMachine(only);
+    let slept = 0;
+    e.onSleep = () => { slept += 1; };
+    for (let i = 0; i < 120; i++) e.update(1); // 120 秒无交互
     return {
       actions: PET_ACTIONS.slice().sort(),
       interrupted: a.action,
@@ -489,6 +593,8 @@ try {
       woke,
       renewQueued: d.queuedCount,
       renewAction: d.action,
+      fallbackSleeps: slept,
+      fallbackAction: e.action,
     };
   })()`);
   r.check(
@@ -503,6 +609,8 @@ try {
   r.check("waiting 不被计时打断", true, sm.stuck);
   r.check("交互把 waiting 唤醒成 waving", "waving", sm.woke);
   r.check("可持续状态重复请求只续期不排队", 0, sm.renewQueued);
+  r.check("缺 waiting 帧时不反复触发挂机回调", 0, sm.fallbackSleeps);
+  r.check("缺 waiting 帧时角色仍停在 idle", "idle", sm.fallbackAction);
 
   r.group("设置面板回显：宿主为 `*:widget` 保留最近一份并回灌新订阅");
   const peek = await c.ev(`(async () => {
@@ -635,6 +743,7 @@ try {
   console.error("\n验证中断: " + String(err?.message ?? err).split("\n").slice(0, 3).join(" | "));
 } finally {
   removeFixtures(PLUGINS_DIR);
+  settings?.close();
   c?.close();
   // 等 websocket 真正关掉再退出，否则 Windows 上 Node 会在 stderr 抛一句 libuv 断言
   await new Promise((res) => setTimeout(res, 300));

@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { bus } from "./event-bus";
 import { PET_ACTIONS, petController, type ActionName } from "../pet/host";
 import { claim, release } from "./resources";
+import { register } from "./subscriptions";
 import { assertPublishable, assertSubscribable } from "./topic-acl";
 
 function requireController() {
@@ -22,26 +23,53 @@ interface ManifestLike {
   permissions?: string[];
 }
 
-async function ensurePermission(manifest: ManifestLike, capability: string): Promise<boolean> {
-  return ensurePermissions(manifest, [capability]);
+/**
+ * 会话内已授权能力缓存（插件 id → 能力名）。
+ * 心率这类插件每秒要过好几项能力，逐次问宿主就是一串没有必要的 IPC；
+ * 撤销授权时由 runtime 监听 `host:permission-revoked` 清掉对应条目。
+ */
+const granted = new Map<string, Set<string>>();
+
+export function invalidatePermissions(pluginId?: string): void {
+  if (pluginId) granted.delete(pluginId);
+  else granted.clear();
+}
+
+export function grantedCapabilities(pluginId: string): string[] {
+  return [...(granted.get(pluginId) ?? [])];
 }
 
 /** 一次弹框申请多个能力（http 需要 http + http:<host> 两级，不该弹两次） */
 async function ensurePermissions(manifest: ManifestLike, capabilities: string[]): Promise<boolean> {
+  const pid = manifest.id;
+  const known = granted.get(pid) ?? new Set<string>();
+  const uncached = capabilities.filter((capability) => !known.has(capability));
+
+  // 缓存说「没授权」时仍要问宿主一次：授权表是宿主的事实，可能已被别处改动
   const missing: string[] = [];
-  for (const capability of capabilities) {
-    const granted = await invoke<boolean>("permission_check", {
-      pluginId: manifest.id,
-      capability,
-    });
-    if (!granted) missing.push(capability);
+  for (const capability of uncached) {
+    const ok = await invoke<boolean>("permission_check", { pluginId: pid, capability });
+    if (ok) known.add(capability);
+    else missing.push(capability);
   }
-  if (missing.length === 0) return true;
-  return invoke<boolean>("permission_request", {
-    pluginId: manifest.id,
+  if (missing.length === 0) {
+    granted.set(pid, known);
+    return true;
+  }
+  const accepted = await invoke<boolean>("permission_request", {
+    pluginId: pid,
     pluginName: manifest.name,
     capabilities: missing,
   });
+  if (accepted) {
+    for (const capability of missing) known.add(capability);
+    granted.set(pid, known);
+  }
+  return accepted;
+}
+
+async function ensurePermission(manifest: ManifestLike, capability: string): Promise<boolean> {
+  return ensurePermissions(manifest, [capability]);
 }
 
 /** 包装一个能力方法：调用前校验权限 */
@@ -74,9 +102,11 @@ export function buildContext(manifest: ManifestLike): PluginContext {
         assertPublishable(pid, topic);
         return Promise.resolve(bus.publish(topic, payload));
       }),
+      /** 返回退订函数（先 await 才拿到）。停用插件时宿主统一回收，见 runtime/subscriptions.ts */
       subscribe: gated(manifest, "bus:subscribe", (topic: string, handler: (payload: unknown) => void) => {
         assertSubscribable(pid, topic, manifest.permissions ?? []);
-        return Promise.resolve(bus.subscribe(topic, handler));
+        const off = bus.subscribe(topic, handler);
+        return Promise.resolve(register(pid, off));
       }),
     },
 
@@ -88,22 +118,34 @@ export function buildContext(manifest: ManifestLike): PluginContext {
 
     ble: {
       startScan: gated(manifest, "ble:scan", async () => {
+        // 先 claim 是对的（并发时不该有两个「开始扫描」），但失败必须对称回滚：
+        // 留着幽灵持有者的话，真正在扫的那个 release 时永远返回 false，扫描就停不下来
         claim("ble-scan", pid);
-        await invoke("ble_start_scan");
+        try {
+          await invoke("ble_start_scan", { pluginId: pid });
+        } catch (err) {
+          release("ble-scan", pid);
+          throw err;
+        }
       }),
       stopScan: gated(manifest, "ble:scan", async () => {
         // 仍有别的插件在扫就不该真的停
-        if (release("ble-scan", pid)) await invoke("ble_stop_scan");
+        if (release("ble-scan", pid)) await invoke("ble_stop_scan", { pluginId: pid });
       }),
       connect: gated(manifest, "ble:connect", async (deviceId: string) => {
         claim("ble", pid);
-        await invoke("ble_connect", { deviceId });
+        try {
+          await invoke("ble_connect", { pluginId: pid, deviceId });
+        } catch (err) {
+          release("ble", pid);
+          throw err;
+        }
       }),
       disconnect: gated(manifest, "ble:connect", async () => {
-        if (release("ble", pid)) await invoke("ble_disconnect");
+        if (release("ble", pid)) await invoke("ble_disconnect", { pluginId: pid });
       }),
       connectedDevice: gated(manifest, "ble:connect", () =>
-        invoke("ble_connected_device"),
+        invoke("ble_connected_device", { pluginId: pid }),
       ),
     },
 
@@ -127,7 +169,7 @@ export function buildContext(manifest: ManifestLike): PluginContext {
           .replace(/\s*\n\s*/g, " ")
           .trim()
           .slice(0, 200);
-        if (!clean) throw new Error(`[${pid}] say 需要非文本内容`);
+        if (!clean) throw new Error(`[${pid}] say 需要非空文本内容`);
         requireController().say(clean);
       }),
     },

@@ -68,12 +68,17 @@ try {
       slug: skin.slug,
       version: skin.spriteVersionNumber,
       counts,
-      sizes: PET_STATES.map((st) => set[st.id]?.[0]?.width ?? 0),
+      // 帧是源矩形 + 单位化目标矩形，不再是烘焙画布：真图集切出来的每一帧
+      // 都得指回同一张源图，且目标矩形不越出单位方块
+      sameSource: PET_STATES.every((st) => (set[st.id] ?? []).every((f) => f.source === set.idle[0].source)),
+      inUnitSquare: PET_STATES.every((st) => (set[st.id] ?? []).every((f) =>
+        f.nx >= 0 && f.ny >= 0 && f.nw > 0 && f.nh > 0 && f.nx + f.nw <= 1.0001 && f.ny + f.nh <= 1.0001)),
       decoded: decodedAtlases(),
     };
   })()`);
   r.check("九个状态各取到自己那行的帧数", "6,8,8,4,5,8,6,6,6", Object.values(sliced.counts).join(","));
-  r.check("每帧都按 dpr 烘成同一边长", true, sliced.sizes.every((n) => n > 0) && new Set(sliced.sizes).size === 1);
+  r.check("所有帧共用同一份已解码图集", true, sliced.sameSource);
+  r.check("目标矩形都落在立绘单位方块内", true, sliced.inUnitSquare);
   r.check(`解码记录里有 ${DEFAULT_SLUG} 的图集`, true, sliced.decoded.some((u) => u.includes(DEFAULT_SLUG)));
 
   r.group("设置窗：输入名字 → 从公开画廊安装");

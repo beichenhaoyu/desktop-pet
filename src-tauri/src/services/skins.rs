@@ -16,6 +16,8 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::fsutil::write_atomic;
+
 /// 公开画廊目录（实测 200、约 863 KB、4800+ 条）
 pub const MANIFEST_URL: &str = "https://petdex.dev/api/manifest/v2";
 /// 默认形象：首次启动且本地什么都没有时装它
@@ -239,24 +241,6 @@ pub fn skin_url(slug: &str, file: &str) -> String {
     format!("http://petskin.localhost/{slug}/{file}")
 }
 
-/// 原子落盘：临时文件名带 pid，避免两个进程（例如 hook 分支与主实例）互相覆盖
-pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let base = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("file")
-        .to_string();
-    let tmp = path.with_file_name(format!("{base}.{}.tmp", std::process::id()));
-    fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
-    fs::rename(&tmp, path).map_err(|e| {
-        let _ = fs::remove_file(&tmp);
-        e.to_string()
-    })
-}
-
 pub fn active_pointer(root: &Path) -> Option<String> {
     let raw = fs::read(root.join("active.json")).ok()?;
     let slug = serde_json::from_slice::<Value>(&raw)
@@ -309,12 +293,13 @@ fn get_bytes(url: &str, max: u64) -> Result<Vec<u8>, String> {
         return Err(format!("{url} 返回 {}", resp.status()));
     }
     let mut buf = Vec::new();
+    // 多取 1 字节：正好等于上限的合法响应不该被当成超长而拒收
     let read = resp
         .into_reader()
-        .take(max)
+        .take(max + 1)
         .read_to_end(&mut buf)
         .map_err(|e| format!("读取响应失败: {e}"))?;
-    if read as u64 >= max {
+    if read as u64 > max {
         return Err("响应超过大小上限，已放弃".into());
     }
     Ok(buf)
@@ -406,11 +391,7 @@ fn installed(app: &AppHandle) -> Vec<SkinInfo> {
 /* ================= IPC 命令 ================= */
 
 fn only_settings(window: &tauri::Window) -> Result<(), String> {
-    if window.label() == "settings" {
-        Ok(())
-    } else {
-        Err("只有设置窗可以安装或切换形象".into())
-    }
+    crate::gate::settings(window, "安装或切换形象")
 }
 
 /// 当前形象；没装好任何皮肤时返回 null，前端退回程序生成帧
@@ -511,7 +492,7 @@ pub fn register_skin_protocol(
             })
             .map(str::to_string);
         let path = request.uri().path().to_string();
-        std::thread::spawn(move || responder.respond(skin_response(&app, &path, origin)));
+        tauri::async_runtime::spawn_blocking(move || responder.respond(skin_response(&app, &path, origin)));
     })
 }
 
@@ -534,13 +515,16 @@ fn skin_response(
         }
     }
 
-    let mut resp = tauri::http::Response::new(body.clone().unwrap_or_default());
-    if body.is_none() {
+    // 图集可达 12 MB：状态先定下来再移动 body，不必为拼响应整份克隆
+    let found = body.is_some();
+    let mut resp = tauri::http::Response::new(body.unwrap_or_default());
+    if !found {
         *resp.status_mut() = tauri::http::StatusCode::NOT_FOUND;
     }
+    // rsplit_once('.') 给出 (前段, 扩展名)，要匹配的是第二段
     let ctype = match file.rsplit_once('.') {
-        Some(("webp", _)) => "image/webp",
-        Some(("json", _)) => "application/json",
+        Some((_, "webp")) => "image/webp",
+        Some((_, "json")) => "application/json",
         _ => "application/octet-stream",
     };
     if let Ok(value) = ctype.parse() {
@@ -727,17 +711,6 @@ mod tests {
         assert_eq!(active_pointer(&dir), None);
         set_active(&dir, "deepseek").unwrap();
         assert_eq!(active_pointer(&dir).as_deref(), Some("deepseek"));
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn write_atomic_leaves_no_temp_file() {
-        let dir = std::env::temp_dir().join(format!("pet-skins-atomic-{}", now_ms()));
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("sprite.webp");
-        write_atomic(&path, b"payload").unwrap();
-        assert_eq!(fs::read(&path).unwrap(), b"payload");
-        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
         fs::remove_dir_all(&dir).ok();
     }
 }

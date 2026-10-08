@@ -223,7 +223,7 @@ impl AgentState {
     ) -> Option<&'static str> {
         let state = state_for_event(phase, kind)?;
         let key = if session.is_empty() { "default".to_string() } else { session.to_string() };
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock().unwrap_or_else(|p| p.into_inner());
         if state == "idle" {
             sessions.remove(&key);
             return Some(state);
@@ -264,7 +264,7 @@ impl AgentState {
 
     /// 当前最活跃那个会话的标题与步数（卡片要显示的就是它）
     fn active_summary(&self) -> (String, u32) {
-        let sessions = self.sessions.lock().unwrap();
+        let sessions = self.sessions.lock().unwrap_or_else(|p| p.into_inner());
         sessions
             .values()
             .max_by_key(|session| session.seen)
@@ -275,7 +275,7 @@ impl AgentState {
     /// 汇总各会话：needs_input 压过 running，都没有则 idle
     fn aggregate(&self) -> &'static str {
         let now = Instant::now();
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock().unwrap_or_else(|p| p.into_inner());
         sessions.retain(|_, session| now.duration_since(session.seen) < ttl_for(session.state));
         let mut running = false;
         for session in sessions.values() {
@@ -298,7 +298,7 @@ impl AgentState {
     fn publish(&self, app: &AppHandle, hint: Option<(&str, &str)>) -> bool {
         let aggregate = self.aggregate();
         let (title, steps) = self.active_summary();
-        let mut emitted = self.emitted.lock().unwrap();
+        let mut emitted = self.emitted.lock().unwrap_or_else(|p| p.into_inner());
         if *emitted == aggregate {
             return false;
         }
@@ -320,17 +320,26 @@ impl AgentState {
     }
 }
 
+/// 一批增量里能算「已消费」的部分：到最后一个换行为止。
+/// 返回 (该换行的下标, 前进后的偏移)；整段里没有换行时返回 None —— 这时偏移不能动。
+fn complete_line_prefix(start: u64, bytes: &[u8]) -> Option<(usize, u64)> {
+    let end = bytes.iter().rposition(|b| *b == b'\n')?;
+    Some((end, start + end as u64 + 1))
+}
+
 /// 读一个 phase 文件的增量。只消费到最后一个换行，半行留给下一次。
+///
+/// 偏移量只在真正消费掉若干整行之后才前进：原先是先写成 `size` 再读，
+/// 于是「读失败」或「增量里还没有换行」（hook 写一半触发 watcher 的常见形状）
+/// 都会把没消费的字节当成已消费，那些事件永久丢失 —— 注释里承诺的「留给下一次」并不成立。
 fn drain_file(state: &Arc<AgentState>, app: &AppHandle, path: &Path) {
     let Ok(meta) = fs::metadata(path) else { return };
     let size = meta.len();
 
     let start = {
-        let mut offsets = state.offsets.lock().unwrap();
+        let offsets = state.offsets.lock().unwrap_or_else(|p| p.into_inner());
         // 文件比记录的偏移小 = 被截断或轮换，从头再读
-        let start = offsets.get(path).copied().unwrap_or(0).min(size);
-        offsets.insert(path.to_path_buf(), size);
-        start
+        offsets.get(path).copied().unwrap_or(0).min(size)
     };
     if start == size {
         return;
@@ -341,18 +350,16 @@ fn drain_file(state: &Arc<AgentState>, app: &AppHandle, path: &Path) {
         return;
     }
     let mut bytes = Vec::new();
-    let _ = (&mut file).take(size - start).read_to_end(&mut bytes);
+    if (&mut file).take(size - start).read_to_end(&mut bytes).is_err() {
+        return;
+    }
     drop(file);
 
-    let Some(end) = bytes.iter().rposition(|b| *b == b'\n') else {
+    let Some((end, next)) = complete_line_prefix(start, &bytes) else {
+        // 还没有完整一行：偏移保持不动，等 hook 把这一行写完再读
         return;
     };
-    // 回填偏移：末尾的半行还没被消费，下次从它开头重读
-    state
-        .offsets
-        .lock()
-        .unwrap()
-        .insert(path.to_path_buf(), start + end as u64 + 1);
+    state.offsets.lock().unwrap_or_else(|p| p.into_inner()).insert(path.to_path_buf(), next);
 
     let phase_from_name = path
         .file_stem()
@@ -406,7 +413,7 @@ fn drain_file(state: &Arc<AgentState>, app: &AppHandle, path: &Path) {
 /// 启动时把已有文件对齐到末尾：历史事件不该在每次开机时重放一遍
 fn fast_forward(state: &AgentState, dir: &Path) {
     let Ok(entries) = fs::read_dir(dir) else { return };
-    let mut offsets = state.offsets.lock().unwrap();
+    let mut offsets = state.offsets.lock().unwrap_or_else(|p| p.into_inner());
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
@@ -502,6 +509,31 @@ mod tests {
 
     fn payload(json: Value) -> Value {
         json!({ "phase": "pre", "at": 1, "payload": json })
+    }
+
+    #[test]
+    fn half_line_does_not_advance_the_offset() {
+        // hook 写了一半：这段增量里没有换行，偏移必须原地不动，
+        // 否则这一行补齐之后只剩后半截被读，事件永久丢失
+        let bytes = b"{\"phase\":\"pre\",\"pay".to_vec();
+        assert_eq!(None, complete_line_prefix(10, &bytes));
+    }
+
+    #[test]
+    fn offset_advances_only_past_complete_lines() {
+        let bytes = b"line one\nline two\nhalf".to_vec();
+        let (end, next) = complete_line_prefix(100, &bytes).unwrap();
+        assert_eq!(100 + end as u64 + 1, next);
+        // 下一次从 next 起读，剩下的正好是那半行
+        assert_eq!(&bytes[end + 1..], b"half");
+    }
+
+    #[test]
+    fn single_complete_line_is_consumed_exactly() {
+        let bytes = b"{}\n".to_vec();
+        let (end, next) = complete_line_prefix(0, &bytes).unwrap();
+        assert_eq!(2, end);
+        assert_eq!(3, next);
     }
 
     #[test]
