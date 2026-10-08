@@ -1,0 +1,18 @@
+{
+  "id": "todo",
+  "name": "待办",
+  "version": "0.1.0",
+  "entry": "index.js",
+  "widget": "widget.js",
+  "permissions": [
+    "storage",
+    "widget",
+    "bus:publish",
+    "bus:subscribe",
+    "overlay",
+    "notify",
+    "pet:react",
+    "pet:say"
+  ],
+  "description": "待办清单：字段照 todo.txt 约定，数据存在插件自己的隔离存储里。badge 显示剩余条数，桌面卡片可勾选，到点提醒并让宠物有反应。"
+}

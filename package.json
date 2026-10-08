@@ -13,6 +13,7 @@
     "verify:agent": "node scripts/verify-agent-bridge.mjs",
     "verify:game": "node scripts/verify-game-mode.mjs",
     "verify:skin": "node scripts/verify-skins.mjs",
+    "verify:todo": "node scripts/verify-todo.mjs",
     "verify:release": "node scripts/verify-release.mjs"
   },
   "dependencies": {

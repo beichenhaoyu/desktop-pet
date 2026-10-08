@@ -49,7 +49,7 @@ export async function deactivate() { /* 停用/移除时调用 */ }
 | 能力名 | 授予的 API | 说明 |
 |---|---|---|
 | `bus:publish` | `ctx.bus.publish` | 只能发布 `<自己的 id>:` 前缀的 topic |
-| `bus:subscribe` | `ctx.bus.subscribe` | 订阅**别人或宿主**的 topic 才需要；订阅自己前缀无需声明 |
+| `bus:subscribe` | `ctx.bus.subscribe` | **用了这个 API 就要声明**（不声明会在激活时被拒）。声明之后，订阅自己前缀仍然不需要额外授权，只有订别人/宿主的 topic 才再走一层 ACL |
 | `storage` | `ctx.storage.*` | 每插件独立 JSON 存储，宿主按 id 隔离落盘 |
 | `ble:scan` | `ctx.ble.startScan/stopScan` | 蓝牙扫描 |
 | `ble:connect` | `ctx.ble.connect/disconnect/connectedDevice` | 连接与订阅通知 |
@@ -92,7 +92,7 @@ export async function activate(ctx) {
 topic 形如 `<插件 id>:<名字>`，`<插件 id>` 前缀归该插件所有；其余（`ble:heart-rate`、`host:*` 等）归宿主。
 
 - **发布**：只能发自己前缀，且不能是通配。宿主原生 topic 由宿主注入，插件伪造不了。
-- **订阅**：自己前缀随便订（含 `你的id:*`）；订宿主或他人的 topic 需要声明 `bus:subscribe`，且**不允许通配**（`*` 和 `别人:*` 会被拒，防止一次性窃听所有人的指令通道）。
+- **订阅**：调用 `ctx.bus.subscribe` 本身就要声明 `bus:subscribe`；声明之后，自己前缀随便订（含 `你的id:*`），订宿主或他人的 topic 需要**精确名字**，且**不允许通配**（`*` 和 `别人:*` 会被拒，防止一次性窃听所有人的指令通道）。
 - 标准事件名：`ble:heart-rate`、`ble:device-found`、`ble:disconnected`、`agent:state`（编码 Agent 的会话总状态，只在变化时广播，带递增 `counter`）、`agent:event`（单条 hook 事件：`phase` / `toolName` / `detail` / `steps` / `title` / `notificationKind`，每次工具调用都发；工具失败这类「总状态里仍算进行中」的信号只能从这里拿）、`llm:token-usage`、`todo:changed`。
 
 多个文件共享 topic 常量时，抽一个 `topics.js` 让 `index.js` 与 `widget.js` 各自 `import`（插件文件由宿主按目录提供，相对 import 在开发和打包版都能解析）。别在两个文件里各写一遍字符串。

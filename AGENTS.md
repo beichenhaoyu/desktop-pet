@@ -5,8 +5,8 @@
 ## 当前状态
 
 - **阶段**：框架与插件运行时已落地并有运行时回归（2026-09-29）。
-- **已完成**：宠物窗（Petdex 图集九状态 + 状态机 + 呼吸/轻摆渲染层 + 点击穿透）、Petdex 桌宠资源安装（设置窗按名字下载、默认 `deepseek`）、插件运行时、Rust 能力服务（ble / store / http / notify / 权限同意框 / Agent hook 收件）、设置窗（含 Agent hook 安装与游戏模式开关）、按插件分开的透明 overlay 悬浮窗、心率蓝牙与 Agent 桥两个示例插件。
-- **未完成**：`todo` 与 `llm-token-usage` 两个示例插件（用户已明确暂缓）。
+- **已完成**：宠物窗（Petdex 图集九状态 + 状态机 + 呼吸/轻摆渲染层 + 点击穿透）、Petdex 桌宠资源安装（设置窗按名字下载、默认 `deepseek`）、插件运行时、Rust 能力服务（ble / store / http / notify / 权限同意框 / Agent hook 收件）、设置窗（含 Agent hook 安装与游戏模式开关）、按插件分开的透明 overlay 悬浮窗、心率蓝牙 / Agent 桥 / 待办三个示例插件。
+- **未完成**：`llm-token-usage` 示例插件（用户已明确暂缓）。
 - 完整设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；插件作者文档见 [PLUGIN_SDK.md](PLUGIN_SDK.md)。
 
 ## 技术决策（已确认，勿重新选型）
@@ -37,7 +37,7 @@
 1. **脚手架 + 宠物窗** ✅
 2. **插件运行时** ✅
 3. **Rust 能力服务** ✅（store / http 白名单代理 / notify / BLE / 权限同意框均已实现）
-4. **三个示例插件**：`heart-rate-ble` ✅；`todo`、`llm-token-usage` 暂缓（用户决定）
+4. **三个示例插件**：`heart-rate-ble` ✅、`todo` ✅（纯插件、零本体改动）；`llm-token-usage` 暂缓（用户决定）
 5. **文档收尾**：[PLUGIN_SDK.md](PLUGIN_SDK.md) ✅
 6. **桌宠形象改由 Petdex 提供**：九状态图集渲染 ✅ + 设置窗按名字安装 + 默认形象 `deepseek`（本波次）
 
@@ -46,7 +46,8 @@
 - `npm run tauri dev` 启动：透明置顶宠物显示并播放 idle 动画，可拖拽，托盘可用 ✅
 - plugins/ 目录放入/移除插件后生效 ✅（目录 watcher + 设置窗启停）；单插件异常不崩溃宿主 ✅
 - 有应用全屏时宠物自动隐身并停止动画，退出后恢复 ✅（`npm run verify:game` 15 条）。隐身由宿主命令 `set_pet_hidden` 统一负责：宠物窗与贴在它身上的 overlay 悬浮 UI（状态卡、心率波形）一起收放，恢复时按插件当时的意愿重新显示
-- 心率插件可扫描/连接并显示实时 BPM ✅；`todo`、`token` 插件未做
+- 心率插件可扫描/连接并显示实时 BPM ✅；`llm-token-usage` 未做
+- 待办插件可增删改勾、桌面卡片、到期提醒，并广播标准 topic `todo:changed` ✅（`npm run verify:todo` 27 条）。字段照 todo.txt 约定，数据只存插件自己的隔离存储
 - 断开后可直接重连同一设备，不必重新扫描（代码级修复：扫描不再清空句柄缓存，缓存未命中时回落 `adapter.peripherals()`）。**本机无蓝牙硬件，未经真实心率设备验证**
 - 设置窗安装 Qoder hook 后，Agent 的工具调用/等确认/结束/失败能驱动宠物 ✅（`npm run verify:agent` 43 条断言）。**已用真实 Qoder 会话验证**：hook 确实被调用、事件按形状落盘并驱动宠物；状态卡贴在宠物头顶显示会话状态、工具名与步数，一轮结束 3 秒后自动收起
 - 未授权能力调用被拒绝且触发同意框 ✅；SDK 文档 ✅
@@ -63,8 +64,9 @@
 - 能力名见 PLUGIN_SDK.md 第 3 节；新增能力时要同时更新桥、Rust 校验与那份表格
 - 共享资源（BLE 会话、BLE 扫描）按插件持有者计数，释放只对真正的持有者生效；overlay 悬浮窗**按插件各开一扇**（标签 `overlay-<id>`，页面按标签认归属），摆放/尺寸/显隐互不影响 —— 早先共用一扇窗导致「后打开的卡片显示不出来」，改成按插件分开后两扇可同时存在
 - 插件存储位置：`%APPDATA%/com.desktoppet.pet/plugins/<id>`（插件间隔离，撤销授权会连带清目录）
-- 首批插件目录：`plugins/com.pet.hr-ble`（已做）、`plugins/com.pet.agent-bridge`（已做：订阅宿主 `agent:state` 把编码 Agent 的会话状态转成宠物反应）、`plugins/todo`、`plugins/llm-token-usage`（暂缓）
-- **验证**：`npm run dev:debug` + `npm run verify`（WebView2 CDP 驱动真实 webview 的回归断言，覆盖隔离、权限、热安装、渲染几何）；`npm run verify:game` 单跑游戏模式（真起一个铺满显示器的窗口当触发源）；该窗**非置顶、任务栏可见、10~16 秒自关**，PowerShell 每轮检查父进程是否存活，脚本被中断时自己收窗不留孤儿；跑它会抢前台，期间别的置顶程序可能短暂闪动，不要在外面套 `timeout`（2026-09-30 就是「全屏 + TopMost + 每 150ms 注 ALT + timeout 杀父进程」把用户会话压垮过一次）；`npm run verify:agent` 单跑 Agent 桥端到端（脚本直接往 Agent 收件目录写事件，宿主 watcher 负责归一化）；`npm run verify:skin` 单跑桌宠资源安装链路（会真的连 petdex.dev 下载并临时装一个第二形象，跑完自动删掉）；`npm run verify:release` 单独验打包版 CSP，每波次收尾手工跑一次（约 3~4 分钟构建）
+- 首批插件目录：`plugins/com.pet.hr-ble`（已做）、`plugins/com.pet.agent-bridge`（已做：订阅宿主 `agent:state` 把编码 Agent 的会话状态转成宠物反应）、`plugins/todo`（已做：id 就叫 `todo`，这样标准 topic `todo:changed` 落在它自己的命名空间里）、`plugins/llm-token-usage`（暂缓）
+- `ctx.bus.subscribe` 这个 API **本身**就要在 manifest 声明 `bus:subscribe`，不声明会在激活时被拒（`todo 未在 manifest 声明这些能力: bus:subscribe`）；ACL 放宽的只是「自己前缀不需要额外授权」，别把两者混为一谈
+- **验证**：`npm run dev:debug` + `npm run verify`（WebView2 CDP 驱动真实 webview 的回归断言，覆盖隔离、权限、热安装、渲染几何）；`npm run verify:game` 单跑游戏模式（真起一个铺满显示器的窗口当触发源）；该窗**非置顶、任务栏可见、10~16 秒自关**，PowerShell 每轮检查父进程是否存活，脚本被中断时自己收窗不留孤儿；跑它会抢前台，期间别的置顶程序可能短暂闪动，不要在外面套 `timeout`（2026-09-30 就是「全屏 + TopMost + 每 150ms 注 ALT + timeout 杀父进程」把用户会话压垮过一次）；`npm run verify:agent` 单跑 Agent 桥端到端（脚本直接往 Agent 收件目录写事件，宿主 watcher 负责归一化）；`npm run verify:skin` 单跑桌宠资源安装链路（会真的连 petdex.dev 下载并临时装一个第二形象，跑完自动删掉）；`npm run verify:todo` 单跑待办插件端到端（解析/落盘/广播/桌面卡片/回显，跑完撤销授权并下线）；`npm run verify:release` 单独验打包版 CSP，每波次收尾手工跑一次（约 3~4 分钟构建）
 - Agent 接入约定：hook 事件由宿主自己收 —— `--pet-hook <phase>` 分支在建窗之前分流，落成 `agent/inbox/<phase>.jsonl`，watcher 读增量并归一化成会话状态后广播。不读 petdex、不开本地端口。phase 必须命中白名单（它同时是文件名与 CLI 参数）；安装/卸载只按 `--pet-hook` 标记增删自己的条目，不动其他 hook，写配置前先备份且原子落盘。
 - 状态词表：**只有 petdex 的九个状态** `idle / running-right / running-left / waving / jumping / failed / waiting / running / review`（行号、每行帧数与整行时长见 `src/pet/petdex-states.ts`）。原来的 12 个自造状态（walk/greet/sleep/react/curious/teasing/blush/angry/night）已取消，别再往回加。`ctx.pet.react()` 只认这九个名字，Agent 桥的 phase→状态映射也照搬 petdex 的 `stateForEvent`
 - 桌宠资源：磁盘位置只有 Rust `services/skins.rs` 的 skins 目录一个解析点，经 `petskin://<slug>/sprite.webp`（Windows 上即 `http://petskin.localhost/…`）读给 webview；打包版 CSP 的 `img-src` 必须包含 `http://petskin.localhost`，否则只有 `tauri build` 产物会黑屏（dev 不注入 CSP，测不出来）。名字解析走公开接口 `https://petdex.dev/api/manifest/v2`（`pets` 是数组的数组，列序由其 `fields` 给出，别硬编下标）
