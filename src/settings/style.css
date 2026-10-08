@@ -92,6 +92,42 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* 侧栏分组标题（「插件 n/m」） */
+.nav-group {
+  display: flex;
+  align-items: center;
+  margin: 10px 9px 2px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: #98a2b3;
+  text-transform: none;
+}
+
+/* 插件导航项：左边一个状态点，右边名称（过长截断） */
+.nav-item.plugin {
+  padding-left: 9px;
+}
+
+.nav-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: #d0d5dd;
+}
+
+.nav-dot.on {
+  background: #2f9e63;
+}
+
+.nav-item .nav-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .nav-foot {
   margin-top: auto;
   padding: 8px 9px 0;
@@ -224,23 +260,12 @@ kbd {
   padding: 1px 6px;
 }
 
-/* ---------- 插件卡片 ---------- */
+/* ---------- 插件页（壳由宿主给，中间内容由插件自己的 widget 渲染） ---------- */
 
-.plugin-card {
-  background: #fff;
-  border: 1px solid #e4e7ec;
-  border-radius: 10px;
-  padding: 12px 14px;
-  margin-bottom: 10px;
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+.plugin-head-card {
   display: flex;
   gap: 11px;
-}
-
-.plugin-card.error {
-  color: #b3261e;
-  font-size: 12px;
-  display: block;
+  margin-bottom: 10px;
 }
 
 .plugin-icon {
@@ -257,9 +282,20 @@ kbd {
   font-weight: 600;
 }
 
-.plugin-card.on .plugin-icon {
-  background: #e7f6ee;
-  color: #2f9e63;
+/* 插件页顶部那张壳卡片：图标大一号 */
+.plugin-head-card .plugin-icon {
+  width: 40px;
+  height: 40px;
+  font-size: 17px;
+}
+
+.plugin-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #475467;
+  flex: none;
 }
 
 .plugin-body {
@@ -374,6 +410,17 @@ kbd {
   margin-top: 10px;
   border-top: 1px dashed #e4e7ec;
   padding-top: 8px;
+}
+
+.plugin-note {
+  font-size: 12px;
+  color: #98a2b3;
+  padding: 6px 0 2px;
+}
+
+/* 插件页里的卡片之间留白（宠物设置那几张卡片同享这条） */
+.panel > .card + .card {
+  margin-top: 10px;
 }
 
 /* ---------- 形象列表 ---------- */

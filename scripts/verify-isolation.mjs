@@ -661,6 +661,42 @@ try {
   r.check("指针回到实体内即关闭穿透", "[true,false]", JSON.stringify(ct.afterInside));
   r.check("状态未变时不重复下发（无抖动）", "[true,false]", JSON.stringify(ct.afterEdge));
 
+  r.group("窗口被拖走之后穿透不会卡死（原点必须跟着更新）");
+  // 这条是「拖一次之后宠物再也点不到」的回归：光标停在宠物身上不动，
+  // 而窗口原点过期 → 判定「在实体外」→ 穿透打开；穿透开着就收不到 DOM 事件，
+  // 只靠「翻转时重读原点」永远回不来。所以拖动后必须自愈。
+  const heal = await c.ev(`(async () => {
+    const { installClickThrough } = await import('/src/pet/click-through.ts');
+    const calls = [];
+    let reads = 0;
+    let origin = { x: 0, y: 0, scale: 1 };
+    const cursor = { x: 5000, y: 5000 }; // 先在远处：穿透应当打开
+    const stop = installClickThrough({
+      spriteRect: () => ({ left: 47, top: 47, size: 266 }),
+      isDragging: () => false,
+      pollMs: 40,
+      readCursor: async () => ({ x: cursor.x, y: cursor.y }),
+      windowOrigin: async () => { reads++; return { x: origin.x, y: origin.y, scale: origin.scale }; },
+      setThrough: async (enabled) => { calls.push(enabled); },
+    });
+    await new Promise((r) => setTimeout(r, 150));
+    const armed = calls.slice();
+    // 宠物被拖到指针底下：光标一步没动，旧原点会说「还在实体外」
+    origin = { x: cursor.x - 180, y: cursor.y - 180, scale: 1 };
+    const t0 = Date.now();
+    let reopened = false;
+    while (Date.now() - t0 < 2500) {
+      if (calls.length > armed.length && calls[calls.length - 1] === false) { reopened = true; break; }
+      await new Promise((r) => setTimeout(r, 40));
+    }
+    const after = calls.slice();
+    stop();
+    return { armed, after, reopened, reads };
+  })()`);
+  r.check("起手指针在实体外，穿透打开", "[true]", JSON.stringify(heal.armed));
+  r.check("宠物挪到指针底下后穿透自己关掉", true, heal.reopened);
+  r.check("关掉只发生一次（不来回抖）", 1, heal.after.filter((v) => v === false).length);
+
   r.group("dev 下的 CSP 现状（仅作基线记录，断言在 verify-release.mjs）");
   r.info("探针内 eval", bare.csp);
   r.check("widget 注入 <style> 生效", true, bare.styleApplied);
@@ -687,28 +723,82 @@ try {
     : null;
   if (sc) {
     await new Promise((res) => setTimeout(res, 3000));
+    const installed = (await sCall("plugins_list")).v ?? [];
+    const enabledIds = JSON.parse(await sc.ev(`localStorage.getItem('host:enabled-plugins') ?? '[]'`));
+    const navViews = () =>
+      sc.ev(`[...document.querySelectorAll('#nav-list .nav-item')].map(b => b.dataset.view).join(',')`);
+
+    r.group("侧栏结构：宠物设置 + 插件列表");
     r.check(
-      "侧栏六个分区都在",
-      '["plugins","skins","hotkey","startup","agent","game"]',
-      JSON.stringify(await sc.ev(`[...document.querySelectorAll('.nav-item')].map(b => b.dataset.view)`)),
+      "第一项是宠物设置，其余每个已装插件一项",
+      "pet," + installed.map((m) => m.id).sort().join(","),
+      await navViews(),
     );
-    r.check("插件卡片带图标位", true, await sc.ev(`document.querySelectorAll('#plugin-list .plugin-card .plugin-icon').length >= 2`));
-    await sc.ev(`document.querySelector('.nav-item[data-view=hotkey]').click()`);
     r.check(
-      "切页只留一个面板可见",
-      "hotkey",
-      await sc.ev(`[...document.querySelectorAll('[data-panel]')].filter(p => !p.hidden).map(p => p.dataset.panel).join(',')`),
+      "宠物设置这一页含形象/快捷键/自启/Agent/游戏模式五张卡片",
+      '["桌宠形象","唤出本页的全局快捷键","开机自动运行","Agent 事件接入","游戏模式"]',
+      JSON.stringify(await sc.ev(`[...document.querySelectorAll('[data-panel=pet] .card h2')].map(h => h.textContent)`)),
     );
-    r.check("非插件页隐藏搜索框", "none", await sc.ev(`getComputedStyle(document.getElementById('search')).display`));
-    await sc.ev(`document.querySelector('.nav-item[data-view=plugins]').click()`);
-    await new Promise((res) => setTimeout(res, 400));
+    r.check(
+      "宠物设置里含形象/快捷键/自启/Agent/游戏模式的控件",
+      '[true,true,true,true,true,true,true]',
+      JSON.stringify(await sc.ev(
+        `['skin-list','hotkey-input','autostart-switch','agent-install','game-mode-switch','skin-name','hotkey-test']` +
+          `.map(id => !!document.getElementById(id))`,
+      )),
+    );
+    r.check("初始只有 pet 面板可见", "pet", await sc.ev(`[...document.querySelectorAll('[data-panel]')].filter(p => !p.hidden).map(p => p.dataset.panel).join(',')`));
+
+    r.group("点插件 → 插件页（内容交给插件的 widget）");
+    // 用零权限探针：开它的开关不会在宠物窗那边弹同意框，断言不会被授权对话框卡住
+    r.check("探针此刻是停用态（下面要验开关流程）", false, enabledIds.includes(PROBE_ID));
+    await sc.ev(`document.querySelector('.nav-item[data-view=${JSON.stringify(PROBE_ID)}]').click(); true`);
+    await new Promise((res) => setTimeout(res, 500));
+    r.check("切过去只留插件面板", "plugin", await sc.ev(`[...document.querySelectorAll('[data-panel]')].filter(p => !p.hidden).map(p => p.dataset.panel).join(',')`));
+    r.check("标题换成插件名", "隔离探针", await sc.ev(`document.getElementById('view-title').textContent`));
+    r.check("壳上给了 id 与权限列表", true, await sc.ev(`document.getElementById('plugin-id').textContent === ${JSON.stringify(PROBE_ID)} && document.querySelectorAll('#plugin-perms .perm-chip').length === 0`));
+    r.check(
+      "停用状态下不挂插件页面，并说明原因",
+      true,
+      await sc.ev(
+        `!document.querySelector('#plugin-settings div[data-plugin-id=${JSON.stringify(PROBE_ID)}]')` +
+          ` && !document.getElementById('plugin-note').hidden && /启用后/.test(document.getElementById('plugin-note').textContent)`,
+      ),
+    );
+    // 在插件页里开开关：widget 应挂进 #plugin-settings，内容是插件自己的
+    await sc.ev(`(() => { const t = document.getElementById('plugin-toggle'); t.checked = true; t.dispatchEvent(new Event('change')); })()`);
+    const mountedInPage = await waitUntil(
+      sc,
+      `!!document.querySelector('#plugin-settings div[data-plugin-id=${JSON.stringify(PROBE_ID)}][data-region="settings"]')`,
+      12_000,
+    );
+    r.check("启用后插件自己的设置页挂进来了", true, mountedInPage);
+    r.check("侧栏那个点跟着变亮", true, await sc.ev(`!!document.querySelector('.nav-item[data-view=${JSON.stringify(PROBE_ID)}] .nav-dot.on')`));
+    await sc.ev(`(() => { const t = document.getElementById('plugin-toggle'); t.checked = false; t.dispatchEvent(new Event('change')); })()`);
+    await sleep(1200);
+    r.check(
+      "停用后 widget 摘干净（不留孤儿节点）",
+      0,
+      await sc.ev(`document.querySelectorAll('#plugin-settings div[data-plugin-id=${JSON.stringify(PROBE_ID)}]').length`),
+    );
+
+    r.group("搜索过滤的是插件列表");
     await sc.ev(`(() => { const i = document.getElementById('search'); i.value = 'ble:scan'; i.dispatchEvent(new Event('input')); })()`);
     r.check(
-      "按权限搜索能过滤到只剩声明它的插件",
+      "按权限搜索只剩声明它的插件",
       1,
-      await sc.ev(`[...document.querySelectorAll('#plugin-list .plugin-card')].filter(c => c.style.display !== 'none').length`),
+      await sc.ev(`[...document.querySelectorAll('#nav-plugins .nav-item')].filter(b => b.style.display !== 'none').length`),
     );
     await sc.ev(`(() => { const i = document.getElementById('search'); i.value = ''; i.dispatchEvent(new Event('input')); })()`);
+    r.check("清空搜索后侧栏恢复完整", installed.length, await sc.ev(`[...document.querySelectorAll('#nav-plugins .nav-item')].filter(b => b.style.display !== 'none').length`));
+
+    // 上面只是把探针开了又关，清单该回到起点
+    const afterToggle = JSON.parse(await sc.ev(`localStorage.getItem('host:enabled-plugins') ?? '[]'`));
+    r.check("插件启停回到起点", JSON.stringify([...enabledIds].sort()), JSON.stringify([...afterToggle].sort()));
+    await sc.ev(`document.querySelector('.nav-item[data-view=pet]').click(); true`);
+    await new Promise((res) => setTimeout(res, 400));
+    r.check("回到宠物设置", "pet", await sc.ev(`[...document.querySelectorAll('[data-panel]')].filter(p => !p.hidden).map(p => p.dataset.panel).join(',')`));
+    r.check("离开插件页后插件页被卸载", 0, await sc.ev(`document.querySelectorAll('#plugin-settings div[data-plugin-id]').length`));
 
     const noMod = await sCall("hotkey_set", { accelerator: "P" });
     r.check("不带修饰键的组合被拒", true, !noMod.ok && /修饰键/.test(String(noMod.e)));
@@ -734,6 +824,7 @@ try {
 
   r.group("宿主页面自身未产生 CSP 违规或未捕获异常");
   // 上面的递归测试会刻意打一条 console.error，它是被测行为的证据，不该混进这里的零容忍
+  r.info("导航过渡期告警（reload 切断在飞 IPC 的产物，单独归类）", String(c.transitionNoise.length));
   const unexpected = c.noise.filter((n) => !n.includes("派发递归"));
   r.check("无", 0, unexpected.length);
   if (unexpected.length) unexpected.forEach((n) => console.log("   " + n));

@@ -33,6 +33,20 @@ export async function attach(port, match, timeoutMs = 90_000) {
   const pending = new Map();
   const onceWatchers = [];
   const noise = [];
+  /**
+   * 导航过渡期的 Tauri 告警单独记账。页面被换掉时，旧文档在飞的 IPC 回调会带着
+   * 「Couldn't find callback id」/「IPC custom protocol failed」迟到，落到新文档的
+   * console 里 —— 这两条文案本身就是 Tauri 对「导航打断了 IPC」的自述，且它会自动
+   * 回退到 postMessage 继续工作，与被测行为无关；插件越多、轮询越密越容易撞上。
+   * 不按时间窗筛（迟到的可能几十秒后才落），只认这两条签名，其余一律进 noise 照常断言。
+   * 每套回归都会把 transitionNoise 的条数打出来，不是静默吞掉。
+   */
+  const transitionNoise = [];
+  const TRANSITION_SIGNATURE = /Couldn't find callback id|IPC custom protocol failed/;
+  const pushNoise = (text) => {
+    if (TRANSITION_SIGNATURE.test(text)) transitionNoise.push(text);
+    else noise.push(text);
+  };
   ws.onmessage = (m) => {
     const msg = JSON.parse(m.data);
     if (msg.id && pending.has(msg.id)) {
@@ -51,8 +65,8 @@ export async function attach(port, match, timeoutMs = 90_000) {
       // 缺 favicon 与隔离无关，但它会淹没真消息；其余网络错误（含插件文件 404）保留
       const isFavicon = typeof url === "string" && url.endsWith("/favicon.ico");
       const where = url ? ` @ ${url}` : "";
-      if (/Content Security|Refused to|do not load/i.test(text)) noise.push(`CSP: ${text.slice(0, 200)}${where}`);
-      else if (level === "error" && !isFavicon) noise.push(`日志: ${text.slice(0, 160)}${where}`);
+      if (/Content Security|Refused to|do not load/i.test(text)) pushNoise(`CSP: ${text.slice(0, 200)}${where}`);
+      else if (level === "error" && !isFavicon) pushNoise(`日志: ${text.slice(0, 160)}${where}`);
     }
     // 宿主的 reportError 只写 console.error；不采集就等于失败原因不可见
     if (msg.method === "Runtime.consoleAPICalled" && ["error", "warning"].includes(msg.params.type)) {
@@ -61,11 +75,11 @@ export async function attach(port, match, timeoutMs = 90_000) {
         .join(" ")
         .slice(0, 300);
       const at = msg.params.stackTrace?.callFrames?.[0]?.url;
-      noise.push(`console.${msg.params.type}: ${text}${at ? ` @ ${at}:${msg.params.stackTrace.callFrames[0].lineNumber}` : ""}`);
+      pushNoise(`console.${msg.params.type}: ${text}${at ? ` @ ${at}:${msg.params.stackTrace.callFrames[0].lineNumber}` : ""}`);
     }
     if (msg.method === "Runtime.exceptionThrown") {
       const d = msg.params.exceptionDetails;
-      noise.push(`异常: ${(d.exception?.description ?? d.text ?? "?").split("\n")[0].slice(0, 200)}`);
+      pushNoise(`异常: ${(d.exception?.description ?? d.text ?? "?").split("\n")[0].slice(0, 200)}`);
     }
   };
 
@@ -93,6 +107,7 @@ export async function attach(port, match, timeoutMs = 90_000) {
     url: target.url,
     send,
     noise,
+    transitionNoise,
     /** 等一次事件（用于确认导航真的完成，而不是靠 sleep 赌） */
     once(method, timeoutMs = 30_000) {
       return new Promise((res, rej) => {
@@ -184,6 +199,8 @@ export async function openSettingsInvoker(port, petClient, timeoutMs = 25_000) {
 /**
  * 重载并确认文档真的加载完。
  * 导航刚发生时 CDP 的隐式上下文可能仍指向旧文档，直接轮询会一路拿到旧结果（实测偶发假失败）。
+ * 旧文档在飞的 IPC 回调会在之后迟到成两条 Tauri 告警，那属于导航产物，
+ * 由 attach 里的 pushNoise 归到 transitionNoise（各脚本会把它条数打出来）。
  */
 export async function reloadAndWait(c) {
   await c.send("Page.enable");
@@ -191,5 +208,5 @@ export async function reloadAndWait(c) {
   await c.send("Page.reload", { ignoreCache: true });
   await loaded;
   // load 之后宿主还要异步跑 reconcile 与插件激活，交给调用方的 waitUntil
-  await new Promise((res) => setTimeout(res, 400));
+  await new Promise((res) => setTimeout(res, 600));
 }

@@ -227,6 +227,7 @@ try {
   await send({ action: "remove", id: future.id });
 
   r.group("零噪音");
+  r.info("导航过渡期告警（reload 切断在飞 IPC 的产物，单独归类）", String(c.transitionNoise.length));
   r.check("无 console 错误与未捕获异常", [], c.noise);
 } catch (err) {
   r.check("脚本未抛异常", true, false);

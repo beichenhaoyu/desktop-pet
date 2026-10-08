@@ -12,34 +12,31 @@
           <span class="brand-logo">🐾</span>
           <span class="brand-text"><b>DesktopPet</b><small>设置</small></span>
         </div>
-        <nav>
-          <button type="button" class="nav-item active" data-view="plugins">
-            插件 <span class="nav-count" id="nav-plugin-count"></span>
-          </button>
-          <button type="button" class="nav-item" data-view="skins">桌宠形象</button>
-          <button type="button" class="nav-item" data-view="hotkey">快捷键</button>
-          <button type="button" class="nav-item" data-view="startup">启动</button>
-          <button type="button" class="nav-item" data-view="agent">Agent 接入</button>
-          <button type="button" class="nav-item" data-view="game">游戏模式</button>
+
+        <nav id="nav-list">
+          <button type="button" class="nav-item active" data-view="pet">宠物设置</button>
+          <div class="nav-group">
+            <span>插件</span>
+            <span class="nav-count" id="nav-plugin-count"></span>
+          </div>
+          <input id="search" class="search" type="search" placeholder="搜索名称、id 或权限…" />
+          <!-- 每个已安装插件一条导航项，由 src/settings/main.ts 填充 -->
+          <div id="nav-plugins"></div>
+          <p class="hint empty" id="plugin-empty" hidden>没有匹配的插件。</p>
         </nav>
         <div class="nav-foot" id="nav-foot">仅供学习与自娱自乐</div>
       </aside>
 
       <main id="content">
         <header class="top">
-          <h1 id="view-title">插件管理</h1>
-          <p class="hint" id="view-hint">启停即时生效；未授权能力首次调用时会弹出确认框</p>
-          <input id="search" class="search" type="search" placeholder="搜索名称、id 或权限…" />
+          <h1 id="view-title">宠物设置</h1>
+          <p class="hint" id="view-hint">宠物本体与宿主页面的配置；插件的行为由插件自己提供</p>
         </header>
 
-        <section class="panel" data-panel="plugins">
-          <div id="plugin-list"></div>
-          <p class="hint empty" id="plugin-empty" hidden>没有匹配的插件。</p>
-        </section>
-
-        <section class="panel" data-panel="skins" hidden>
+        <!-- 宠物设置：非插件功能的全部配置项，一项一张卡片 -->
+        <section class="panel" data-panel="pet">
           <div class="card">
-            <h2>从 Petdex 公开画廊安装</h2>
+            <h2>桌宠形象</h2>
             <p class="hint" id="skin-status">正在读取已安装形象…</p>
             <div class="actions">
               <input type="text" id="skin-name" placeholder="Petdex 名字，例如 deepseek" />
@@ -53,11 +50,9 @@
               本项目仅供学习与自娱自乐，仓库不内置、也不再分发任何美术文件。
             </p>
           </div>
-        </section>
 
-        <section class="panel" data-panel="hotkey" hidden>
           <div class="card">
-            <h2>唤出插件页的全局快捷键</h2>
+            <h2>唤出本页的全局快捷键</h2>
             <p class="hint" id="hotkey-status">正在读取…</p>
             <div class="actions">
               <input type="text" id="hotkey-input" placeholder="例如 Ctrl+Alt+P" />
@@ -71,9 +66,7 @@
               换键时先注册新键，成功才注销旧键；被别的应用占了会直接报错并保留原键。
             </p>
           </div>
-        </section>
 
-        <section class="panel" data-panel="startup" hidden>
           <div class="card">
             <h2>开机自动运行</h2>
             <label class="row-line">
@@ -86,9 +79,7 @@
               不需要管理员权限。关掉即删除该键值。
             </p>
           </div>
-        </section>
 
-        <section class="panel" data-panel="agent" hidden>
           <div class="card">
             <h2>Agent 事件接入</h2>
             <p class="hint" id="agent-status">正在读取状态…</p>
@@ -104,9 +95,7 @@
               装好后 Agent 的工具调用、等待确认、任务完成等事件就会驱动宠物。
             </p>
           </div>
-        </section>
 
-        <section class="panel" data-panel="game" hidden>
           <div class="card">
             <h2>游戏模式</h2>
             <label class="row-line">
@@ -118,6 +107,38 @@
               隐身只收起宠物窗：动画、点击穿透轮询与自言自语一并停掉，插件的功能（蓝牙、事件、存储）照常运行。
               关掉这个开关就不再轮询前台窗口。
             </p>
+          </div>
+        </section>
+
+        <!-- 插件页：宿主只负责这层壳，中间那块内容完全由插件的 widget 渲染 -->
+        <section class="panel" data-panel="plugin" hidden>
+          <div class="card plugin-head-card">
+            <div class="plugin-icon" id="plugin-icon"></div>
+            <div class="plugin-body">
+              <div class="plugin-head">
+                <div class="plugin-title">
+                  <span class="plugin-name" id="plugin-name"></span>
+                  <span class="plugin-version" id="plugin-version"></span>
+                </div>
+                <label class="plugin-toggle">
+                  <input type="checkbox" id="plugin-toggle" class="switch" />
+                  <span id="plugin-toggle-label">已启用</span>
+                </label>
+              </div>
+              <div class="plugin-id" id="plugin-id"></div>
+              <div class="plugin-desc" id="plugin-desc"></div>
+              <div class="perm-row" id="plugin-perms"></div>
+            </div>
+          </div>
+
+          <div class="card plugin-page">
+            <h2>插件页面</h2>
+            <p class="hint">
+              下面这块由插件自己提供（运行在独立的 Shadow DOM 里，宿主不解释其内容）。
+              插件没写 <code>widget.js</code> 时这里就是空的。
+            </p>
+            <div id="plugin-settings" class="plugin-settings"></div>
+            <p class="hint" id="plugin-note" hidden>这个插件没有提供设置页面。</p>
           </div>
         </section>
       </main>

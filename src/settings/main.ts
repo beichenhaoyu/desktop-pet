@@ -10,272 +10,316 @@ import {
 import { widgetHost } from "../runtime/widget-host";
 import "./style.css";
 
-interface Elements {
-  card: HTMLElement;
-  toggle: HTMLInputElement;
-  settingsBox: HTMLElement;
+/** 宠物设置 = 非插件功能的全部配置项；插件页 = 宿主给壳，内容交给插件的 widget */
+const PET_VIEW = "pet";
+
+let banner: HTMLElement | null = null;
+let manifests: PluginManifest[] = [];
+let selected = PET_VIEW;
+/** 当前挂在插件页里的 widget 属于哪个插件（切插件时要先收掉上一个） */
+let mountedFor: string | null = null;
+
+const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T | null;
+
+function el<K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, cls?: string) {
+  const node = document.createElement(tag);
+  if (text !== undefined) node.textContent = text;
+  if (cls) node.className = cls;
+  return node;
 }
 
-const rows = new Map<string, Elements>();
-let banner: HTMLElement | null = null;
+/* ---------- 侧栏：宠物设置 + 每个插件一项 ---------- */
 
-function buildCard(manifest: PluginManifest, enabled: boolean): Elements {
-  const card = document.createElement("section");
-  card.className = "plugin-card" + (enabled ? " enabled" : "");
+function enabledSet(): Set<string> {
+  return new Set(getEnabled());
+}
 
-  // 图标位没有美术资源可用，取名称首字符（中文也能用），至少让卡片有视觉锚点
-  const icon = document.createElement("div");
-  icon.className = "plugin-icon";
+function renderNav(): void {
+  const host = $<HTMLDivElement>("nav-plugins");
+  if (!host) return;
+  const on = enabledSet();
+  host.replaceChildren();
+
+  for (const manifest of manifests) {
+    const invalid = validateManifest(manifest);
+    const item = el("button", undefined, "nav-item plugin");
+    item.type = "button";
+    item.dataset.view = manifest.id;
+    item.dataset.search = invalid
+      ? manifest.id.toLowerCase()
+      : `${manifest.name} ${manifest.id} ${(manifest.permissions ?? []).join(" ")}`.toLowerCase();
+
+    const dot = el("span", undefined, "nav-dot" + (on.has(manifest.id) ? " on" : ""));
+    dot.title = on.has(manifest.id) ? "已启用" : "已停用";
+    const label = el("span", invalid ? `${manifest.id}（无效）` : manifest.name, "nav-label");
+    item.append(dot, label);
+    item.addEventListener("click", () => void select(manifest.id));
+    host.append(item);
+  }
+
+  const count = $<HTMLSpanElement>("nav-plugin-count");
+  if (count) {
+    // 只数「既装着又启用」的：启用清单是 localStorage 里的历史值，插件被移走后还留着
+    count.textContent = `${manifests.filter((m) => on.has(m.id)).length}/${manifests.length}`;
+  }
+}
+
+function applyFilter(): void {
+  const input = $<HTMLInputElement>("search");
+  const needle = (input?.value ?? "").trim().toLowerCase();
+  let shown = 0;
+  for (const item of document.querySelectorAll<HTMLElement>("#nav-plugins .nav-item")) {
+    const hit = !needle || (item.dataset.search ?? "").includes(needle);
+    item.style.display = hit ? "" : "none";
+    if (hit) shown += 1;
+  }
+  const empty = $<HTMLElement>("plugin-empty");
+  if (empty) empty.hidden = shown > 0;
+}
+
+/* ---------- 视图切换 ---------- */
+
+function titles(): { title: string; hint: string } {
+  if (selected === PET_VIEW) {
+    return {
+      title: "宠物设置",
+      hint: "宠物本体与宿主页面的配置；插件的功能与页面在左边插件区",
+    };
+  }
+  const m = manifests.find((x) => x.id === selected);
+  return {
+    title: m && !validateManifest(m) ? m.name : "插件",
+    hint: "启停即时生效；未授权能力首次调用时会弹出确认框",
+  };
+}
+
+async function select(view: string): Promise<void> {
+  selected = view;
+  for (const item of document.querySelectorAll(".nav-item")) {
+    item.classList.toggle("active", (item as HTMLElement).dataset.view === view);
+  }
+  for (const panel of document.querySelectorAll<HTMLElement>("[data-panel]")) {
+    panel.hidden = panel.dataset.panel !== (view === PET_VIEW ? "pet" : "plugin");
+  }
+  const t = titles();
+  const title = $<HTMLHeadingElement>("view-title");
+  const hint = $<HTMLParagraphElement>("view-hint");
+  if (title) title.textContent = t.title;
+  if (hint) hint.textContent = t.hint;
+
+  if (view === PET_VIEW) {
+    await detachWidget();
+    return;
+  }
+  await renderPluginPage();
+}
+
+/* ---------- 插件页：壳由宿主给，中间那块由插件自己渲染 ---------- */
+
+async function detachWidget(): Promise<void> {
+  if (!mountedFor) return;
+  const id = mountedFor;
+  mountedFor = null;
+  await widgetHost.unmount(id);
+  const box = $<HTMLDivElement>("plugin-settings");
+  box?.replaceChildren();
+}
+
+async function renderPluginPage(): Promise<void> {
+  const manifest = manifests.find((m) => m.id === selected);
+  const icon = $<HTMLDivElement>("plugin-icon");
+  const name = $<HTMLSpanElement>("plugin-name");
+  const version = $<HTMLSpanElement>("plugin-version");
+  const idLine = $<HTMLDivElement>("plugin-id");
+  const desc = $<HTMLDivElement>("plugin-desc");
+  const perms = $<HTMLDivElement>("plugin-perms");
+  const toggle = $<HTMLInputElement>("plugin-toggle");
+  const toggleLabel = $<HTMLSpanElement>("plugin-toggle-label");
+  const note = $<HTMLParagraphElement>("plugin-note");
+  const box = $<HTMLDivElement>("plugin-settings");
+  if (!manifest || !icon || !name || !version || !idLine || !desc || !perms || !toggle || !box) return;
+
+  const invalid = validateManifest(manifest);
   icon.textContent = (manifest.name || manifest.id).trim().slice(0, 1).toUpperCase();
-
-  const body = document.createElement("div");
-  body.className = "plugin-body";
-
-  const head = document.createElement("div");
-  head.className = "plugin-head";
-
-  const title = document.createElement("div");
-  title.className = "plugin-title";
-  const name = document.createElement("span");
-  name.className = "plugin-name";
-  name.textContent = manifest.name;
-  const ver = document.createElement("span");
-  ver.className = "plugin-version";
-  ver.textContent = `v${manifest.version}`;
-  title.append(name, ver);
-
-  const toggle = document.createElement("input");
-  toggle.type = "checkbox";
-  toggle.className = "switch";
-  toggle.checked = enabled;
-  toggle.title = enabled ? "已启用" : "已停用";
-
-  head.append(title, toggle);
-
-  const idLine = document.createElement("div");
-  idLine.className = "plugin-id";
+  name.textContent = invalid ? manifest.id : manifest.name;
+  version.textContent = invalid ? "" : `v${manifest.version}`;
   idLine.textContent = manifest.id;
-  body.append(head, idLine);
-  if (manifest.description) {
-    const desc = document.createElement("div");
-    desc.className = "plugin-desc";
-    desc.textContent = manifest.description;
-    body.append(desc);
-  }
-  card.append(icon, body);
+  desc.textContent = invalid ? "" : (manifest.description ?? "");
 
-  // 权限列表 + 撤销授权
-  const perms = manifest.permissions ?? [];
-  if (perms.length > 0) {
-    const permRow = document.createElement("div");
-    permRow.className = "perm-row";
-    for (const p of perms) {
-      const chip = document.createElement("span");
+  perms.replaceChildren();
+  if (invalid) {
+    perms.append(el("span", `manifest 无效：${invalid}`, "perm-chip warn"));
+  } else {
+    for (const p of manifest.permissions ?? []) {
       // 能出网、能落盘的权限标出来，让人一眼看到风险面
-      chip.className = "perm-chip" + (p === "http" || p === "storage" ? " warn" : "");
-      chip.textContent = p;
-      permRow.append(chip);
+      perms.append(el("span", p, "perm-chip" + (p === "http" || p === "storage" ? " warn" : "")));
     }
-    const revoke = document.createElement("button");
-    revoke.className = "btn-revoke";
-    revoke.textContent = "撤销授权";
-    revoke.addEventListener("click", async () => {
-      try {
-        await invoke("permission_revoke", { pluginId: manifest.id });
-        revoke.textContent = "已撤销";
-        revoke.disabled = true;
-      } catch (err) {
-        // 撤销现在是宿主端会失败的命令（门禁、非法 id），不能装成成功
-        revoke.textContent = `撤销失败：${String(err instanceof Error ? err.message : err)}`;
-      }
-    });
-    permRow.append(revoke);
-    body.append(permRow);
+    if ((manifest.permissions ?? []).length > 0) {
+      const revoke = el("button", "撤销授权", "btn-revoke");
+      revoke.type = "button";
+      revoke.addEventListener("click", async () => {
+        try {
+          await invoke("permission_revoke", { pluginId: manifest.id });
+          revoke.textContent = "已撤销";
+          revoke.disabled = true;
+        } catch (err) {
+          // 撤销现在是宿主端会失败的命令（门禁、非法 id），不能装成成功
+          revoke.textContent = `撤销失败：${String(err instanceof Error ? err.message : err)}`;
+        }
+      });
+      perms.append(revoke);
+    }
   }
 
-  // 插件自带设置区（Shadow DOM 插槽）
-  const settingsBox = document.createElement("div");
-  settingsBox.className = "plugin-settings";
-  settingsBox.style.display = enabled ? "" : "none";
-  body.append(settingsBox);
+  const on = enabledSet().has(manifest.id);
+  toggle.checked = on;
+  toggle.disabled = !!invalid;
+  if (toggleLabel) toggleLabel.textContent = on ? "已启用" : "已停用";
 
-  // 搜索框按名称/id/权限过滤：数据都在这几个字段里，拼成一条小写串就够
-  card.dataset.search = `${manifest.name} ${manifest.id} ${perms.join(" ")}`.toLowerCase();
+  if (note) note.hidden = true;
+  if (invalid) {
+    await detachWidget();
+    if (note) {
+      note.textContent = "这个插件的 manifest 有问题，未加载。修好后放回插件目录即可。";
+      note.hidden = false;
+    }
+    return;
+  }
 
-  toggle.addEventListener("change", async () => {
-    const on = toggle.checked;
+  // 内容由插件提供：它自己的 widget.js 挂在 settings 区的独立 Shadow DOM 里
+  if (!on) {
+    await detachWidget();
+    if (note) {
+      note.textContent = "启用后这里才显示插件自己的页面。";
+      note.hidden = false;
+    }
+    return;
+  }
+  if (!manifest.widget) {
+    await detachWidget();
+    if (note) {
+      note.textContent = "这个插件没有提供设置页面。";
+      note.hidden = false;
+    }
+    return;
+  }
+  if (mountedFor !== manifest.id) {
+    await detachWidget();
+    mountedFor = manifest.id;
+    try {
+      await widgetHost.mount(manifest, "settings", box);
+    } catch (e) {
+      mountedFor = null;
+      console.error(`[settings] mount widget: ${manifest.id}`, e);
+      if (note) {
+        note.textContent = `插件页面加载失败：${String(e instanceof Error ? e.message : e)}`;
+        note.hidden = false;
+      }
+      return;
+    }
+  }
+}
+
+toggleListener();
+function toggleListener(): void {
+  const toggle = $<HTMLInputElement>("plugin-toggle");
+  toggle?.addEventListener("change", async () => {
+    const manifest = manifests.find((m) => m.id === selected);
+    if (!manifest) return;
+    const on = toggle.checked === true;
     const ids = new Set(getEnabled());
     if (on) ids.add(manifest.id);
     else ids.delete(manifest.id);
     setEnabledIds([...ids]);
-    card.classList.toggle("enabled", on);
-    settingsBox.style.display = on ? "" : "none";
-    if (on) {
-      // 立即挂载插件自带设置面板（不等宠物窗的插件激活）
-      widgetHost.mount(manifest, "settings", settingsBox).catch((e) => {
-        console.error(`[settings] mount widget: ${manifest.id}`, e);
-      });
-    } else {
-      await widgetHost.unmount(manifest.id);
-    }
+    const label = $<HTMLSpanElement>("plugin-toggle-label");
+    if (label) label.textContent = on ? "已启用" : "已停用";
+    renderNav();
+    applyFilter();
+    await renderPluginPage();
     // 通知宠物窗运行时启停（overlay/settings 窗各自监听同一事件挂载 widget）
     await emit("host:plugin-toggled", { id: manifest.id, enabled: on });
   });
-
-  return { card, toggle, settingsBox };
 }
 
 async function render(): Promise<void> {
-  const manifests = await invoke<PluginManifest[]>("plugins_list");
-  const enabled = new Set(getEnabled());
-  const list = document.getElementById("plugin-list")!;
-  // 重建 DOM 前必须先卸载 widget：否则 mounted 表里留着已消失的插槽，
-  // 之后 has() 会抑制重挂载，面板静默不见
-  for (const id of rows.keys()) await widgetHost.unmount(id);
-  list.replaceChildren();
-  rows.clear();
-
-  const sorted = [...manifests].sort((a, b) => a.id.localeCompare(b.id));
-  for (const manifest of sorted) {
-    const invalid = validateManifest(manifest);
-    if (invalid) {
-      const err = document.createElement("section");
-      err.className = "plugin-card error";
-      err.textContent = `${manifest.id ?? "?"}：${invalid}`;
-      list.append(err);
-      continue;
-    }
-    const on = enabled.has(manifest.id);
-    const row = buildCard(manifest, on);
-    rows.set(manifest.id, row);
-    list.append(row.card);
-    if (on) {
-      widgetHost.mount(manifest, "settings", row.settingsBox).catch((e) => {
-        console.error(`[settings] mount widget: ${manifest.id}`, e);
-      });
-    }
+  const list = await invoke<PluginManifest[]>("plugins_list");
+  // 目录可能已经变了：先按新的清单重建侧栏，再决定当前页怎么渲染
+  manifests = [...list].sort((a, b) => a.id.localeCompare(b.id));
+  const alive = new Set(manifests.map((m) => m.id));
+  if (selected !== PET_VIEW && !alive.has(selected)) {
+    // 正在看的插件被移走了，回到宠物设置，别留一张空壳
+    mountedFor = null;
+    await widgetHost.unmount(selected).catch(() => undefined);
+    selected = PET_VIEW;
   }
-
-  const count = document.getElementById("nav-plugin-count");
-  // 只数「既装着又启用」的：启用清单是 localStorage 里的历史值，插件被移走后还留着，
-  // 直接拿 enabled.size 会显示成 "3/2"
-  if (count) {
-    const installed = manifests.filter((m) => enabled.has(m.id)).length;
-    count.textContent = `${installed}/${manifests.length}`;
-  }
-  applyFilter();
-}
-
-/* ---------- 侧栏切换与插件搜索 ---------- */
-
-const VIEWS: Record<string, { title: string; hint: string; search: boolean }> = {
-  plugins: {
-    title: "插件管理",
-    hint: "启停即时生效；未授权能力首次调用时会弹出确认框",
-    search: true,
-  },
-  skins: { title: "桌宠形象", hint: "形象来自 Petdex 公开画廊，运行时按需下载", search: false },
-  hotkey: { title: "快捷键", hint: "全局快捷键，随时唤出这个插件页", search: false },
-  startup: { title: "启动", hint: "登录系统后是否自动运行", search: false },
-  agent: { title: "Agent 接入", hint: "让编码 Agent 的会话状态驱动宠物", search: false },
-  game: { title: "游戏模式", hint: "别人全屏时安静下来", search: false },
-};
-
-function applyFilter(): void {
-  const input = document.getElementById("search") as HTMLInputElement | null;
-  const needle = (input?.value ?? "").trim().toLowerCase();
-  let shown = 0;
-  for (const card of document.querySelectorAll<HTMLElement>("#plugin-list .plugin-card")) {
-    const hit = !needle || (card.dataset.search ?? "").includes(needle);
-    card.style.display = hit ? "" : "none";
-    if (hit) shown += 1;
-  }
-  const empty = document.getElementById("plugin-empty");
-  if (empty) empty.hidden = shown > 0;
-}
-
-function switchView(name: keyof typeof VIEWS | string): void {
-  const view = VIEWS[name] ?? VIEWS.plugins;
-  for (const item of document.querySelectorAll(".nav-item")) {
-    item.classList.toggle("active", (item as HTMLElement).dataset.view === name);
-  }
-  for (const panel of document.querySelectorAll<HTMLElement>("[data-panel]")) {
-    panel.hidden = panel.dataset.panel !== name;
-  }
-  const title = document.getElementById("view-title");
-  const hint = document.getElementById("view-hint");
-  const search = document.getElementById("search") as HTMLInputElement | null;
-  if (title) title.textContent = view.title;
-  if (hint) hint.textContent = view.hint;
-  if (search) search.style.display = view.search ? "" : "none";
+  renderNav();
+  await select(selected);
 }
 
 function wireNav(): void {
-  for (const item of document.querySelectorAll<HTMLButtonElement>(".nav-item")) {
-    item.addEventListener("click", () => switchView(item.dataset.view ?? "plugins"));
-  }
-  document.getElementById("search")?.addEventListener("input", applyFilter);
+  const pet = document.querySelector<HTMLElement>('.nav-item[data-view="pet"]');
+  pet?.addEventListener("click", () => void select(PET_VIEW));
+  $<HTMLInputElement>("search")?.addEventListener("input", applyFilter);
 }
 
 /* ---------- 快捷键 ---------- */
 
-const hotkeyStatus = () => document.getElementById("hotkey-status");
+const hotkeyStatus = () => $<HTMLElement>("hotkey-status");
 
 async function renderHotkey(): Promise<void> {
-  const el = hotkeyStatus();
-  if (!el) return;
+  const el2 = hotkeyStatus();
+  if (!el2) return;
   try {
     const info = await invoke<{ accelerator: string; default: string }>("hotkey_status");
-    el.replaceChildren(
+    el2.replaceChildren(
       document.createTextNode("当前："),
       Object.assign(document.createElement("kbd"), { textContent: info.accelerator }),
       document.createTextNode(info.accelerator === info.default ? "（默认）" : ""),
     );
-    const input = document.getElementById("hotkey-input") as HTMLInputElement | null;
+    const input = $<HTMLInputElement>("hotkey-input");
     if (input && !input.value) input.value = info.accelerator;
   } catch (e) {
-    el.textContent = `读取失败：${String(e)}`;
+    el2.textContent = `读取失败：${String(e)}`;
   }
 }
 
 async function saveHotkey(accelerator: string): Promise<void> {
-  const el = hotkeyStatus();
+  const el2 = hotkeyStatus();
   try {
     const saved = await invoke<string>("hotkey_set", { accelerator });
-    const input = document.getElementById("hotkey-input") as HTMLInputElement | null;
+    const input = $<HTMLInputElement>("hotkey-input");
     if (input) input.value = saved;
     await renderHotkey();
-    el?.classList.remove("error");
+    el2?.classList.remove("error");
   } catch (e) {
-    if (el) el.textContent = `应用失败：${String(e)}`;
+    if (el2) el2.textContent = `应用失败：${String(e)}`;
   }
 }
 
 function wireHotkey(): void {
-  document.getElementById("hotkey-save")?.addEventListener("click", () => {
-    const input = document.getElementById("hotkey-input") as HTMLInputElement | null;
-    const value = input?.value?.trim() ?? "";
+  $<HTMLElement>("hotkey-save")?.addEventListener("click", () => {
+    const value = ($<HTMLInputElement>("hotkey-input")?.value ?? "").trim();
     if (!value) {
-      if (hotkeyStatus()) hotkeyStatus()!.textContent = "先输入一个组合键，例如 Ctrl+Alt+P。";
+      const el2 = hotkeyStatus();
+      if (el2) el2.textContent = "先输入一个组合键，例如 Ctrl+Alt+P。";
       return;
     }
     void saveHotkey(value);
   });
-  document.getElementById("hotkey-reset")?.addEventListener("click", () => {
+  $<HTMLElement>("hotkey-reset")?.addEventListener("click", () => {
     void saveHotkey("CommandOrControl+Alt+P");
   });
-  document.getElementById("hotkey-test")?.addEventListener("click", async () => {
-    const input = document.getElementById("hotkey-input") as HTMLInputElement | null;
-    const el = hotkeyStatus();
-    const value = input?.value?.trim() ?? "";
-    if (!value || !el) return;
+  $<HTMLElement>("hotkey-test")?.addEventListener("click", async () => {
+    const el2 = hotkeyStatus();
+    const value = ($<HTMLInputElement>("hotkey-input")?.value ?? "").trim();
+    if (!value || !el2) return;
     try {
       const free = await invoke<boolean>("hotkey_test", { accelerator: value });
-      el.textContent = free
+      el2.textContent = free
         ? `「${value}」可以注册，没被别的应用占用。`
         : `「${value}」注册失败，多半已被其他程序占用，换一个吧。`;
     } catch (e) {
-      el.textContent = `测试失败：${String(e)}`;
+      el2.textContent = `测试失败：${String(e)}`;
     }
   });
 }
@@ -283,35 +327,37 @@ function wireHotkey(): void {
 /* ---------- 开机自启 ---------- */
 
 async function renderAutostart(): Promise<void> {
-  const box = document.getElementById("autostart-switch") as HTMLInputElement | null;
-  const el = document.getElementById("autostart-status");
-  if (!box || !el) return;
+  const box = $<HTMLInputElement>("autostart-switch");
+  const el2 = $<HTMLElement>("autostart-status");
+  if (!box || !el2) return;
   try {
     const info = await invoke<{ enabled: boolean; exe: string; devBuild: boolean }>("autostart_status");
     box.checked = info.enabled;
-    el.textContent = info.devBuild
+    el2.textContent = info.devBuild
       ? `当前跑的是开发构建，注册的是 ${info.exe} —— 换正式包后请重新打开一次这个开关。`
       : `启动项指向 ${info.exe}`;
   } catch (e) {
-    el.textContent = `读取失败：${String(e)}`;
+    el2.textContent = `读取失败：${String(e)}`;
   }
 }
 
 function wireStartup(): void {
-  const box = document.getElementById("autostart-switch") as HTMLInputElement | null;
+  const box = $<HTMLInputElement>("autostart-switch");
   box?.addEventListener("change", async () => {
-    const el = document.getElementById("autostart-status");
+    const el2 = $<HTMLElement>("autostart-status");
     const want = box.checked;
     try {
       const now = await invoke<boolean>("autostart_set", { enabled: want });
       box.checked = now;
-      if (el) el.textContent = now ? "已加入登录启动项。" : "已移除登录启动项。";
+      if (el2) el2.textContent = now ? "已加入登录启动项。" : "已移除登录启动项。";
     } catch (e) {
       box.checked = !want;
-      if (el) el.textContent = `改动失败：${String(e)}`;
+      if (el2) el2.textContent = `改动失败：${String(e)}`;
     }
   });
 }
+
+/* ---------- Agent 接入 ---------- */
 
 interface AgentFileReport {
   path: string;
@@ -327,8 +373,8 @@ interface AgentStatus {
   expectedPerFile: number;
 }
 
-const agentStatusLine = () => document.getElementById("agent-status");
-const agentDetail = () => document.getElementById("agent-detail");
+const agentStatusLine = () => $<HTMLElement>("agent-status");
+const agentDetail = () => $<HTMLElement>("agent-detail");
 
 async function renderAgent(): Promise<void> {
   const status = agentStatusLine();
@@ -360,8 +406,8 @@ async function renderAgent(): Promise<void> {
 async function runAgentAction(how: "install" | "uninstall"): Promise<void> {
   const command = how === "install" ? "agent_hooks_install" : "agent_hooks_uninstall";
   for (const id of ["agent-install", "agent-uninstall"]) {
-    const el = document.getElementById(id) as HTMLButtonElement | null;
-    if (el) el.disabled = true;
+    const btn = $<HTMLButtonElement>(id);
+    if (btn) btn.disabled = true;
   }
   const detail = agentDetail();
   try {
@@ -375,23 +421,17 @@ async function runAgentAction(how: "install" | "uninstall"): Promise<void> {
     if (detail) detail.textContent = `操作失败：${String(e)}`;
   } finally {
     for (const id of ["agent-install", "agent-uninstall"]) {
-      const el = document.getElementById(id) as HTMLButtonElement | null;
-      if (el) el.disabled = false;
+      const btn = $<HTMLButtonElement>(id);
+      if (btn) btn.disabled = false;
     }
     await renderAgent();
   }
 }
 
 function wireAgentBox(): void {
-  document.getElementById("agent-install")?.addEventListener("click", () => {
-    void runAgentAction("install");
-  });
-  document.getElementById("agent-uninstall")?.addEventListener("click", () => {
-    void runAgentAction("uninstall");
-  });
-  document.getElementById("agent-refresh")?.addEventListener("click", () => {
-    void renderAgent();
-  });
+  $<HTMLElement>("agent-install")?.addEventListener("click", () => void runAgentAction("install"));
+  $<HTMLElement>("agent-uninstall")?.addEventListener("click", () => void runAgentAction("uninstall"));
+  $<HTMLElement>("agent-refresh")?.addEventListener("click", () => void renderAgent());
 }
 
 /* ---------- 桌宠形象（Petdex 图集） ---------- */
@@ -403,13 +443,11 @@ interface SkinInfo {
   url: string;
 }
 
-const skinStatus = () => document.getElementById("skin-status");
-const skinNameInput = () => document.getElementById("skin-name") as HTMLInputElement | null;
-const skinInstallBtn = () => document.getElementById("skin-install") as HTMLButtonElement | null;
+const skinStatus = () => $<HTMLElement>("skin-status");
 
 function setSkinStatus(text: string): void {
-  const el = skinStatus();
-  if (el) el.textContent = text;
+  const el2 = skinStatus();
+  if (el2) el2.textContent = text;
 }
 
 function skinButton(label: string, onClick: () => void): HTMLButtonElement {
@@ -423,8 +461,9 @@ function skinButton(label: string, onClick: () => void): HTMLButtonElement {
 /** 形象名与 displayName 都是外部数据：一律 textContent 建节点，不进 innerHTML */
 function skinRow(skin: SkinInfo, current: boolean): HTMLLIElement {
   const li = document.createElement("li");
+  if (current) li.className = "current";
   const label = document.createElement("span");
-  label.textContent = `${skin.displayName}（${skin.slug} · 图集 v${skin.spriteVersionNumber}）${current ? " · 使用中" : ""}`;
+  label.textContent = `${skin.displayName}（${skin.slug} · 图集 v${skin.spriteVersionNumber}）`;
   li.appendChild(label);
   if (!current) {
     li.appendChild(
@@ -438,7 +477,7 @@ function skinRow(skin: SkinInfo, current: boolean): HTMLLIElement {
 }
 
 async function renderSkins(): Promise<void> {
-  const list = document.getElementById("skin-list");
+  const list = $<HTMLUListElement>("skin-list");
   if (!list) return;
   try {
     const [items, active] = await Promise.all([
@@ -462,24 +501,24 @@ async function runSkinCommand(
   arg: string,
   okText: string,
 ): Promise<void> {
-  const btn = skinInstallBtn();
-  if (btn) btn.disabled = true;
+  const install = $<HTMLButtonElement>("skin-install");
+  if (install) install.disabled = true;
   try {
     await invoke(command, command === "pet_skin_install" ? { name: arg } : { slug: arg });
     setSkinStatus(`${okText}。`);
   } catch (e) {
     setSkinStatus(`操作失败：${String(e)}`);
   } finally {
-    if (btn) btn.disabled = false;
+    if (install) install.disabled = false;
     await renderSkins();
   }
 }
 
 function wireSkins(): void {
-  const install = skinInstallBtn();
-  const input = skinNameInput();
+  const install = $<HTMLButtonElement>("skin-install");
+  const input = $<HTMLInputElement>("skin-name");
   install?.addEventListener("click", () => {
-    const name = input?.value?.trim() ?? "";
+    const name = (input?.value ?? "").trim();
     if (!name) {
       setSkinStatus("先输入一个 Petdex 名字，例如 deepseek。");
       return;
@@ -490,15 +529,15 @@ function wireSkins(): void {
   input?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") install?.click();
   });
-  document.getElementById("skin-refresh")?.addEventListener("click", () => {
-    void renderSkins();
-  });
+  $<HTMLElement>("skin-refresh")?.addEventListener("click", () => void renderSkins());
 }
+
+/* ---------- 游戏模式 ---------- */
 
 const GAME_MODE_KEY = "host:game-mode";
 
 function wireGameMode(): void {
-  const box = document.getElementById("game-mode-switch") as HTMLInputElement | null;
+  const box = $<HTMLInputElement>("game-mode-switch");
   if (!box) return;
   box.checked = localStorage.getItem(GAME_MODE_KEY) !== "0";
   box.addEventListener("change", async () => {
@@ -511,22 +550,24 @@ function wireGameMode(): void {
 }
 
 async function renderGameMode(): Promise<void> {
-  const el = document.getElementById("game-mode-status");
-  if (!el) return;
+  const el2 = $<HTMLElement>("game-mode-status");
+  if (!el2) return;
   try {
     const watching = await invoke<boolean>("fullscreen_watch_status");
-    el.textContent = watching
+    el2.textContent = watching
       ? "检测中：轮询一次前台窗口约 1.2 秒，代价可忽略。"
       : "已关闭：不再轮询前台窗口。";
   } catch (e) {
-    el.textContent = `读取状态失败：${String(e)}`;
+    el2.textContent = `读取状态失败：${String(e)}`;
   }
 }
 
+/* ---------- 启动 ---------- */
+
 async function main(): Promise<void> {
   await bus.init();
-  switchView("plugins");
   wireNav();
+  toggleListener();
   await render();
   wireGameMode();
   void renderGameMode();
@@ -540,31 +581,29 @@ async function main(): Promise<void> {
   void renderAutostart();
 
   // 宠物窗运行时上报的插件异常 → 顶部红条
-  banner = document.createElement("div");
-  banner.className = "error-banner";
+  banner = el("div", "", "error-banner");
   banner.style.display = "none";
-  document.getElementById("content")!.prepend(banner);
+  $<HTMLElement>("content")?.prepend(banner);
   await listen<{ plugin: string; error: string }>("host:plugin-error", (e) => {
     if (!banner) return;
     banner.textContent = `插件异常已隔离 — ${e.payload.plugin}: ${e.payload.error}`;
     banner.style.display = "";
   });
 
-  // 插件目录变动 → 重新拉列表（新增/移除即时可见）
+  // 插件目录变动 → 侧栏立刻跟着增删
   await listen("host:plugins-changed", () => {
     void render().catch((e) => console.error("[settings] render", e));
   });
 
   // 首启自动装默认形象、或宠物窗那边换了形象 → 刷新形象列表
-  await listen("pet:skin-changed", () => {
-    void renderSkins();
-  });
+  await listen("pet:skin-changed", () => void renderSkins());
 
-  // 其他窗口触发的启停（目前只有设置窗自己，保留下述同步逻辑以防扩展）
+  // 其他窗口触发的启停：同步侧栏那个点与当前插件页
   await listen<{ id: string; enabled: boolean }>("host:plugin-toggled", (e) => {
-    const row = rows.get(e.payload.id);
-    if (!row || e.payload.enabled) return;
-    widgetHost.unmount(e.payload.id);
+    renderNav();
+    applyFilter();
+    if (e.payload.id === selected) void renderPluginPage();
+    if (!e.payload.enabled && mountedFor === e.payload.id) void detachWidget();
   });
 }
 

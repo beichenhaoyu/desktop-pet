@@ -85,6 +85,12 @@ document.addEventListener("mousedown", (e) => {
 
 document.addEventListener("mousemove", (e) => {
   document.documentElement.classList.toggle("over-pet", insideSprite(e.clientX, e.clientY));
+  // 系统级拖拽会吃掉抬起事件，mouseup 常常收不到：按键已经松开就说明这趟拖完了。
+  // 不补这一下的话 dragEngaged 永远挂着，穿透再也不会开启，宠物整块挡鼠标。
+  if (dragEngaged && e.buttons === 0) {
+    resetPress();
+    return;
+  }
   if (!press || dragEngaged) return;
   if (Math.hypot(e.screenX - press.x, e.screenY - press.y) > 6) {
     dragEngaged = true;
