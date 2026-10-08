@@ -65,7 +65,7 @@ export async function deactivate() { /* 停用/移除时调用 */ }
 | `ble:connect` | `ctx.ble.connect/disconnect/connectedDevice` | 连接与订阅通知 |
 | `widget` | `ctx.widget.update` | 向自己的 widget 推数据（走 `<id>:widget` topic） |
 | `overlay` | `ctx.overlay.show(opts?)` / `hide` / `destroy` | **本插件专属**的透明悬浮窗（窗口标签 `overlay-<你的 id>`）。`show({ placement: "above-pet", height: 104 })` 让它贴着宠物头顶并跟随拖动；不传就是桌面左上角 |
-| `http` | `ctx.http.request` | 出站请求，**按域名逐个再授权**（`http:<host>`） |
+| `http` | `ctx.http.request` | 出站请求，**按域名逐个再授权**（`http:<host>`，键不带默认端口：`https://x.com` 的键是 `x.com`） |
 | `notify` | `ctx.notify.show` | 系统通知 |
 | `pet:react` | `ctx.pet.react` | 让宠物插播一个状态，参数只能是 petdex 的九个状态之一：`idle` `running-right` `running-left` `waving` `jumping` `failed` `waiting` `running` `review`（其余名字会被桥拒绝） |
 | `pet:say` | `ctx.pet.say` | 让宠物弹一句台词 |

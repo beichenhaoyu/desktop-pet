@@ -1,0 +1,19 @@
+{
+  "id": "com.pet.astock",
+  "name": "A股盯盘",
+  "version": "0.1.0",
+  "entry": "index.js",
+  "widget": "widget.js",
+  "permissions": [
+    "http",
+    "storage",
+    "widget",
+    "bus:publish",
+    "bus:subscribe",
+    "overlay",
+    "notify",
+    "pet:react",
+    "pet:say"
+  ],
+  "description": "自选股实时盯盘：盘中轮询行情，到价/涨跌幅触发提醒（系统通知 + 宠物反应），badge 小字、左上角盯盘卡、插件页管理自选股与阈值。数据源为东方财富公开只读接口。"
+}

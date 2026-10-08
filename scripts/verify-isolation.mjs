@@ -421,6 +421,32 @@ try {
   r.check("换个域名（localhost ≠ 127.0.0.1）仍被宿主拒绝", true, !otherHost.ok && /未授权/.test(String(otherHost.e)));
   const badScheme = await invoke_("http_request", { pluginId: NET_ID, url: "file:///C:/Windows/win.ini" });
   r.check("非 http/https 协议被拒", true, !badScheme.ok && /只允许 http/.test(String(badScheme.e)));
+
+  // 授权键的口径：桥按 new URL(url).host 申请（默认端口会被省掉），宿主算出来的键必须一致。
+  // 早先用 port_or_known_default() 会给 https 凭空补出 `:443`，两边永远对不上，
+  // 任何 https 请求都判「未授权」—— 而本地测试地址带显式端口，恰好看不出来。
+  const httpsDenied = await invoke_("http_request", { pluginId: NET_ID, url: "https://example.com/" });
+  r.check(
+    "https 的授权键不带 :443",
+    true,
+    !httpsDenied.ok && /未授权访问 example\.com：/.test(String(httpsDenied.e)) && !/:443/.test(String(httpsDenied.e)),
+  );
+  // 给 example.com 走一次真实同意框授权（http 已给过，缺的是这一跳的域名）
+  const grantPending = c.ev(
+    `window.__TAURI_INTERNALS__.invoke('permission_request', { pluginId: ${JSON.stringify(NET_ID)}, pluginName: '网络探针', capabilities: ['http', 'http:example.com'] })`,
+  );
+  try {
+    await driveConsent("allow");
+  } catch (err) {
+    console.log("     没能操作 example.com 的同意框: " + String(err?.message ?? err).split("\n")[0]);
+  }
+  await grantPending.catch(() => null);
+  const httpsOk = await invoke_("http_request", { pluginId: NET_ID, url: "https://example.com/" });
+  r.check(
+    "经宿主代理走 https 能取回内容",
+    true,
+    httpsOk.v?.status === 200 && /Example Domain/.test(String(httpsOk.v?.body ?? "")),
+  );
   const notifyDenied = await invoke_("notify_show", { pluginId: NET_ID, title: "t", body: "b" });
   r.check("未声明 notify 的插件发不出系统通知", true, !notifyDenied.ok && /未授权/.test(String(notifyDenied.e)));
   await revoke(NET_ID);

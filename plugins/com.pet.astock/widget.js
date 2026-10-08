@@ -1,0 +1,512 @@
+// 盯盘插件的界面：badge（宠物旁小字）、overlay（左上角盯盘卡）、settings（插件页）。
+// 三个区域共用一份由 index.js 推来的视图数据（`com.pet.astock:widget`），
+// 界面自己不发请求、也不算规则 —— 这样重新挂载时只要宿主回灌那一份就够了。
+//
+// 遵守 SDK 三条硬规矩：只往 shadow root 里写；清理表按挂载实例存（WeakMap）；
+// 外部数据一律 textContent，绝不拼进 innerHTML（股票名、搜索结果、行情值都算外部数据）。
+import { PID, TOPIC_CMD, TOPIC_STATUS, TOPIC_SUGGEST, TOPIC_WIDGET } from "./topics.js";
+
+const scopes = new WeakMap();
+
+export function mount(root, ctx) {
+  const cleanups = [];
+  scopes.set(root, cleanups);
+  if (ctx.region === "badge") mountBadge(root, ctx, cleanups);
+  else if (ctx.region === "overlay") mountOverlay(root, ctx, cleanups);
+  else if (ctx.region === "settings") mountSettings(root, ctx, cleanups);
+}
+
+export function unmount(root) {
+  for (const off of scopes.get(root) ?? []) {
+    try {
+      off();
+    } catch {
+      /* 忽略 */
+    }
+  }
+  scopes.delete(root);
+}
+
+/* ================= 共用小工具 ================= */
+
+function addStyle(root, css) {
+  const node = document.createElement("style");
+  node.textContent = css;
+  root.append(node);
+}
+
+function tag(name, cls) {
+  const node = document.createElement(name);
+  if (cls) node.className = cls;
+  return node;
+}
+
+function text(content, cls) {
+  const node = tag("span", cls);
+  node.textContent = String(content ?? "");
+  return node;
+}
+
+function button(label, cls) {
+  const node = tag("button", cls);
+  node.type = "button";
+  node.textContent = label;
+  return node;
+}
+
+function input(type, cls) {
+  const node = tag("input", cls);
+  node.type = type;
+  return node;
+}
+
+/** A股习惯：红涨绿跌。数值缺失（停牌/未开盘）走灰色，不显示 NaN */
+function toneOf(q) {
+  const pct = q?.pct;
+  if (typeof pct !== "number" || !Number.isFinite(pct)) return "flat";
+  return pct > 0 ? "up" : pct < 0 ? "down" : "flat";
+}
+
+function fmtPrice(v) {
+  return typeof v === "number" && Number.isFinite(v) ? v.toFixed(2) : "—";
+}
+
+function fmtPct(v) {
+  if (typeof v !== "number" || !Number.isFinite(v)) return "—";
+  return `${v > 0 ? "+" : ""}${v.toFixed(2)}%`;
+}
+
+function clockOf(ms) {
+  return typeof ms === "number"
+    ? new Date(ms).toLocaleTimeString("zh-CN", { hour12: false })
+    : "";
+}
+
+const PHASE_TEXT = {
+  pre: "开盘前",
+  auction: "集合竞价",
+  morning: "上午盘中",
+  lunch: "午间休市",
+  afternoon: "下午盘中",
+  closed: "已收盘",
+  weekend: "周末休市",
+};
+
+/** 订阅视图数据；返回退订函数交给 cleanups */
+function watchView(ctx, render) {
+  const off = ctx.bus.subscribe(TOPIC_WIDGET, (d) => render(d ?? {}));
+  ctx.bus.publish(TOPIC_CMD, { action: "sync" }); // 面板刚建好时主动要一份（宿主回灌是双保险）
+  return off;
+}
+
+/* ================= badge：宠物旁小字 ================= */
+
+function mountBadge(root, ctx, cleanups) {
+  addStyle(
+    root,
+    `
+    .astock-badge {
+      font: 12px/1.35 "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: rgba(17,19,24,.82); color: #e6e8ee; border-radius: 999px;
+      padding: 3px 9px; display: inline-flex; gap: 6px; align-items: center;
+      box-shadow: 0 2px 8px rgba(0,0,0,.28); white-space: nowrap;
+    }
+    .astock-badge .nm { max-width: 92px; overflow: hidden; text-overflow: ellipsis; }
+    .up { color: #ff6b6b; } .down { color: #4ade80; } .flat { color: #cbd2dc; }
+    `,
+  );
+  const box = tag("div", "astock-badge");
+  const nm = text("盯盘", "nm");
+  const pc = text("", "flat");
+  box.append(nm, pc);
+  root.append(box);
+
+  cleanups.push(
+    watchView(ctx, (d) => {
+      const list = d.watch ?? [];
+      const first = list.length ? d.quotes?.[list[0].secid] : null;
+      const idx = d.config?.showIndex ? d.quotes?.[d.config.indexSecid] : null;
+      const q = first ?? idx;
+      box.style.display = q || list.length ? "inline-flex" : "none";
+      nm.textContent = q?.name ?? (list.length ? "盯盘" : "未加自选");
+      pc.textContent = q ? fmtPct(q.pct) : "";
+      pc.className = toneOf(q);
+    }),
+  );
+}
+
+/* ================= overlay：桌面左上角盯盘卡 ================= */
+
+function mountOverlay(root, ctx, cleanups) {
+  addStyle(
+    root,
+    `
+    .card {
+      font: 12px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: rgba(17,19,24,.86); color: #e6e8ee; border-radius: 12px;
+      padding: 8px 10px; max-width: 300px; box-shadow: 0 6px 22px rgba(0,0,0,.34);
+    }
+    .hd { display: flex; justify-content: space-between; font-size: 11px; color: #9aa3b2; margin-bottom: 4px; gap: 10px; }
+    .row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: baseline; padding: 1px 0; }
+    .row .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; }
+    .row .pr, .row .pc { font-variant-numeric: tabular-nums; }
+    .row .pc { min-width: 58px; text-align: right; }
+    .up { color: #ff6b6b; } .down { color: #4ade80; } .flat { color: #cbd2dc; }
+    .idx { border-top: 1px solid rgba(255,255,255,.12); margin-top: 4px; padding-top: 4px; }
+    .empty { color: #9aa3b2; }
+    `,
+  );
+  const card = tag("div", "card");
+  const phase = text("");
+  const updated = text("");
+  const head = tag("div", "hd");
+  head.append(phase, updated);
+  const body = tag("div");
+  card.append(head, body);
+  root.append(card);
+
+  const rowOf = (q, name, cls) => {
+    const row = tag("div", `row ${cls ?? ""}`);
+    row.append(text(q?.name ?? name, "nm"), text(fmtPrice(q?.price), "pr"), text(fmtPct(q?.pct), toneOf(q)));
+    row.lastChild.className = `pc ${toneOf(q)}`;
+    return row;
+  };
+
+  cleanups.push(
+    watchView(ctx, (d) => {
+      phase.textContent = PHASE_TEXT[d.session?.phase] ?? "";
+      updated.textContent = clockOf(d.updatedAt);
+      body.replaceChildren();
+      const list = d.watch ?? [];
+      if (!list.length) {
+        body.append(text("还没有自选股，去插件页添加", "empty"));
+        return;
+      }
+      for (const item of list) body.append(rowOf(d.quotes?.[item.secid], item.name));
+      const idxQ = d.config?.showIndex ? d.quotes?.[d.config.indexSecid] : null;
+      if (idxQ) body.append(rowOf(idxQ, idxQ.name, "idx"));
+    }),
+  );
+}
+
+/* ================= settings：插件页 ================= */
+
+const INDEXES = [
+  { secid: "1.000001", name: "上证指数" },
+  { secid: "0.399001", name: "深证成指" },
+  { secid: "0.399006", name: "创业板指" },
+  { secid: "1.000688", name: "科创50" },
+  { secid: "1.000300", name: "沪深300" },
+];
+
+const MODE_TEXT = { badge: "宠物旁小字", overlay: "桌面左上角盯盘卡", off: "不显示" };
+
+function mountSettings(root, ctx, cleanups) {
+  addStyle(
+    root,
+    `
+    .wrap { font: 13px/1.6 "Segoe UI", "Microsoft YaHei", sans-serif; color: #2b2f36; display: flex; flex-direction: column; gap: 14px; }
+    .sec > .sec-t { font-size: 12px; color: #98a2b3; margin-bottom: 4px; }
+    .row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .row + .row { margin-top: 6px; }
+    input[type=text], select { font: inherit; font-size: 12px; padding: 4px 7px; border: 1px solid #d0d5dd; border-radius: 6px; background: #fff; }
+    input.num { width: 74px; }
+    button { font: inherit; font-size: 12px; padding: 4px 11px; border-radius: 6px; border: 1px solid #d0d5dd; background: #f9fafb; cursor: pointer; }
+    button:hover { background: #f2f4f7; }
+    button.primary { background: #2f9e63; border-color: #2f9e63; color: #fff; }
+    button.danger { color: #b3261e; }
+    .status { font-size: 12px; color: #667085; min-height: 18px; }
+    .status.ok { color: #2f9e63; } .status.error { color: #d92d20; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { text-align: left; color: #98a2b3; font-weight: 500; padding: 2px 4px; white-space: nowrap; }
+    td { padding: 3px 4px; border-top: 1px solid #eaecf0; vertical-align: middle; white-space: nowrap; }
+    td:nth-child(1) { white-space: normal; }
+    td.quote { font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .up { color: #d92d20; } .down { color: #0f9d58; } .flat { color: #667085; }
+    .muted { color: #98a2b3; font-size: 11px; }
+    .sug { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+    .sug .item { display: flex; gap: 8px; align-items: center; border: 1px solid #eaecf0; border-radius: 6px; padding: 3px 8px; font-size: 12px; }
+    .sug .item span { flex: 1; }
+    .radios { display: flex; gap: 14px; flex-wrap: wrap; }
+    .radios label, .checks label { display: flex; gap: 4px; align-items: center; font-size: 12px; }
+    .checks { display: flex; gap: 16px; flex-wrap: wrap; }
+    .alerts { font-size: 12px; color: #475467; display: flex; flex-direction: column; gap: 2px; }
+    `,
+  );
+
+  const wrap = tag("div", "wrap");
+  root.append(wrap);
+
+  let lastStatusAt = 0; // 用户刚操作过 → 状态行保留操作结果几秒，不被下一轮回显盖掉
+  const statusLine = tag("div", "status");
+  const setStatus = (t, level = "info") => {
+    lastStatusAt = Date.now();
+    statusLine.textContent = t;
+    statusLine.className = `status${level === "info" ? "" : ` ${level}`}`;
+  };
+  statusLine.textContent = "正在读取当前配置…";
+
+  /* ---------- 添加自选 ---------- */
+  const addInput = input("text");
+  addInput.placeholder = "代码或名称，例如 600519 / 茅台";
+  addInput.style.flex = "1";
+  addInput.style.minWidth = "170px";
+  const searchBtn = button("搜索");
+  const addBtn = button("直接添加", "primary");
+  const sugBox = tag("div", "sug");
+  let suggestions = [];
+
+  const renderSug = () => {
+    sugBox.replaceChildren();
+    for (const row of suggestions) {
+      const item = tag("div", "item");
+      const add = button("添加");
+      add.onclick = () => {
+        ctx.bus.publish(TOPIC_CMD, { action: "add", secid: row.secid, code: row.code, name: row.name });
+        suggestions = suggestions.filter((s) => s.secid !== row.secid);
+        renderSug();
+      };
+      item.append(text(`${row.name}（${row.code}${row.type ? ` · ${row.type}` : ""}）`), add);
+      sugBox.append(item);
+    }
+  };
+
+  searchBtn.onclick = () => {
+    const kw = addInput.value.trim();
+    if (!kw) return setStatus("先输入代码或名称关键字", "error");
+    setStatus(`正在搜索「${kw}」…`);
+    ctx.bus.publish(TOPIC_CMD, { action: "search", keyword: kw });
+  };
+  addBtn.onclick = () => {
+    const v = addInput.value.trim();
+    if (!v) return setStatus("先输入 6 位代码", "error");
+    ctx.bus.publish(TOPIC_CMD, { action: "add", input: v });
+    addInput.value = "";
+  };
+  addInput.onkeydown = (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addBtn.click();
+    }
+  };
+
+  /* ---------- 自选列表与阈值 ---------- */
+  const HEADS = ["名称", "现价 / 涨跌", "涨到", "跌到", "±%", "停", ""];
+  const headRow = tag("tr");
+  for (const label of HEADS) {
+    const th = tag("th");
+    th.textContent = label;
+    headRow.append(th);
+  }
+  const thead = tag("thead");
+  thead.append(headRow);
+  const tbody = tag("tbody");
+  const table = tag("table");
+  table.append(thead, tbody);
+
+  // 两步确认，避免误点把用户的自选与阈值一次清光
+  const clearBtn = button("清空自选", "danger");
+  let clearArmed = false;
+  clearBtn.onclick = () => {
+    if (!clearArmed) {
+      clearArmed = true;
+      clearBtn.textContent = "再点一次确认清空";
+      setTimeout(() => {
+        clearArmed = false;
+        clearBtn.textContent = "清空自选";
+      }, 4000);
+      return;
+    }
+    ctx.bus.publish(TOPIC_CMD, { action: "clear" });
+    clearArmed = false;
+    clearBtn.textContent = "清空自选";
+  };
+
+  /* ---------- 显示方式 / 刷新 / 提醒 ---------- */
+  const modeInputs = {};
+  const radios = tag("div", "radios");
+  for (const value of ["badge", "overlay", "off"]) {
+    const box = input("radio");
+    box.name = "astock-mode";
+    box.value = value;
+    box.onchange = () => {
+      if (box.checked) ctx.bus.publish(TOPIC_CMD, { action: "config", value: { mode: value } });
+    };
+    const label = tag("label");
+    label.append(box, document.createTextNode(MODE_TEXT[value]));
+    radios.append(label);
+    modeInputs[value] = box;
+  }
+
+  const intervalInput = input("text", "num");
+  intervalInput.placeholder = "20";
+  const intervalBtn = button("应用");
+  intervalBtn.onclick = () => {
+    const n = Number(intervalInput.value);
+    if (!Number.isFinite(n) || n < 10) return setStatus("间隔至少 10 秒", "error");
+    ctx.bus.publish(TOPIC_CMD, { action: "config", value: { intervalSec: Math.round(n) } });
+  };
+  const refreshBtn = button("立刻刷新");
+  refreshBtn.onclick = () => ctx.bus.publish(TOPIC_CMD, { action: "refresh" });
+  const testBtn = button("试一条提醒");
+  testBtn.onclick = () => ctx.bus.publish(TOPIC_CMD, { action: "testAlert" });
+
+  const alertsBox = input("checkbox");
+  alertsBox.onchange = () => ctx.bus.publish(TOPIC_CMD, { action: "config", value: { alertsOn: alertsBox.checked } });
+  const petBox = input("checkbox");
+  petBox.onchange = () => ctx.bus.publish(TOPIC_CMD, { action: "config", value: { petOn: petBox.checked } });
+  const showIndexBox = input("checkbox");
+  showIndexBox.onchange = () => ctx.bus.publish(TOPIC_CMD, { action: "config", value: { showIndex: showIndexBox.checked } });
+  const indexSel = tag("select");
+  for (const idx of INDEXES) {
+    const opt = tag("option");
+    opt.value = idx.secid;
+    opt.textContent = idx.name;
+    indexSel.append(opt);
+  }
+  indexSel.onchange = () => ctx.bus.publish(TOPIC_CMD, { action: "config", value: { indexSecid: indexSel.value } });
+
+  const alertList = tag("div", "alerts");
+
+  const section = (title, ...nodes) => {
+    const box = tag("div", "sec");
+    const t = tag("div", "sec-t");
+    t.textContent = title;
+    box.append(t, ...nodes);
+    return box;
+  };
+
+  wrap.append(
+    statusLine,
+    (() => {
+      const row = tag("div", "row");
+      row.append(addInput, searchBtn, addBtn);
+      return section("添加自选股", row, sugBox);
+    })(),
+    section("自选与提醒规则", table, clearBtn),
+    section("显示方式", radios),
+    (() => {
+      const a = tag("div", "row");
+      a.append(text("盘中间隔 "), intervalInput, text("秒 "), intervalBtn, refreshBtn, testBtn);
+      const b = tag("div", "checks");
+      const l1 = tag("label");
+      l1.append(alertsBox, document.createTextNode("系统通知"));
+      const l2 = tag("label");
+      l2.append(petBox, document.createTextNode("宠物反应"));
+      const l3 = tag("label");
+      l3.append(showIndexBox, document.createTextNode("带指数"));
+      b.append(l1, l2, l3, indexSel);
+      return section("刷新与提醒", a, b);
+    })(),
+    section("最近提醒", alertList),
+  );
+
+  const numCell = (value, placeholder) => {
+    const box = input("text", "num");
+    box.placeholder = placeholder;
+    box.value = typeof value === "number" ? String(value) : "";
+    return box;
+  };
+
+  const render = (d) => {
+    const cfg = d.config ?? {};
+    const list = d.watch ?? [];
+
+    if (Date.now() - lastStatusAt > 6000) {
+      const phase = PHASE_TEXT[d.session?.phase] ?? "";
+      statusLine.textContent = `${phase} · 盯 ${list.length} 只 · 间隔 ${cfg.intervalSec ?? "—"}s${
+        d.error ? ` · ${d.error}` : ""
+      }`;
+      statusLine.className = `status${d.error ? " error" : ""}`;
+    }
+
+    for (const [value, box] of Object.entries(modeInputs)) box.checked = (cfg.mode ?? "badge") === value;
+    if (document.activeElement !== intervalInput) intervalInput.value = String(cfg.intervalSec ?? 20);
+    alertsBox.checked = cfg.alertsOn !== false;
+    petBox.checked = cfg.petOn !== false;
+    showIndexBox.checked = cfg.showIndex !== false;
+    if (cfg.indexSecid) indexSel.value = cfg.indexSecid;
+
+    tbody.replaceChildren();
+    for (const item of list) {
+      const q = d.quotes?.[item.secid];
+      const tr = tag("tr");
+
+      const nameTd = tag("td");
+      const nm = tag("div");
+      nm.textContent = q?.name ?? item.name;
+      const code = tag("div", "muted");
+      code.textContent = item.code;
+      nameTd.append(nm, code);
+
+      const priceTd = tag("td", "quote");
+      priceTd.append(text(`${fmtPrice(q?.price)} `), text(fmtPct(q?.pct), toneOf(q)));
+
+      const upper = numCell(item.upper, "涨到");
+      const lower = numCell(item.lower, "跌到");
+      const pct = numCell(item.pct, "±%");
+      const save = button("存");
+      save.onclick = () =>
+        ctx.bus.publish(TOPIC_CMD, {
+          action: "update",
+          secid: item.secid,
+          upper: upper.value.trim(),
+          lower: lower.value.trim(),
+          pct: pct.value.trim(),
+        });
+      const limitBox = input("checkbox");
+      limitBox.checked = item.limit !== false;
+      limitBox.onchange = () =>
+        ctx.bus.publish(TOPIC_CMD, { action: "update", secid: item.secid, limit: limitBox.checked });
+      const del = button("删", "danger");
+      del.onclick = () => ctx.bus.publish(TOPIC_CMD, { action: "remove", secid: item.secid });
+
+      const ops = tag("td");
+      ops.append(save, del);
+      const limitTd = tag("td");
+      limitTd.append(limitBox);
+      tr.append(nameTd, priceTd, cell(upper), cell(lower), cell(pct), limitTd, ops);
+      tbody.append(tr);
+    }
+    if (!list.length) {
+      const tr = tag("tr");
+      const td = tag("td", "muted");
+      td.colSpan = 7;
+      td.textContent = "还没有自选股。上面输入代码（如 600519）或名称点「搜索」即可添加。";
+      tr.append(td);
+      tbody.append(tr);
+    }
+
+    alertList.replaceChildren();
+    const hits = (d.recent ?? []).filter((a) => a?.message);
+    if (!hits.length) {
+      const empty = tag("span", "muted");
+      empty.textContent = "今天还没有触发过提醒。";
+      alertList.append(empty);
+    } else {
+      for (const a of hits) {
+        const row = tag("div");
+        row.textContent = `${clockOf(a.at)} · ${a.message}`;
+        alertList.append(row);
+      }
+    }
+  };
+
+  cleanups.push(
+    watchView(ctx, render),
+    ctx.bus.subscribe(TOPIC_SUGGEST, (p) => {
+      suggestions = p?.rows ?? [];
+      renderSug();
+      setStatus(`搜到 ${suggestions.length} 条结果`, suggestions.length ? "ok" : "error");
+    }),
+    ctx.bus.subscribe(TOPIC_STATUS, (s) => setStatus(s.text, s.level ?? "info")),
+  );
+}
+
+function cell(child) {
+  const td = tag("td");
+  td.append(child);
+  return td;
+}
+
+export { PID };

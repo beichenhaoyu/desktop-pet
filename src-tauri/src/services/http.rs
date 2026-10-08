@@ -49,20 +49,32 @@ impl HttpState {
     }
 }
 
-/// 只放行 http/https，并返回小写 host（含端口）作为授权粒度
+/// 授权粒度用的 host 键：**只在有非默认端口时才带端口**。
+///
+/// 前端桥按 `new URL(url).host` 申请授权，而 URL 规范会把缺省端口与等于默认值的
+/// 端口都省掉。原先这里用 `port_or_known_default()`，它对「没写端口」的 https
+/// 凭空补出 `:443`，两边永远对不上 —— 任何 https 请求都会被判「未授权」。
+/// 带显式非默认端口的地址（`http://127.0.0.1:9`）两边一致，所以这个错只在 https 上暴露。
+/// `Url::port()` 的语义正好是「缺省或等于默认值时为 None」，所以直接用它。
+/// 重定向逐跳复核共用这一个函数，避免两处各写一份而漂移。
+fn host_key(parsed: &tauri::Url) -> Result<String, String> {
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "URL 缺少主机名".to_string())?;
+    Ok(match parsed.port() {
+        Some(p) => format!("{host}:{p}"),
+        None => host.to_string(),
+    })
+}
+
+/// 只放行 http/https，并返回授权粒度的 host 键
 fn parse_host(url: &str) -> Result<String, String> {
     let parsed = tauri::Url::parse(url).map_err(|e| format!("URL 非法: {e}"))?;
     match parsed.scheme() {
         "http" | "https" => {}
         other => return Err(format!("只允许 http/https，收到 {other}")),
     }
-    parsed
-        .host_str()
-        .map(|host| match parsed.port_or_known_default() {
-            Some(port) => format!("{host}:{port}"),
-            None => host.to_string(),
-        })
-        .ok_or_else(|| "URL 缺少主机名".to_string())
+    host_key(&parsed)
 }
 
 fn host_allowed(granted: &[String], host: &str) -> bool {
@@ -97,13 +109,7 @@ fn send_following_redirects(
     let mut last_host = String::new();
 
     for hop in 0..=MAX_REDIRECTS {
-        let host = current
-            .host_str()
-            .map(|h| match current.port_or_known_default() {
-                Some(port) => format!("{h}:{port}"),
-                None => h.to_string(),
-            })
-            .ok_or_else(|| "URL 缺少主机名".to_string())?;
+        let host = host_key(&current)?;
         if !host_allowed(granted, &host) {
             return Err(format!("未授权访问 {host}：需要 manifest 声明 http 且已同意该域名"));
         }
@@ -247,6 +253,30 @@ mod tests {
     }
 
     #[test]
+    fn default_ports_are_not_part_of_the_host_key() {
+        // 前端桥用 new URL(url).host 申请授权，它不带默认端口；这边带了就会永远判未授权
+        assert_eq!(parse_host("https://push2.eastmoney.com/api/x").unwrap(), "push2.eastmoney.com");
+        assert_eq!(parse_host("http://127.0.0.1/x").unwrap(), "127.0.0.1");
+        // 显式写出的默认端口同样被 URL 规范省掉
+        assert_eq!(parse_host("https://x.com:443/y").unwrap(), "x.com");
+    }
+
+    #[test]
+    fn non_default_ports_stay_in_the_host_key() {
+        assert_eq!(parse_host("http://localhost:1420/").unwrap(), "localhost:1420");
+        assert_eq!(parse_host("https://x.com:8443/y").unwrap(), "x.com:8443");
+        assert_eq!(parse_host("http://127.0.0.1:9/x").unwrap(), "127.0.0.1:9");
+    }
+
+    #[test]
+    fn granted_host_key_matches_what_the_bridge_asks_for() {
+        // 端到端一致性：桥申请 `http:` + 浏览器 URL.host，宿主按同一口径复核
+        let key = parse_host("https://api.example.com/v1").unwrap();
+        let g = vec!["http".to_string(), format!("http:{key}")];
+        assert!(host_allowed(&g, &key));
+    }
+
+    #[test]
     fn credential_headers_are_recognised_case_insensitively() {
         assert!(is_credential_header("Authorization"));
         assert!(is_credential_header("COOKIE"));
@@ -254,3 +284,4 @@ mod tests {
         assert!(!is_credential_header("Content-Type"));
     }
 }
+
