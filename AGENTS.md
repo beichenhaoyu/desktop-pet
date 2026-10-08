@@ -5,7 +5,7 @@
 ## 当前状态
 
 - **阶段**：框架与插件运行时已落地并有运行时回归（2026-09-29）。
-- **已完成**：宠物窗（Petdex 图集九状态 + 状态机 + 呼吸/轻摆渲染层 + 点击穿透）、Petdex 桌宠资源安装（设置窗按名字下载、默认 `deepseek`）、插件运行时、Rust 能力服务（ble / store / http / notify / 权限同意框 / Agent hook 收件）、设置窗（含 Agent hook 安装与游戏模式开关）、按插件分开的透明 overlay 悬浮窗、心率蓝牙 / Agent 桥 / 待办三个示例插件。
+- **已完成**：宠物窗（Petdex 图集九状态 + 状态机 + 呼吸/轻摆渲染层 + 点击穿透）、Petdex 桌宠资源安装（设置窗按名字下载、默认 `deepseek`）、插件运行时、Rust 能力服务（ble / store / http / notify / 权限同意框 / Agent hook 收件）、设置窗（分区导航 + 插件搜索 + 桌宠形象 + 全局快捷键 + 开机自启 + Agent hook + 游戏模式）、按插件分开的透明 overlay 悬浮窗、心率蓝牙 / Agent 桥 / 待办三个示例插件。
 - **未完成**：`llm-token-usage` 示例插件（用户已明确暂缓）。
 - 完整设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；插件作者文档见 [PLUGIN_SDK.md](PLUGIN_SDK.md)。
 
@@ -15,6 +15,7 @@
 |---|---|
 | 宿主框架 | Tauri 2（Rust），不用 Electron / .NET / Python |
 | 前端 | TypeScript + Vite，不引入重框架，Canvas2D 渲染宠物 |
+| 开机自启 / 全局快捷键 | `tauri-plugin-autostart` + `tauri-plugin-global-shortcut`（官方插件，不自写注册表与 RegisterHotKey）。加依赖后必须核对 `cargo tree -p tauri`：本项目踩过「cargo 把 tauri 抬到新 minor，npm 侧 `@tauri-apps/*` 没动 → `tauri build` 直接失败」，当前锁 tauri 2.12.0 且 Cargo.lock 入库，收尾必跑 `npm run verify:release`。另注意 autostart v2 的扩展方法仍叫 `app.autolaunch()`（改名 `autostart()` 排到 v3） |
 | 宠物形象 | Petdex 图集（8 列 × 9 行 v1 / × 11 行 v2，单元格 192×208 无损 webp）+ 状态机；状态词表照搬 petdex 九个状态，本项目不内置美术，运行时从公开画廊下载，默认 `deepseek` |
 | 插件形态 | WebView 内 ES Module（进程内加载），每个插件 = manifest.json + index.js |
 | 插件生态 | 面向第三方开放：manifest 权限声明 + 能力受控桥 + 首次授权弹窗 |
@@ -50,6 +51,7 @@
 - 待办插件可增删改勾、桌面卡片、到期提醒，并广播标准 topic `todo:changed` ✅（`npm run verify:todo` 27 条）。字段照 todo.txt 约定，数据只存插件自己的隔离存储
 - 断开后可直接重连同一设备，不必重新扫描（代码级修复：扫描不再清空句柄缓存，缓存未命中时回落 `adapter.peripherals()`）。**本机无蓝牙硬件，未经真实心率设备验证**
 - 设置窗安装 Qoder hook 后，Agent 的工具调用/等确认/结束/失败能驱动宠物 ✅（`npm run verify:agent` 43 条断言）。**已用真实 Qoder 会话验证**：hook 确实被调用、事件按形状落盘并驱动宠物；状态卡贴在宠物头顶显示会话状态、工具名与步数，一轮结束 3 秒后自动收起
+- 设置窗分区导航（插件 / 桌宠形象 / 快捷键 / 启动 / Agent 接入 / 游戏模式）、按名称与权限搜索插件、全局快捷键唤出插件页、开机自启 ✅（`npm run verify` 的「设置窗」组：切页只留一个面板、搜索过滤、非法组合键被拒、`CommandOrControl` 这类跨平台 token 可用、改键成功并归一化、自启与快捷键只认设置窗）
 - 未授权能力调用被拒绝且触发同意框 ✅；SDK 文档 ✅
 - 宠物按 petdex 九状态播放真序列帧（图集 8×9 / 8×11、单元格 192×208）✅（`npm run verify` 的「petdex 图集几何与九状态切片」组）
 - 设置窗输入 Petdex 名字（如 `deepseek`）即从公开画廊下载并换装，默认形象 `deepseek`，切换不必重启 ✅（`npm run verify:skin` 25 条：真网络安装 boba、目录穿越被拒、安装类命令只认设置窗、换装后宠物窗不重启就解码新图集、删掉当前形象回落默认）。已用真实截图确认宠物窗里播的就是画廊下载的 deepseek
@@ -70,4 +72,6 @@
 - Agent 接入约定：hook 事件由宿主自己收 —— `--pet-hook <phase>` 分支在建窗之前分流，落成 `agent/inbox/<phase>.jsonl`，watcher 读增量并归一化成会话状态后广播。不读 petdex、不开本地端口。phase 必须命中白名单（它同时是文件名与 CLI 参数）；安装/卸载只按 `--pet-hook` 标记增删自己的条目，不动其他 hook，写配置前先备份且原子落盘。
 - 状态词表：**只有 petdex 的九个状态** `idle / running-right / running-left / waving / jumping / failed / waiting / running / review`（行号、每行帧数与整行时长见 `src/pet/petdex-states.ts`）。原来的 12 个自造状态（walk/greet/sleep/react/curious/teasing/blush/angry/night）已取消，别再往回加。`ctx.pet.react()` 只认这九个名字，Agent 桥的 phase→状态映射也照搬 petdex 的 `stateForEvent`
 - 桌宠资源：磁盘位置只有 Rust `services/skins.rs` 的 skins 目录一个解析点，经 `petskin://<slug>/sprite.webp`（Windows 上即 `http://petskin.localhost/…`）读给 webview；打包版 CSP 的 `img-src` 必须包含 `http://petskin.localhost`，否则只有 `tauri build` 产物会黑屏（dev 不注入 CSP，测不出来）。名字解析走公开接口 `https://petdex.dev/api/manifest/v2`（`pets` 是数组的数组，列序由其 `fields` 给出，别硬编下标）
+- 跨会话生效的系统级开关一律**只认设置窗**：`autostart_set`、`hotkey_set`（与 `pet_skin_install/use/remove`、`agent_hooks_*` 同一套 `window.label()` 门禁）；`settings_show` 反过来只认宠物窗，免得插件页面把设置窗弹来弹去
+- 加速键字符串必须过 `services/hotkeys.rs::normalize_accel` 再注册：至少一个修饰键、恰好一个主键，`CommandOrControl`/`CmdOrCtrl` 这类跨平台 token 要认（默认值本身就用它写成，不认就会导致「恢复默认」失败）
 - 宿主日志：`%LOCALAPPDATA%\com.desktoppet.pet\logs\host.log`

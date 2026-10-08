@@ -58,7 +58,8 @@ pub async fn settings_show(window: tauri::Window, app: AppHandle) -> Result<(), 
     Ok(())
 }
 
-fn open_settings(app: &AppHandle) {
+/// 打开（或唤起）设置窗。托盘菜单、全局快捷键与回归脚本共用这一个入口。
+pub fn open_settings(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("settings") {
         let _ = win.show();
         let _ = win.set_focus();
@@ -66,7 +67,8 @@ fn open_settings(app: &AppHandle) {
     }
     let _ = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
         .title("DesktopPet 设置")
-        .inner_size(460.0, 640.0)
-        .resizable(false)
+        .inner_size(760.0, 600.0)
+        .min_inner_size(660.0, 460.0)
+        .resizable(true)
         .build();
 }

@@ -557,6 +557,73 @@ try {
   r.info("探针内 eval", bare.csp);
   r.check("widget 注入 <style> 生效", true, bare.styleApplied);
 
+  r.group("设置窗：分区导航、搜索、快捷键与自启");
+  // 用 hostInvoke 而不是裸 evaluate：被拒时页面外的 exceptionDetails 只剩
+  // "Uncaught (in promise)"，拿不到宿主给的中文原因，断言就没法校验「为什么被拒」
+  const call = hostInvoke(c);
+  const sCall = (cmd, args) => hostInvoke(sc)(cmd, args);
+  await call("settings_show");
+  const findSettings = async () => {
+    for (let i = 0; i < 40; i++) {
+      const hit = (await fetch(`http://127.0.0.1:${PORT}/json/list`).then((res) => res.json()).catch(() => []))
+        .find((t) => /localhost:1420\/settings\.html/.test(t.url));
+      if (hit) return hit;
+      await new Promise((res) => setTimeout(res, 400));
+    }
+    return null;
+  };
+  const settingsTarget = await findSettings();
+  r.check("设置窗可被宿主唤出（快捷键与回归共用这个入口）", true, !!settingsTarget);
+  let sc = settingsTarget
+    ? await attach(PORT, (t) => t.webSocketDebuggerUrl === settingsTarget.webSocketDebuggerUrl, 15_000)
+    : null;
+  if (sc) {
+    await new Promise((res) => setTimeout(res, 3000));
+    r.check(
+      "侧栏六个分区都在",
+      '["plugins","skins","hotkey","startup","agent","game"]',
+      JSON.stringify(await sc.ev(`[...document.querySelectorAll('.nav-item')].map(b => b.dataset.view)`)),
+    );
+    r.check("插件卡片带图标位", true, await sc.ev(`document.querySelectorAll('#plugin-list .plugin-card .plugin-icon').length >= 2`));
+    await sc.ev(`document.querySelector('.nav-item[data-view=hotkey]').click()`);
+    r.check(
+      "切页只留一个面板可见",
+      "hotkey",
+      await sc.ev(`[...document.querySelectorAll('[data-panel]')].filter(p => !p.hidden).map(p => p.dataset.panel).join(',')`),
+    );
+    r.check("非插件页隐藏搜索框", "none", await sc.ev(`getComputedStyle(document.getElementById('search')).display`));
+    await sc.ev(`document.querySelector('.nav-item[data-view=plugins]').click()`);
+    await new Promise((res) => setTimeout(res, 400));
+    await sc.ev(`(() => { const i = document.getElementById('search'); i.value = 'ble:scan'; i.dispatchEvent(new Event('input')); })()`);
+    r.check(
+      "按权限搜索能过滤到只剩声明它的插件",
+      1,
+      await sc.ev(`[...document.querySelectorAll('#plugin-list .plugin-card')].filter(c => c.style.display !== 'none').length`),
+    );
+    await sc.ev(`(() => { const i = document.getElementById('search'); i.value = ''; i.dispatchEvent(new Event('input')); })()`);
+
+    const noMod = await sCall("hotkey_set", { accelerator: "P" });
+    r.check("不带修饰键的组合被拒", true, !noMod.ok && /修饰键/.test(String(noMod.e)));
+    const twoKeys = await sCall("hotkey_set", { accelerator: "Ctrl+A+B" });
+    r.check("两个主键的组合被拒", true, !twoKeys.ok && /主键/.test(String(twoKeys.e)));
+    const asDefault = await sCall("hotkey_set", { accelerator: "CommandOrControl+Alt+P" });
+    r.check("Tauri 跨平台 token 被接受（默认值本身必须能设）", true, asDefault.ok);
+    const moved = await sCall("hotkey_set", { accelerator: "ctrl+alt+f9" });
+    r.check("改键成功并归一化", "Ctrl+Alt+F9", moved.v);
+    r.check("状态读回的是改后的键", "Ctrl+Alt+F9", (await sCall("hotkey_status")).v?.accelerator);
+    r.check("改回默认值", "CommandOrControl+Alt+P", (await sCall("hotkey_set", { accelerator: "CommandOrControl+Alt+P" })).v);
+
+    const auto = await sCall("autostart_status");
+    r.check("自启状态带真实路径与 dev 标记", true, typeof auto.v?.devBuild === "boolean" && /\.exe$/.test(auto.v?.exe ?? ""));
+    const gated = await call("autostart_set", { enabled: true });
+    r.check("自启只能由设置窗改", true, !gated.ok && /设置窗/.test(String(gated.e)));
+    const gatedKey = await call("hotkey_set", { accelerator: "Ctrl+Alt+F8" });
+    r.check("快捷键只能由设置窗改", true, !gatedKey.ok && /设置窗/.test(String(gatedKey.e)));
+    r.check("设置窗自身无报错", [], sc.noise);
+    await sCall("plugin:window|close").catch(() => undefined);
+    sc.close();
+  }
+
   r.group("宿主页面自身未产生 CSP 违规或未捕获异常");
   // 上面的递归测试会刻意打一条 console.error，它是被测行为的证据，不该混进这里的零容忍
   const unexpected = c.noise.filter((n) => !n.includes("派发递归"));

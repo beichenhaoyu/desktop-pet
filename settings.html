@@ -7,52 +7,120 @@
   </head>
   <body>
     <div id="app">
-      <header>
-        <h1>插件管理</h1>
-        <p class="hint">启停即时生效；未授权能力首次调用时会弹出确认框</p>
-      </header>
-      <main id="plugin-list"></main>
-      <section id="skins" class="agent-box">
-        <h2>桌宠形象</h2>
-        <p class="hint" id="skin-status">正在读取已安装形象…</p>
-        <div class="agent-actions">
-          <input type="text" id="skin-name" placeholder="Petdex 名字，例如 deepseek" />
-          <button type="button" id="skin-install">安装</button>
-          <button type="button" id="skin-refresh">刷新</button>
+      <aside id="nav">
+        <div class="brand">
+          <span class="brand-logo">🐾</span>
+          <span class="brand-text"><b>DesktopPet</b><small>设置</small></span>
         </div>
-        <ul id="skin-list"></ul>
-        <p class="hint">
-          形象来自 Petdex 公开画廊：输入画廊里的名字（例如 deepseek）即下载图集并立即换装，宠物不必重启。
-          默认形象 deepseek 在首次启动时自动安装。本项目仅供学习与自娱自乐，仓库不内置、也不再分发任何美术文件。
-        </p>
-      </section>
-      <section id="game-mode" class="agent-box">
-        <h2>游戏模式</h2>
-        <label class="agent-row">
-          <input type="checkbox" id="game-mode-switch" class="switch" />
-          有应用全屏时自动隐身
-        </label>
-        <p class="hint" id="game-mode-status"></p>
-        <p class="hint">
-          隐身只收起宠物窗：动画、点击穿透轮询与自言自语一并停掉，插件的功能（蓝牙、事件、存储）照常运行。
-          关掉这个开关就不再轮询前台窗口。
-        </p>
-      </section>
-      <section id="agent-hook" class="agent-box">
-        <h2>Agent 事件接入</h2>
-        <p class="hint" id="agent-status">正在读取状态…</p>
-        <p class="hint" id="agent-detail"></p>
-        <div class="agent-actions">
-          <button type="button" id="agent-install">安装 Qoder hook</button>
-          <button type="button" id="agent-uninstall">卸载</button>
-          <button type="button" id="agent-refresh">刷新</button>
-        </div>
-        <p class="hint">
-          安装会往 ~/.qoder/settings.json 与 ~/.qoder-cn/settings.json 追加本宠物的 hook
-          条目（首次改动会留 .pre-pet-backup 备份），只增删自己的条目，不动其他 hook。
-          装好后 Agent 的工具调用、等待确认、任务完成等事件就会驱动宠物。
-        </p>
-      </section>
+        <nav>
+          <button type="button" class="nav-item active" data-view="plugins">
+            插件 <span class="nav-count" id="nav-plugin-count"></span>
+          </button>
+          <button type="button" class="nav-item" data-view="skins">桌宠形象</button>
+          <button type="button" class="nav-item" data-view="hotkey">快捷键</button>
+          <button type="button" class="nav-item" data-view="startup">启动</button>
+          <button type="button" class="nav-item" data-view="agent">Agent 接入</button>
+          <button type="button" class="nav-item" data-view="game">游戏模式</button>
+        </nav>
+        <div class="nav-foot" id="nav-foot">仅供学习与自娱自乐</div>
+      </aside>
+
+      <main id="content">
+        <header class="top">
+          <h1 id="view-title">插件管理</h1>
+          <p class="hint" id="view-hint">启停即时生效；未授权能力首次调用时会弹出确认框</p>
+          <input id="search" class="search" type="search" placeholder="搜索名称、id 或权限…" />
+        </header>
+
+        <section class="panel" data-panel="plugins">
+          <div id="plugin-list"></div>
+          <p class="hint empty" id="plugin-empty" hidden>没有匹配的插件。</p>
+        </section>
+
+        <section class="panel" data-panel="skins" hidden>
+          <div class="card">
+            <h2>从 Petdex 公开画廊安装</h2>
+            <p class="hint" id="skin-status">正在读取已安装形象…</p>
+            <div class="actions">
+              <input type="text" id="skin-name" placeholder="Petdex 名字，例如 deepseek" />
+              <button type="button" id="skin-install">安装</button>
+              <button type="button" id="skin-refresh">刷新</button>
+            </div>
+            <ul id="skin-list"></ul>
+            <p class="hint">
+              形象全部来自 Petdex 公开画廊：输入画廊里的名字（例如 deepseek）即下载图集并立即换装，
+              宠物不必重启。默认形象 deepseek 在首次启动时自动安装。
+              本项目仅供学习与自娱自乐，仓库不内置、也不再分发任何美术文件。
+            </p>
+          </div>
+        </section>
+
+        <section class="panel" data-panel="hotkey" hidden>
+          <div class="card">
+            <h2>唤出插件页的全局快捷键</h2>
+            <p class="hint" id="hotkey-status">正在读取…</p>
+            <div class="actions">
+              <input type="text" id="hotkey-input" placeholder="例如 Ctrl+Alt+P" />
+              <button type="button" id="hotkey-save">应用</button>
+              <button type="button" id="hotkey-test">测试占用</button>
+              <button type="button" id="hotkey-reset">恢复默认</button>
+            </div>
+            <p class="hint">
+              写法：<code>Ctrl</code> / <code>Alt</code> / <code>Shift</code> / <code>Win</code> 加一个主键，
+              例如 <code>Ctrl+Alt+P</code>、<code>Alt+F12</code>。必须带修饰键，避免劫持普通输入。
+              换键时先注册新键，成功才注销旧键；被别的应用占了会直接报错并保留原键。
+            </p>
+          </div>
+        </section>
+
+        <section class="panel" data-panel="startup" hidden>
+          <div class="card">
+            <h2>开机自动运行</h2>
+            <label class="row-line">
+              <input type="checkbox" id="autostart-switch" class="switch" />
+              登录 Windows 后自动启动宠物
+            </label>
+            <p class="hint" id="autostart-status">正在读取…</p>
+            <p class="hint">
+              开关写的是当前 <code>desktop-pet.exe</code> 在 HKCU 的 Run 项，只影响你自己的账户，
+              不需要管理员权限。关掉即删除该键值。
+            </p>
+          </div>
+        </section>
+
+        <section class="panel" data-panel="agent" hidden>
+          <div class="card">
+            <h2>Agent 事件接入</h2>
+            <p class="hint" id="agent-status">正在读取状态…</p>
+            <p class="hint" id="agent-detail"></p>
+            <div class="actions">
+              <button type="button" id="agent-install">安装 Qoder hook</button>
+              <button type="button" id="agent-uninstall">卸载</button>
+              <button type="button" id="agent-refresh">刷新</button>
+            </div>
+            <p class="hint">
+              安装会往 ~/.qoder/settings.json 与 ~/.qoder-cn/settings.json 追加本宠物的 hook
+              条目（首次改动会留 .pre-pet-backup 备份），只增删自己的条目，不动其他 hook。
+              装好后 Agent 的工具调用、等待确认、任务完成等事件就会驱动宠物。
+            </p>
+          </div>
+        </section>
+
+        <section class="panel" data-panel="game" hidden>
+          <div class="card">
+            <h2>游戏模式</h2>
+            <label class="row-line">
+              <input type="checkbox" id="game-mode-switch" class="switch" />
+              有应用全屏时自动隐身
+            </label>
+            <p class="hint" id="game-mode-status"></p>
+            <p class="hint">
+              隐身只收起宠物窗：动画、点击穿透轮询与自言自语一并停掉，插件的功能（蓝牙、事件、存储）照常运行。
+              关掉这个开关就不再轮询前台窗口。
+            </p>
+          </div>
+        </section>
+      </main>
     </div>
     <script type="module" src="/src/settings/main.ts"></script>
   </body>

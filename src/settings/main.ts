@@ -23,6 +23,14 @@ function buildCard(manifest: PluginManifest, enabled: boolean): Elements {
   const card = document.createElement("section");
   card.className = "plugin-card" + (enabled ? " enabled" : "");
 
+  // 图标位没有美术资源可用，取名称首字符（中文也能用），至少让卡片有视觉锚点
+  const icon = document.createElement("div");
+  icon.className = "plugin-icon";
+  icon.textContent = (manifest.name || manifest.id).trim().slice(0, 1).toUpperCase();
+
+  const body = document.createElement("div");
+  body.className = "plugin-body";
+
   const head = document.createElement("div");
   head.className = "plugin-head";
 
@@ -40,20 +48,21 @@ function buildCard(manifest: PluginManifest, enabled: boolean): Elements {
   toggle.type = "checkbox";
   toggle.className = "switch";
   toggle.checked = enabled;
+  toggle.title = enabled ? "已启用" : "已停用";
 
   head.append(title, toggle);
 
   const idLine = document.createElement("div");
   idLine.className = "plugin-id";
   idLine.textContent = manifest.id;
+  body.append(head, idLine);
   if (manifest.description) {
     const desc = document.createElement("div");
     desc.className = "plugin-desc";
     desc.textContent = manifest.description;
-    card.append(head, idLine, desc);
-  } else {
-    card.append(head, idLine);
+    body.append(desc);
   }
+  card.append(icon, body);
 
   // 权限列表 + 撤销授权
   const perms = manifest.permissions ?? [];
@@ -62,7 +71,8 @@ function buildCard(manifest: PluginManifest, enabled: boolean): Elements {
     permRow.className = "perm-row";
     for (const p of perms) {
       const chip = document.createElement("span");
-      chip.className = "perm-chip";
+      // 能出网、能落盘的权限标出来，让人一眼看到风险面
+      chip.className = "perm-chip" + (p === "http" || p === "storage" ? " warn" : "");
       chip.textContent = p;
       permRow.append(chip);
     }
@@ -75,14 +85,17 @@ function buildCard(manifest: PluginManifest, enabled: boolean): Elements {
       revoke.disabled = true;
     });
     permRow.append(revoke);
-    card.append(permRow);
+    body.append(permRow);
   }
 
   // 插件自带设置区（Shadow DOM 插槽）
   const settingsBox = document.createElement("div");
   settingsBox.className = "plugin-settings";
   settingsBox.style.display = enabled ? "" : "none";
-  card.append(settingsBox);
+  body.append(settingsBox);
+
+  // 搜索框按名称/id/权限过滤：数据都在这几个字段里，拼成一条小写串就够
+  card.dataset.search = `${manifest.name} ${manifest.id} ${perms.join(" ")}`.toLowerCase();
 
   toggle.addEventListener("change", async () => {
     const on = toggle.checked;
@@ -114,7 +127,7 @@ async function render(): Promise<void> {
   // 重建 DOM 前必须先卸载 widget：否则 mounted 表里留着已消失的插槽，
   // 之后 has() 会抑制重挂载，面板静默不见
   for (const id of rows.keys()) await widgetHost.unmount(id);
-  list.innerHTML = "";
+  list.replaceChildren();
   rows.clear();
 
   const sorted = [...manifests].sort((a, b) => a.id.localeCompare(b.id));
@@ -137,6 +150,157 @@ async function render(): Promise<void> {
       });
     }
   }
+
+  const count = document.getElementById("nav-plugin-count");
+  if (count) count.textContent = `${enabled.size}/${manifests.length}`;
+  applyFilter();
+}
+
+/* ---------- 侧栏切换与插件搜索 ---------- */
+
+const VIEWS: Record<string, { title: string; hint: string; search: boolean }> = {
+  plugins: {
+    title: "插件管理",
+    hint: "启停即时生效；未授权能力首次调用时会弹出确认框",
+    search: true,
+  },
+  skins: { title: "桌宠形象", hint: "形象来自 Petdex 公开画廊，运行时按需下载", search: false },
+  hotkey: { title: "快捷键", hint: "全局快捷键，随时唤出这个插件页", search: false },
+  startup: { title: "启动", hint: "登录系统后是否自动运行", search: false },
+  agent: { title: "Agent 接入", hint: "让编码 Agent 的会话状态驱动宠物", search: false },
+  game: { title: "游戏模式", hint: "别人全屏时安静下来", search: false },
+};
+
+function applyFilter(): void {
+  const input = document.getElementById("search") as HTMLInputElement | null;
+  const needle = (input?.value ?? "").trim().toLowerCase();
+  let shown = 0;
+  for (const card of document.querySelectorAll<HTMLElement>("#plugin-list .plugin-card")) {
+    const hit = !needle || (card.dataset.search ?? "").includes(needle);
+    card.style.display = hit ? "" : "none";
+    if (hit) shown += 1;
+  }
+  const empty = document.getElementById("plugin-empty");
+  if (empty) empty.hidden = shown > 0;
+}
+
+function switchView(name: keyof typeof VIEWS | string): void {
+  const view = VIEWS[name] ?? VIEWS.plugins;
+  for (const item of document.querySelectorAll(".nav-item")) {
+    item.classList.toggle("active", (item as HTMLElement).dataset.view === name);
+  }
+  for (const panel of document.querySelectorAll<HTMLElement>("[data-panel]")) {
+    panel.hidden = panel.dataset.panel !== name;
+  }
+  const title = document.getElementById("view-title");
+  const hint = document.getElementById("view-hint");
+  const search = document.getElementById("search") as HTMLInputElement | null;
+  if (title) title.textContent = view.title;
+  if (hint) hint.textContent = view.hint;
+  if (search) search.style.display = view.search ? "" : "none";
+}
+
+function wireNav(): void {
+  for (const item of document.querySelectorAll<HTMLButtonElement>(".nav-item")) {
+    item.addEventListener("click", () => switchView(item.dataset.view ?? "plugins"));
+  }
+  document.getElementById("search")?.addEventListener("input", applyFilter);
+}
+
+/* ---------- 快捷键 ---------- */
+
+const hotkeyStatus = () => document.getElementById("hotkey-status");
+
+async function renderHotkey(): Promise<void> {
+  const el = hotkeyStatus();
+  if (!el) return;
+  try {
+    const info = await invoke<{ accelerator: string; default: string }>("hotkey_status");
+    el.replaceChildren(
+      document.createTextNode("当前："),
+      Object.assign(document.createElement("kbd"), { textContent: info.accelerator }),
+      document.createTextNode(info.accelerator === info.default ? "（默认）" : ""),
+    );
+    const input = document.getElementById("hotkey-input") as HTMLInputElement | null;
+    if (input && !input.value) input.value = info.accelerator;
+  } catch (e) {
+    el.textContent = `读取失败：${String(e)}`;
+  }
+}
+
+async function saveHotkey(accelerator: string): Promise<void> {
+  const el = hotkeyStatus();
+  try {
+    const saved = await invoke<string>("hotkey_set", { accelerator });
+    const input = document.getElementById("hotkey-input") as HTMLInputElement | null;
+    if (input) input.value = saved;
+    await renderHotkey();
+    el?.classList.remove("error");
+  } catch (e) {
+    if (el) el.textContent = `应用失败：${String(e)}`;
+  }
+}
+
+function wireHotkey(): void {
+  document.getElementById("hotkey-save")?.addEventListener("click", () => {
+    const input = document.getElementById("hotkey-input") as HTMLInputElement | null;
+    const value = input?.value?.trim() ?? "";
+    if (!value) {
+      if (hotkeyStatus()) hotkeyStatus()!.textContent = "先输入一个组合键，例如 Ctrl+Alt+P。";
+      return;
+    }
+    void saveHotkey(value);
+  });
+  document.getElementById("hotkey-reset")?.addEventListener("click", () => {
+    void saveHotkey("CommandOrControl+Alt+P");
+  });
+  document.getElementById("hotkey-test")?.addEventListener("click", async () => {
+    const input = document.getElementById("hotkey-input") as HTMLInputElement | null;
+    const el = hotkeyStatus();
+    const value = input?.value?.trim() ?? "";
+    if (!value || !el) return;
+    try {
+      const free = await invoke<boolean>("hotkey_test", { accelerator: value });
+      el.textContent = free
+        ? `「${value}」可以注册，没被别的应用占用。`
+        : `「${value}」注册失败，多半已被其他程序占用，换一个吧。`;
+    } catch (e) {
+      el.textContent = `测试失败：${String(e)}`;
+    }
+  });
+}
+
+/* ---------- 开机自启 ---------- */
+
+async function renderAutostart(): Promise<void> {
+  const box = document.getElementById("autostart-switch") as HTMLInputElement | null;
+  const el = document.getElementById("autostart-status");
+  if (!box || !el) return;
+  try {
+    const info = await invoke<{ enabled: boolean; exe: string; devBuild: boolean }>("autostart_status");
+    box.checked = info.enabled;
+    el.textContent = info.devBuild
+      ? `当前跑的是开发构建，注册的是 ${info.exe} —— 换正式包后请重新打开一次这个开关。`
+      : `启动项指向 ${info.exe}`;
+  } catch (e) {
+    el.textContent = `读取失败：${String(e)}`;
+  }
+}
+
+function wireStartup(): void {
+  const box = document.getElementById("autostart-switch") as HTMLInputElement | null;
+  box?.addEventListener("change", async () => {
+    const el = document.getElementById("autostart-status");
+    const want = box.checked;
+    try {
+      const now = await invoke<boolean>("autostart_set", { enabled: want });
+      box.checked = now;
+      if (el) el.textContent = now ? "已加入登录启动项。" : "已移除登录启动项。";
+    } catch (e) {
+      box.checked = !want;
+      if (el) el.textContent = `改动失败：${String(e)}`;
+    }
+  });
 }
 
 interface AgentFileReport {
@@ -351,6 +515,8 @@ async function renderGameMode(): Promise<void> {
 
 async function main(): Promise<void> {
   await bus.init();
+  switchView("plugins");
+  wireNav();
   await render();
   wireGameMode();
   void renderGameMode();
@@ -358,12 +524,16 @@ async function main(): Promise<void> {
   void renderAgent();
   wireSkins();
   void renderSkins();
+  wireHotkey();
+  void renderHotkey();
+  wireStartup();
+  void renderAutostart();
 
   // 宠物窗运行时上报的插件异常 → 顶部红条
   banner = document.createElement("div");
   banner.className = "error-banner";
   banner.style.display = "none";
-  document.getElementById("app")!.prepend(banner);
+  document.getElementById("content")!.prepend(banner);
   await listen<{ plugin: string; error: string }>("host:plugin-error", (e) => {
     if (!banner) return;
     banner.textContent = `插件异常已隔离 — ${e.payload.plugin}: ${e.payload.error}`;

@@ -50,6 +50,22 @@ pub fn run() {
         )
         // 系统通知：只给宿主 Rust 侧调用，插件必须经 notify_show 的授权检查
         .plugin(tauri_plugin_notification::init())
+        // 开机自启（HKCU 的 Run 键），由设置窗的 autostart_set 驱动
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
+        // 全局快捷键：按下就唤出插件页（设置窗）。键本身由 services::hotkeys 管
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    use tauri_plugin_global_shortcut::ShortcutState;
+                    if event.state == ShortcutState::Pressed {
+                        window::tray::open_settings(app);
+                    }
+                })
+                .build(),
+        )
         .setup(|app| {
             app.manage(StoreState::new());
             app.manage(PermissionState::new());
@@ -67,6 +83,8 @@ pub fn run() {
             app.manage(std::sync::Mutex::new(agent_watcher));
             services::agent::start_agent_ticker(app.handle());
             services::fullscreen::start(app.handle());
+            // 恢复用户上次选的加速键（失败会退回默认值，保证插件页叫得出来）
+            services::hotkeys::restore(app.handle());
             window::overlay::start_follow_timer(app.handle());
             // 首启且本地什么都没有时自动装默认形象（后台跑，离线只留一条 warn）
             services::skins::ensure_default(app.handle().clone());
@@ -96,6 +114,11 @@ pub fn run() {
             services::skins::pet_skin_install,
             services::skins::pet_skin_use,
             services::skins::pet_skin_remove,
+            services::autostart::autostart_status,
+            services::autostart::autostart_set,
+            services::hotkeys::hotkey_status,
+            services::hotkeys::hotkey_set,
+            services::hotkeys::hotkey_test,
             services::store::store_get,
             services::store::store_set,
             services::store::store_delete,
