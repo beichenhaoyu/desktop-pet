@@ -1,7 +1,8 @@
 // 游戏模式端到端断言：用一个真的全屏窗口当触发源，验证宠物会隐身、安静下来、
 // 事件通路照常在跑，并在退出全屏后恢复。
 //   终端 1: npm run dev:debug      终端 2: npm run verify:game
-// 注意：测试期间屏幕上会短暂出现一个铺满主显示器的黑色窗口（每次约 10 秒，自行关闭）。
+// 注意：测试期间屏幕上会短暂出现一个铺满主显示器的深灰窗口（非置顶、任务栏里能看到，
+// 每次约 10~16 秒后自动关闭；抢前台期间别的置顶程序可能短暂闪动）。
 import { appendFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { argv, env } from "node:process";
@@ -14,12 +15,17 @@ const isPetPage = (t) => /localhost:1420\/(index\.html)?$/.test(t.url);
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 const r = createReport("游戏模式（dev）");
 
-const psScript = (sec) => `
+// 触发源窗口。写法上有几条硬规矩，起因是 2026-09-30 这脚本把用户的会话压垮过一次
+// （全屏 + TopMost + 每 150ms 注入 ALT 抢前台，父进程被 timeout 杀掉后留下孤儿窗口）：
+//   · 不 TopMost、任务栏可见：万一没关掉，用户还能从任务栏右键结束它
+//   · 不用纯黑：至少看得出是一扇窗而不是黑屏
+//   · 不注入键盘事件，改用 SwitchToThisWindow 抢前台
+//   · 每轮检查父进程是否还活着：脚本被杀就立刻收窗，绝不留孤儿
+const psScript = (sec, parentPid) => `
 $sig = @'
 [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
 [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool SetForegroundWindow(System.IntPtr h);
-[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool BringWindowToTop(System.IntPtr h);
-[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, System.UIntPtr extra);
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern void SwitchToThisWindow(System.IntPtr h, bool fAltTab);
 '@
 Add-Type -MemberDefinition $sig -Name U32 -Namespace W | Out-Null
 # 不设成 DPI aware 的话 PowerShell 拿到的是虚拟化坐标，和 Win32 侧的物理像素对不上
@@ -29,33 +35,55 @@ $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
 $f = New-Object System.Windows.Forms.Form
 $f.FormBorderStyle = 'None'
 $f.StartPosition = 'Manual'
-$f.TopMost = $true
-$f.ShowInTaskbar = $false
-$f.BackColor = [System.Drawing.Color]::Black
+$f.TopMost = $false
+$f.ShowInTaskbar = $true
+$f.BackColor = [System.Drawing.Color]::FromArgb(38, 42, 50)
 $f.Text = 'pet-verify-fullscreen'
 $f.Bounds = $b
 [void]$f.Show()
 $deadline = (Get-Date).AddSeconds(${sec})
-# 必须一边泵消息一边抢前台：只 Start-Sleep 的话激活事件不会被处理，
-# 窗口虽然铺满屏幕却永远不是前台窗口，检测器（读 GetForegroundWindow）看不到它
 while ((Get-Date) -lt $deadline) {
-  [void][W.U32]::keybd_event(0x12, 0, 0, [System.UIntPtr]::Zero)
-  [void][W.U32]::keybd_event(0x12, 0, 2, [System.UIntPtr]::Zero)
-  [void][W.U32]::BringWindowToTop($f.Handle)
+  if (-not (Get-Process -Id ${parentPid} -ErrorAction SilentlyContinue)) { break }
+  [void][W.U32]::SwitchToThisWindow($f.Handle, $true)
   [void][W.U32]::SetForegroundWindow($f.Handle)
   [System.Windows.Forms.Application]::DoEvents()
-  Start-Sleep -Milliseconds 150
+  Start-Sleep -Milliseconds 400
 }
 $f.Close()
 `;
 
-/** 起一个铺满主显示器的无边框窗口，sec 秒后自行关闭 */
+/** 本跑起过的触发窗，收尾时按 PID 精确收掉（杀 powershell 即连带销毁它的窗口） */
+const covers = new Set();
+
 function coverScreen(sec) {
-  const child = spawn("powershell", ["-NoProfile", "-STA", "-Command", psScript(sec)], {
-    stdio: "ignore",
-  });
+  const child = spawn(
+    "powershell",
+    ["-NoProfile", "-STA", "-Command", psScript(sec, process.pid)],
+    { stdio: "ignore" },
+  );
+  covers.add(child);
+  child.on("exit", () => covers.delete(child));
   child.on("error", (e) => console.log(`  · powershell 启动失败：${e.message}`));
   return child;
+}
+
+function killCovers() {
+  for (const child of covers) {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      /* 已经退了 */
+    }
+  }
+  covers.clear();
+}
+
+// 被 SIGTERM/SIGINT 打断时也必须先收窗：上一轮就是死在「脚本被杀、窗口留在屏幕上」
+for (const sig of ["SIGINT", "SIGTERM"]) {
+  process.on(sig, () => {
+    killCovers();
+    process.exit(sig === "SIGINT" ? 130 : 143);
+  });
 }
 
 let c = null;
@@ -209,6 +237,8 @@ try {
   await sleep(500);
   r.check("零噪音", [], c.noise);
 } finally {
+  // 先收掉自己起的触发窗，再管别的：屏幕上有扇铺满的窗挂着是最不能留给用户的状态
+  killCovers();
   // 本跑自己留下的会话必须收掉：否则它以 running 挂 90 秒，
   // 下一轮 verify:agent 的起点状态就是 running，「第一次事件应当变 running」会整组假失败
   try {

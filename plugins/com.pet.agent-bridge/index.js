@@ -212,10 +212,15 @@ async function onEvent(payload) {
 }
 
 async function handleCmd(cmd) {
+  if (cmd?.action === "sync") {
+    push(); // 面板重新挂载时主动要一份当前数据（宿主的 `*:widget` 回灌是双保险）
+    return;
+  }
   if (cmd?.action !== "config") return;
+  // 只覆盖消息里确实带来的字段：面板带着过期视图回来时，不该把另一个开关抹成 false
   config = {
-    showTitle: cmd.showTitle === true,
-    showDetail: cmd.showDetail === true,
+    showTitle: cmd.showTitle === undefined ? config.showTitle : cmd.showTitle === true,
+    showDetail: cmd.showDetail === undefined ? config.showDetail : cmd.showDetail === true,
   };
   try {
     await ctx.storage.set("config", config);

@@ -44,6 +44,22 @@ class EventBus {
       this.handlers.set(topic, set);
     }
     set.add(handler);
+    // 界面（设置面板 / 悬浮卡）刚挂上来时同窗口没有历史事件可回放，向宿主取最近一份：
+    // 否则面板只能渲染自己的默认值，用户一动开关就把没碰过的那项写回 false，
+    // 表现成「配置根本没保存」。只有 `*:widget` 是这种展示数据。
+    if (topic.endsWith(":widget")) {
+      const owners = set;
+      void invoke<unknown>("bus_peek", { topic })
+        .then((value) => {
+          if (value === null || !owners.has(handler)) return;
+          try {
+            handler(value);
+          } catch (err) {
+            console.error(`[bus] replay error on ${topic}`, err);
+          }
+        })
+        .catch(() => undefined); // 取不到就照旧等下一条事件
+    }
     return () => {
       set.delete(handler);
     };

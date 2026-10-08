@@ -423,6 +423,13 @@ try {
   const cardOn = await lastCard();
   r.check("打开后下发会话标题", true, (cardOn?.title ?? "").includes("把内部口令 abc123"));
   r.check("打开后下发命令摘要", true, (cardOn?.detail ?? "").includes("echo abc123-inner-secret"));
+  // 面板重新挂载时靠这份回灌数据回显；没有它就会显示成默认值，表现成「配置没保存」
+  const echoed = await invoke("bus_peek", { topic: `${AGENT_ID}:widget` });
+  r.check(
+    "宿主为面板回灌最近一份卡片数据（含已保存的开关）",
+    true,
+    echoed.v?.showTitle === true && echoed.v?.showDetail === true,
+  );
   await setCardConfig(false, false);
   const cardOff2 = await lastCard();
   r.check("关掉后又变回空", true, (cardOff2?.title ?? "x") === "" && (cardOff2?.detail ?? "x") === "");

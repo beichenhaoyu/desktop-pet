@@ -6,3 +6,6 @@ export const TOPIC_CMD = `${PID}:cmd`;
 export const TOPIC_BPM = `${PID}:bpm`;
 export const TOPIC_DEVICES = `${PID}:devices`;
 export const TOPIC_STATUS = `${PID}:status`;
+/// 插件给自己界面（badge/overlay/settings）看的展示数据。
+/// 宿主会为这个后缀保留最近一份，面板重新挂载时自动回灌。
+export const TOPIC_WIDGET = `${PID}:widget`;

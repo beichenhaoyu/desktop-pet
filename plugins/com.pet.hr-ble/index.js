@@ -21,13 +21,15 @@ async function persist() {
   }
 }
 
-/** 悬浮窗显隐与「模式 + 连接状态」联动 */
+/** 悬浮窗显隐与「模式 + 连接状态」联动，同时把这份状态推给各区域界面 */
 async function syncOverlay() {
   if (config.mode === "overlay" && connected) {
     await ctx.overlay.show();
   } else {
     await ctx.overlay.hide();
   }
+  // 设置面板重新挂载时由宿主回灌这份数据，它才可能显示当前选项而不是默认值
+  ctx.widget.update({ mode: config.mode, connected, deviceName: config.deviceName });
 }
 
 async function handleCmd(cmd) {

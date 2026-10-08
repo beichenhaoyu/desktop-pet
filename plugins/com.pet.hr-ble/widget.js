@@ -1,6 +1,6 @@
 // 心率插件 widget 渲染器（能力由宿主注入 ctx.bus，topic 常量与 index.js 共用一份）
 // 区域约定：badge=宠物旁小字 / overlay=左上角波形图 / settings=设置面板
-import { TOPIC_BPM, TOPIC_CMD, TOPIC_DEVICES, TOPIC_STATUS } from "./topics.js";
+import { TOPIC_BPM, TOPIC_CMD, TOPIC_DEVICES, TOPIC_STATUS, TOPIC_WIDGET } from "./topics.js";
 
 // 每个挂载实例（badge/overlay/settings）各自一份清理表，互不干扰
 const scopes = new WeakMap();
@@ -345,5 +345,17 @@ function mountSettings(root, ctx, cleanups) {
   );
   cleanups.push(
     ctx.bus.subscribe(TOPIC_STATUS, (s) => setStatus(s.text, s.level ?? "info")),
+  );
+  // 回显当前配置：面板重新挂载时宿主会把最近一份 `*:widget` 数据回灌过来，
+  // 不接这份数据的话单选框永远显示模板里的默认值，用户一点就把另一项写回默认
+  cleanups.push(
+    ctx.bus.subscribe(TOPIC_WIDGET, (d) => {
+      if (!d || typeof d !== "object") return;
+      const want = d.mode === "overlay" ? "overlay" : "badge";
+      for (const radio of panel.querySelectorAll('input[name="hr-mode"]')) {
+        radio.checked = radio.value === want;
+      }
+      if (d.connected) setStatus(`已连接 ${d.deviceName ?? "设备"}`, "ok");
+    }),
   );
 }

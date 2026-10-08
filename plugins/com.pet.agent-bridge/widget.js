@@ -154,6 +154,8 @@ function mountSettings(root, ctx, cleanups) {
     });
   title.addEventListener("change", send);
   detail.addEventListener("change", send);
+  // 面板是新建的、配置是早就存在的：开口要一次当前值，否则两个开关都显示成关
+  ctx.bus.publish(TOPIC_CMD, { action: "sync" });
   cleanups.push(() => {
     title.removeEventListener("change", send);
     detail.removeEventListener("change", send);

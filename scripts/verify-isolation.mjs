@@ -504,6 +504,27 @@ try {
   r.check("交互把 waiting 唤醒成 waving", "waving", sm.woke);
   r.check("可持续状态重复请求只续期不排队", 0, sm.renewQueued);
 
+  r.group("设置面板回显：宿主为 `*:widget` 保留最近一份并回灌新订阅");
+  const peek = await c.ev(`(async () => {
+    const { bus } = await import('/src/runtime/event-bus.ts');
+    const inv = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);
+    await bus.publish('com.zz.probe:widget', { mode: 'overlay', v: 1 });
+    await new Promise((r) => setTimeout(r, 400));
+    let got = null;
+    const off = bus.subscribe('com.zz.probe:widget', (d) => { got = d; });
+    await new Promise((r) => setTimeout(r, 700));
+    off();
+    let cmdGot = 'no-call';
+    const off2 = bus.subscribe('com.zz.probe:cmd', (d) => { cmdGot = d; });
+    await new Promise((r) => setTimeout(r, 400));
+    off2();
+    const peekedCmd = await inv('bus_peek', { topic: 'com.zz.probe:cmd' });
+    return { got, cmdGot, peekedCmd };
+  })()`);
+  r.check("新订阅立刻拿到最近一份 widget 数据", "overlay", peek.got?.mode ?? null);
+  r.check("非 widget topic 不会被回灌", "no-call", peek.cmdGot);
+  r.check("bus_peek 拒绝非 widget topic", null, peek.peekedCmd);
+
   r.group("点击穿透判定（#16，注入假光标，不依赖真实鼠标）");
   const ct = await c.ev(`(async () => {
     const { installClickThrough } = await import('/src/pet/click-through.ts');

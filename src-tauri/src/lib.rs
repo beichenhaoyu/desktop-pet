@@ -90,6 +90,7 @@ pub fn run() {
             services::fullscreen::fullscreen_watch_status,
             services::fullscreen::fullscreen_probe,
             commands::bus::bus_publish,
+            commands::bus::bus_peek,
             services::skins::pet_skin_active,
             services::skins::pet_skin_list,
             services::skins::pet_skin_install,

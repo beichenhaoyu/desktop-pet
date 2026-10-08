@@ -61,7 +61,7 @@ npm run tauri build    # 打包发布
 npm run dev:debug      # 带 WebView2 远程调试端口启动，供断言脚本连接
 npm run verify         # 隔离与安全回归断言（需另一个终端先跑 dev:debug）
 npm run verify:agent   # Agent 事件链路断言（脚本自己写收件目录）
-npm run verify:game    # 游戏模式断言（会真的起一个铺满显示器的窗口约 10 秒）
+npm run verify:game    # 游戏模式断言（会起一扇铺满显示器的深灰窗口约 10~16 秒：非置顶、任务栏可见，会自动关）
                    # 注意：该脚本会反复抢前台，其他置顶程序可能短暂闪动
 npm run verify:skin    # 桌宠资源安装链路（会真的连 petdex.dev 下载图集，临时装一个第二形象后删掉）
 npm run verify:release # 验打包产物的 CSP，每波次收尾手工跑一次

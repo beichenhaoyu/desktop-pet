@@ -112,6 +112,7 @@ export function unmount(root) { /* 用 root 找回自己那份清理表 */ }
 
 1. **不要碰宿主 DOM 或 canvas**，只往 `root` 里写。
 2. **清理表按挂载实例存，不要用模块级数组**。同一个 widget 文件会同时在 badge/overlay/settings 三个区域被挂载，模块级数组会让第一个卸载的人把别人的退订函数全清空，导致订阅永久泄漏。推荐用 `WeakMap` 以 `root` 为键。
+3. **设置面板必须回显当前配置**。面板是在别的窗口里新建的，拿不到插件的历史数据；直接渲染模板默认值会出现「配置没保存」的错觉，而且用户一动某个开关，就把面板里没显示出来的另一项一起写回默认。做法：状态每次变化都 `ctx.widget.update(当前配置)`，面板挂载时订阅 `${PID}:widget` 并据此设置控件。宿主会为 `*:widget` 保留最近一份、在新订阅建立时回灌一次（`bus_peek`），但**这只在你真的推送过配置之后有效**——别把它当成免写 `widget.update` 的理由。
 3. **外部数据一律走 `textContent`，绝不拼进 `innerHTML`**。BLE 广播名、HTTP 响应、其他事件 payload 都算不可信输入；Shadow DOM 不阻止 `<img onerror>` 执行。同理，不要把外部值拼进 CSS 选择器。
 
 `ctx.bus` 是宿主注入的**受限视图**，只有 `publish`/`subscribe` 两个方法，且每次调用都按上面第 4 节的规则校验。
