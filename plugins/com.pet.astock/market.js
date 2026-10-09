@@ -1,9 +1,11 @@
-// 行情数据层：东方财富公开只读接口。
+// 行情数据层：东方财富公开只读接口（K 线与分时另有腾讯作后备源，见文末「数据源注册表」）。
 //
 // 为什么是东财而不是腾讯/新浪：这两个源的实时接口回的是 GBK / GB18030，
 // 而宿主的 http 代理按 UTF-8 取文本（from_utf8_lossy），中文股票名会直接变乱码；
 // 新浪还要求带 Referer，缺了给 403。东财三个域都是 UTF-8 JSON、约 150ms、
 // 且不跨主机重定向（宿主的 http 授权是逐跳复核域名的，跨主机 302 会被拒）。
+// 腾讯的 K 线与分时两条接口是 UTF-8，所以能被 K 线/分时当成第二源；实时快照那条（qt.gtimg.cn）
+// 是 GBK，要等宿主 http 按 charset 解码（本体改动）之后才能接，不在这一轮里。
 //
 // 这里刻意分成两层：纯函数（编码规则、解析、时段判定）+ 取数函数。
 // 纯函数不碰网络也不碰 ctx，回归脚本可以直接 import 来断言。
@@ -281,12 +283,232 @@ export function parseTrendResponse(json) {
   return { points, preClose };
 }
 
-/* ================= 取数（要 http 能力，由调用方把 ctx.http.request 传进来） ================= */
+/* ================= 数据源注册表：K线 / 分时 ================= */
 
-const HEADERS = [
-  ["referer", "https://quote.eastmoney.com/"],
-  ["user-agent", "DesktopPet/0.1 (personal desktop pet plugin)"],
+/**
+ * K 线与分时为什么要有第二个源（2026-10-09 本机实测，别再自己复现一遍）：
+ * 东财行情主机 push2 / push2delay / push2his / 79.push2his 是**整组**在 TLS 握手阶段被连接重置
+ * （约 100ms 内 ECONNRESET；换目标 IP、换 SNI、改走明文 http 的结果一样），面板因此整块没数据。
+ * 腾讯这两条接口同一天实测 200 且 Content-Type 是 UTF-8，可以直接接。
+ * 换 user-agent / 补浏览器请求头对这种故障零作用 —— 连接死在 ClientHello，HTTP 请求还没发出去就被 RST，
+ * 那是 L7 的层；客户端唯一有效的手段就是换源，所以这里做的是「换源」而不是「伪装」。
+ */
+
+export const TENCENT_KLINE_API = "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/fqkline/get";
+export const TENCENT_TREND_API = "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/minute/query";
+/**
+ * 腾讯的后备入口（2026-10-09 实测同路径可用）：只在主入口失败时回落，且照样走 out() 的节流 ——
+ * 高频打这两个会返回 501，所以顺序固定成「主入口 → 这两个」，不做来回轮换。
+ */
+export const TENCENT_FALLBACK_HOSTS = ["web.ifzq.gtimg.cn", "ifzq.gtimg.cn"];
+
+/** 腾讯这些列都是字符串（"9.100" / "456711.000"）：空串与 "-" 一律落 null，别让 NaN 流进比较 */
+function qnum(v) {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  const s = String(v ?? "").trim();
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * 东财 secid（`市场.代码`）→ 腾讯代码（sh600000 / sz300750 / bj920185）。
+ * 北交所的市场号是 0，但腾讯认 bj 前缀（实测 2026-10-09：sz920185 返回空数组、bj920185 有数据），
+ * 所以 92/4/8 这一段必须排在「0 → 深」之前判掉，与 secidOf 的前缀规则保持一致。
+ */
+export function tencentCodeOf(secid) {
+  const m = /^([01])\.(\d{6})$/.exec(String(secid ?? "").trim());
+  if (!m) return null;
+  if (/^(92|4|8)/.test(m[2])) return `bj${m[2]}`;
+  return `${m[1] === "1" ? "sh" : "sz"}${m[2]}`;
+}
+
+/**
+ * 腾讯 K 线能供的周期段：只有实测过的 day（周线同样实测有真数据，但 KLINE_PERIODS 里不许加周K，
+ * 所以没有可达路径，见文件末尾的说明）。m1/m5/m15/m30/m60 实测返回 200 但 `data.<代码>` 下
+ * 没有任何数组 —— 那条路要另开卡实测，不许在这里猜。
+ */
+function tencentPeriod(klt) {
+  return klt === 101 ? "day" : null;
+}
+
+/**
+ * 腾讯 K 线的列序（2026-10-09 实测，`data.<代码>.qfqday`；周线是 `qfqweek`）：
+ *   [0] 日期 [1] 开 [2] 收 [3] 高 [4] 低 [5] 成交量(手)
+ *   样例 ["2026-09-17","9.100","9.060","9.140","9.030","456711.000"]
+ * 注意是「开、收、高、低」而不是「开、高、低、收」。它确实与东财 klines 的 f52 开 / f53 收 /
+ * f54 高 / f55 低 同序，但**这张表刻意与东财那张分开写**：两个源各自的口径要能被各自的单测钉住，
+ * 合并成一张「看起来差不多」的表，会在下一次某个源改口径时静默画出错价的图。
+ * 另外除权日那一行末尾会多一个对象（分红信息 {nd, fh_sh, djr, …}），所以只认前 6 列。
+ */
+const TEN_KLINE_COL = { date: 0, open: 1, close: 2, high: 3, low: 4, volume: 5 };
+
+/** 复权序列的 key 是 qfq<period>；北交所与指数没有复权序列，key 直接是 day/week（实测 2026-10-09） */
+function tencentSeries(node, period) {
+  for (const key of [`qfq${period}`, period]) {
+    if (Array.isArray(node?.[key])) return node[key];
+  }
+  return null;
+}
+
+/**
+ * 昨收取自 qt 段的下标 4。**不要**用同级的 `prec`：实测那天 prec="9.510" 而昨收是 9.70
+ * （用同一条 qt 里的 -1.65% 与 9.54 反推：9.54 / (1 - 0.0165) = 9.70，与 10-08 的日K收盘一致），
+ * `prec` 是另一个口径的值。
+ */
+function tencentPrevClose(json, code) {
+  return qnum(json?.data?.[code]?.qt?.[code]?.[4]);
+}
+
+export function parseTencentKline(json, { code, period = "day", count = MAX_KLINE_BARS } = {}) {
+  const rows = tencentSeries(json?.data?.[code], period);
+  // 「data 里取不到该代码的数组」= 这个源这次不能用（代码拼错、接口改形状都落在这里）
+  if (!rows) throw new Error(`响应里没有 ${code} 的${period === "week" ? "周" : "日"}线数组`);
+  const bars = rows
+    .map((row) => {
+      const p = Array.isArray(row) ? row : [];
+      return {
+        time: typeof p[TEN_KLINE_COL.date] === "string" ? p[TEN_KLINE_COL.date] : "",
+        open: qnum(p[TEN_KLINE_COL.open]),
+        close: qnum(p[TEN_KLINE_COL.close]),
+        high: qnum(p[TEN_KLINE_COL.high]),
+        low: qnum(p[TEN_KLINE_COL.low]),
+        volume: qnum(p[TEN_KLINE_COL.volume]),
+        // 这条接口不给成交额与换手率（东财的 f57/f58），留 null 而不是拿别的列顶上
+        amount: null,
+        turnover: null,
+      };
+    })
+    // 解不出日期或开收价的整根丢掉；一根都不剩说明列序变了 —— 判失败，宁可不画
+    .filter((b) => b.time && Number.isFinite(b.open) && Number.isFinite(b.close));
+  if (!bars.length) throw new Error(`${code} 的${period}线一根都没解出来（字段口径可能变了）`);
+  // 腾讯会多回一根（实测 count=120 → 121 行），按请求条数从尾部对齐
+  const want = Math.max(1, Math.round(count) || MAX_KLINE_BARS);
+  return { bars: bars.slice(-want), preKPrice: tencentPrevClose(json, code) };
+}
+
+/**
+ * 腾讯分时的列（2026-10-09 实测，`data.<代码>.data.data`，每项是空格分隔的字符串）：
+ *   [0] 时刻 HHMM [1] 价格 [2] 当日累计成交量(手) [3] 当日累计成交额(元)
+ *   首条 "0930 9.70 4256 4128320.00"、末条 "1530 9.54 948106 915450551.88"
+ * 第 3、4 列是**累计**而不是当分钟增量：实测整条单调不减，且末条 948106 手 / 915450551.88 元与
+ * 同花顺快照（947958 手 / 915309833 元，采于同日 15:22）对得上 —— 两个数不等是正常的，
+ * 分时覆盖到 15:30 收盘，快照采得早。
+ * 均价只能自己算：累计额 ÷ (累计量 × 100)；北交所的响应只有 3 列（没有成交额），均价就留空。
+ * 东财 trends2 的最后一列给的**是**当日累计均价，与腾讯这里的第 4 列不是一回事，
+ * 两个源的解析结果不许直接塞进同一个字段。
+ */
+const TEN_MINUTE_COL = { time: 0, price: 1, volume: 2, amount: 3 };
+
+/** HHMM → HH:MM（分时轴的标签与单测都按 HH:MM 断言） */
+function clockOfHhmm(v) {
+  const s = String(v ?? "").trim();
+  return /^\d{4}$/.test(s) ? `${s.slice(0, 2)}:${s.slice(2)}` : "";
+}
+
+/**
+ * 连续竞价时段 09:30–11:30 / 13:00–15:00。腾讯对部分标的还回 15:06–15:30 的盘后行，
+ * 那段塞进分时轴（242 个固定槽位）会挤出画布右侧，而且它不是连续竞价的形状，所以按时刻挡掉。
+ */
+function inTradingSession(time) {
+  const mins = Number(time.slice(0, 2)) * 60 + Number(time.slice(3, 5));
+  return (mins >= 570 && mins <= 690) || (mins >= 780 && mins <= 900);
+}
+
+/** 列序映射单独一层：这一层只认列，不判业务（累计量/累计额就是这里的第 3、4 列） */
+export function parseTencentMinuteRows(rows) {
+  return rows
+    .map((line) => {
+      const p = String(line ?? "").trim().split(/\s+/);
+      return {
+        time: clockOfHhmm(p[TEN_MINUTE_COL.time]),
+        price: qnum(p[TEN_MINUTE_COL.price]),
+        cumVolume: qnum(p[TEN_MINUTE_COL.volume]), // 累计，单位手
+        cumAmount: qnum(p[TEN_MINUTE_COL.amount]), // 累计，单位元（没有这一列就是 null）
+      };
+    })
+    .filter((r) => r.time && Number.isFinite(r.price));
+}
+
+export function parseTencentTrend(json, { code } = {}) {
+  const rows = json?.data?.[code]?.data?.data;
+  if (!Array.isArray(rows)) throw new Error(`响应里没有 ${code} 的分时数组`);
+  const parsed = parseTencentMinuteRows(rows);
+  // 数组在、行也非空，却一行都解不出 —— 列序变了，判失败，别画（数组本身为空是盘前的正常形态，
+  // 交给界面画「还没有分时数据」的提示，不算源故障）
+  if (rows.length && !parsed.length) throw new Error(`${code} 的分时行一行都没解出来（列序可能变了）`);
+  const kept = parsed.filter((r) => inTradingSession(r.time));
+  const points = kept.map((r, i) => {
+    const prev = kept[i - 1];
+    return {
+      time: r.time,
+      price: r.price,
+      // 图上的量能柱要的是「这一分钟的量」，腾讯只给累计量，这里做差分（首根就是开盘集合竞价的量）
+      volume: Number.isFinite(r.cumVolume) ? r.cumVolume - (prev?.cumVolume ?? 0) : null,
+      avg: Number.isFinite(r.cumAmount) && r.cumVolume > 0 ? r.cumAmount / (r.cumVolume * 100) : null,
+      // 累计量/额留着：它是「这两列是累计」的判断依据，界面以后要用也不用再解析一遍
+      cumVolume: r.cumVolume,
+      cumAmount: r.cumAmount,
+    };
+  });
+  return { points, preClose: tencentPrevClose(json, code) };
+}
+
+/** 从常量 URL 里取主机名（后备入口只换 host，路径与查询串一模一样） */
+function hostOf(url) {
+  return new URL(url).hostname;
+}
+
+/** 请求头：UA 是我们自己的身份，不是伪装（见 AGENTS.md 的「故意不伪装成浏览器 UA」）；
+ *  referer 是东财要的那个自家页面，腾讯不需要（实测 2026-10-09 只带 UA 就 200），两个源各用各的。 */
+const UA_HEADERS = [["user-agent", "DesktopPet/0.1 (personal desktop pet plugin)"]];
+const EASTMONEY_HEADERS = [...UA_HEADERS, ["referer", "https://quote.eastmoney.com/"]];
+
+/**
+ * 源对象。`id` 是落盘与界面都在用的标识（改了等于把「上一次成功的源」这份记忆清空，别改）；
+ * `klts` 是这个源能供的 K 线周期（不支持的周期直接跳过，不浪费一次请求）；
+ * kline / trend 各自给纯函数 `url(params)` 与 `parse(json, params)`，互不共用列序表。
+ */
+export const MARKET_SOURCES = [
+  {
+    id: "eastmoney",
+    label: "东方财富",
+    klts: KLT_VALUES,
+    headers: EASTMONEY_HEADERS,
+    hosts: [hostOf(KLINE_API)],
+    kline: { url: ({ secid, klt, count }) => buildKlineUrl(secid, klt, count), parse: (json) => parseKlineResponse(json) },
+    trend: { url: ({ secid }) => buildTrendUrl(secid), parse: (json) => parseTrendResponse(json) },
+  },
+  {
+    id: "tencent",
+    label: "腾讯",
+    klts: [101],
+    headers: UA_HEADERS,
+    hosts: [hostOf(TENCENT_KLINE_API), ...TENCENT_FALLBACK_HOSTS],
+    /** secid 转不出腾讯代码的标的就别试了 */
+    ok: ({ code }) => !!code,
+    kline: {
+      url: ({ code, klt, count }) => `${TENCENT_KLINE_API}?param=${code},${tencentPeriod(klt)},,,${count},qfq`,
+      parse: (json, { code, klt, count }) => parseTencentKline(json, { code, period: tencentPeriod(klt), count }),
+    },
+    trend: {
+      url: ({ code }) => `${TENCENT_TREND_API}?code=${code}`,
+      parse: (json, { code }) => parseTencentTrend(json, { code }),
+    },
+  },
 ];
+
+export function sourceLabelOf(id) {
+  return MARKET_SOURCES.find((s) => s.id === id)?.label ?? "";
+}
+
+/** 落盘记忆里只认这几个 id（撤销授权会清存储，读到脏值就当没记过） */
+export const SOURCE_IDS = MARKET_SOURCES.map((s) => s.id);
+
+/** 界面上用的名字（错误行与日志都要说清是哪一段数据出的问题） */
+export const KIND_NAMES = { depth: "五档", trend: "分时", kline: "K线" };
+
+/* ================= 取数（要 http 能力，由调用方把 request 传进来） ================= */
 
 /** 统一把接口响应解成 JSON；非 2xx / 非 JSON / 被截断都抛可读错误 */
 function decode(resp, what) {
@@ -301,29 +523,94 @@ function decode(resp, what) {
   }
 }
 
+/** 掐掉宿主代理原始错误里的 URL 与 rustls 文档链接：聚合错误要能塞进界面一行 */
+export function briefReason(err) {
+  const raw = String(err?.message ?? err);
+  const head = raw.split(/:?\s*https?:\/\//)[0].trim();
+  return head || raw;
+}
+
+function urlOnHost(url, host) {
+  return url.replace(/^https:\/\/[^/]+/, `https://${host}`);
+}
+
+/** 一个源的尝试：主入口 → 后备入口。全失败抛出的 message 里带着源名与每个入口的原因 */
+async function trySource(request, source, kind, params) {
+  const spec = source[kind];
+  const reasons = [];
+  for (const host of source.hosts) {
+    const url = urlOnHost(spec.url(params), host);
+    try {
+      const resp = await request(url, { headers: source.headers });
+      const data = spec.parse(decode(resp, `${source.label}${KIND_NAMES[kind]}`), params);
+      return { data, source: source.id, host };
+    } catch (err) {
+      // 冷却/限流是全局的（出网只有一个闸门），换源与换入口都不会好，把话直接交回调用方
+      if (err?.cooldown) throw err;
+      reasons.push(`${host}: ${briefReason(err)}`);
+    }
+  }
+  const err = new Error(`${source.label}（${reasons.join("；")}）`);
+  err.detail = reasons;
+  throw err;
+}
+
+/**
+ * 取数主循环：先试「上一次成功的源」，再依次下移；一个源内部先试主入口，失败才试后备入口。
+ * 全部失败抛出的 message 可以直接给界面（一行，含每个源与入口），`detail` 给调用方写日志（每个源一条）。
+ */
+async function fetchFromSources(kind, request, params, preferred) {
+  const ordered = [
+    ...MARKET_SOURCES.filter((s) => s.id === preferred),
+    ...MARKET_SOURCES.filter((s) => s.id !== preferred),
+  ];
+  const detail = [];
+  for (const source of ordered) {
+    if (kind === "kline" && !source.klts.includes(params.klt)) {
+      detail.push(`${source.label}：不支持该周期`);
+      continue;
+    }
+    if (source.ok && !source.ok(params)) {
+      detail.push(`${source.label}：这个代码转不过去`);
+      continue;
+    }
+    try {
+      return await trySource(request, source, kind, params);
+    } catch (err) {
+      if (err?.cooldown) throw err;
+      detail.push(err.message);
+    }
+  }
+  const err = new Error(`${KIND_NAMES[kind]}取数失败：${detail.join("；")}`);
+  err.detail = detail;
+  throw err;
+}
+
 export async function fetchQuotes(request, secids) {
   const list = [...new Set(secids.filter(Boolean))];
   if (list.length === 0) return [];
-  const resp = await request(buildQuoteUrl(list), { headers: HEADERS });
+  const resp = await request(buildQuoteUrl(list), { headers: EASTMONEY_HEADERS });
   return parseQuoteResponse(decode(resp, "行情"));
 }
 
 export async function fetchSuggest(request, keyword) {
-  const resp = await request(buildSuggestUrl(keyword), { headers: HEADERS });
+  const resp = await request(buildSuggestUrl(keyword), { headers: EASTMONEY_HEADERS });
   return parseSuggestResponse(decode(resp, "搜索"));
 }
 
 export async function fetchDepth(request, secid) {
-  const resp = await request(buildDetailUrl(secid), { headers: HEADERS });
+  const resp = await request(buildDetailUrl(secid), { headers: EASTMONEY_HEADERS });
   return parseDepthResponse(decode(resp, "盘口"), secid);
 }
 
-export async function fetchTrend(request, secid) {
-  const resp = await request(buildTrendUrl(secid), { headers: HEADERS });
-  return parseTrendResponse(decode(resp, "分时"));
+/** K 线：多源取数，返回 { data, source, host }；`preferred` 是「上一次成功的源」 */
+export async function fetchKline(request, secid, klt = 101, { preferred = "" } = {}) {
+  const params = { secid, code: tencentCodeOf(secid), klt, count: MAX_KLINE_BARS };
+  return fetchFromSources("kline", request, params, preferred);
 }
 
-export async function fetchKline(request, secid, klt = 101) {
-  const resp = await request(buildKlineUrl(secid, klt), { headers: HEADERS });
-  return parseKlineResponse(decode(resp, "K线"));
+/** 当日分时：多源取数，返回 { data, source, host } */
+export async function fetchTrend(request, secid, { preferred = "" } = {}) {
+  const params = { secid, code: tencentCodeOf(secid) };
+  return fetchFromSources("trend", request, params, preferred);
 }

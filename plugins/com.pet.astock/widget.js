@@ -5,7 +5,7 @@
 // 遵守 SDK 三条硬规矩：只往 shadow root 里写；清理表按挂载实例存（WeakMap）；
 // 外部数据一律 textContent，绝不拼进 innerHTML（股票名、搜索结果、行情值都算外部数据）。
 import { PID, TOPIC_CMD, TOPIC_PANEL, TOPIC_STATUS, TOPIC_SUGGEST, TOPIC_WIDGET } from "./topics.js";
-import { KLINE_PERIODS } from "./market.js";
+import { KLINE_PERIODS, sourceLabelOf } from "./market.js";
 import { depthRows, drawKline, drawTrend } from "./charts.js";
 
 const scopes = new WeakMap();
@@ -602,9 +602,15 @@ function mountSettings(root, ctx, cleanups) {
         d.error ? ` · ${d.error}` : ""
       }`;
       statusLine.className = `status${d.error || net.cooldownLeftSec > 0 ? " error" : ""}`;
+      // 吃的是哪家的数据要看得见（换源是自动的，别让用户以为行情变了口径）
+      const src = net.sources ?? {};
+      const srcParts = [];
+      if (src.kline) srcParts.push(`K线数据源 ${sourceLabelOf(src.kline)}`);
+      if (src.trend && src.trend !== src.kline) srcParts.push(`分时数据源 ${sourceLabelOf(src.trend)}`);
       netLine.textContent = `近 1 分钟出网 ${net.window ?? 0} 次（上限 ${net.perMinute ?? "—"}，两次之间至少 ${net.minGapMs ?? "—"}ms）` +
         `${net.noProgress > 0 ? ` · 行情未更新，已退避到 ${net.intervalSec}s` : ""}` +
-        `${net.strikes > 0 ? ` · 已被限流 ${net.strikes} 次` : ""}`;
+        `${net.strikes > 0 ? ` · 已被限流 ${net.strikes} 次` : ""}` +
+        `${srcParts.length ? ` · ${srcParts.join(" · ")}` : ""}`;
     }
 
     for (const [value, box] of Object.entries(modeInputs)) box.checked = (cfg.mode ?? "badge") === value;

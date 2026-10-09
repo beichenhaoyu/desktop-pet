@@ -20,15 +20,19 @@ import {
   TOPIC_WIDGET,
 } from "./topics.js";
 import {
+  briefReason,
   fetchDepth,
   fetchKline,
   fetchQuotes,
   fetchSuggest,
   fetchTrend,
+  KIND_NAMES,
   KLT_VALUES,
   marketSession,
   normalizeCode,
   secidOf,
+  SOURCE_IDS,
+  sourceLabelOf,
 } from "./market.js";
 import { evalAlerts, markAlerted } from "./rules.js";
 import {
@@ -76,10 +80,15 @@ let stopped = false;
 /* 选中个股的盘口 / 分时 / K 线：只有设置页在用，走单独 topic，不进每轮的 *:widget */
 let selected = "";
 let klt = 101;
-let panel = null; // { secid, klt, depth, trend, kline, error, at }
+let panel = null; // { secid, klt, depth, trend, kline, error, failed, at }
 let panelWanted = false;
 let panelAt = 0;
 let panelBusy = false;
+/**
+ * 「上一次成功的源」：K线与分时各记一个 id，落在插件自己的隔离存储里（key: sources），
+ * 重启后第一轮就先用它 —— 坏源不必每轮都再撞一次。插件页那行「K线数据源 腾讯」也是它。
+ */
+let sourcePrefs = { kline: "", trend: "" };
 /** 悬浮窗显隐的串行链，见 syncOverlay() */
 let overlayChain = Promise.resolve();
 
@@ -177,12 +186,23 @@ async function persist(keys) {
   const all = keys ?? ["watch", "config", "alerted"];
   try {
     for (const key of all) {
-      const value = key === "watch" ? watch : key === "config" ? config : alerted;
+      const value = key === "watch" ? watch : key === "config" ? config : key === "sources" ? sourcePrefs : alerted;
       await ctx.storage.set(key, value);
     }
   } catch (err) {
     ctx?.log?.("保存盯盘配置失败", err);
   }
+}
+
+/**
+ * 记下「这一段上一次成功的源」并落盘（只在变化时写）。第一次成功也写：
+ * 之后重启插件，第一轮就先用它 —— 上一次被重置的那个源不必每轮再撞一遍。
+ */
+function noteSource(kind, id, host) {
+  if (!id || sourcePrefs[kind] === id) return;
+  sourcePrefs = { ...sourcePrefs, [kind]: id };
+  ctx?.log?.(`${KIND_NAMES[kind]}数据源切到 ${sourceLabelOf(id)}（${host}）`);
+  void persist(["sources"]);
 }
 
 /** 推给 badge / overlay / 插件页的同一份视图：界面只读它，不自己算 */
@@ -205,6 +225,8 @@ function pushState() {
       cooldownLeftSec: cooldownUntil > now ? Math.ceil((cooldownUntil - now) / 1000) : 0,
       noProgress,
       intervalSec: targetSec || currentIntervalSec(),
+      /** 当前吃的是哪家的数据（K线/分时各自记）：插件页那行「K线数据源 腾讯」就来自这里 */
+      sources: { ...sourcePrefs },
     },
   });
 }
@@ -232,17 +254,17 @@ function clearPanel() {
 
 /**
  * 宿主代理的原始错误里带着整条 URL 和 rustls 的文档链接，对用户没用还会把面板那行撑成三行；
- * 完整信息进 ctx.log，界面上只留人话。
+ * 完整信息进 ctx.log（多源失败时每个入口一条，见 market.js 抛出的 err.detail），界面上只留人话。
  */
 function briefError(err) {
-  const raw = String(err?.message ?? err);
-  const head = raw.split(/:?\s*https?:\/\//)[0].trim();
-  return (head || raw).slice(0, 90);
+  return briefReason(err).slice(0, 90);
 }
 
 /**
  * 拉选中个股的盘口 / 分时 / K 线。三段可以分开要：切 K 线周期时没必要把盘口和分时再打一遍。
- * 失败不牵动主轮询 —— 留着旧数据加一行错误，提醒照常出。
+ * 失败不牵动主轮询，但**失败的那一段不保留上一轮的数据**（序列摘成 null，界面留错误行 + 空提示）：
+ * 尤其是切周期，把上一周期的 K 线挂在新周期标签下，就是一张错价的图。
+ * K线与分时走多源（见 market.js）：先试上一次成功的源，失败依次下移，全失败才落成一行错误。
  */
 async function loadPanel({ withDepth = true, withTrend = true, withKline = true } = {}) {
   if (!ctx || !selected || panelBusy) return;
@@ -251,30 +273,78 @@ async function loadPanel({ withDepth = true, withTrend = true, withKline = true 
   panelAt = Date.now();
   const request = out;
   // 换标的时不继承上一只的曲线，否则名字是 A、图上画的是 B
-  const next = { ...(panel?.secid === selected ? panel : {}), secid: selected, klt, error: "" };
-  const grab = async () => {
-    const tasks = [];
-    if (withDepth) tasks.push(fetchDepth(request, selected).then((v) => (next.depth = v)));
-    if (withTrend) tasks.push(fetchTrend(request, selected).then((v) => (next.trend = v)));
-    if (withKline && (next.klineKlt !== klt || isKlineStale(next) || !next.kline)) {
-      tasks.push(
-        fetchKline(request, selected, klt).then((v) => {
-          next.kline = v;
-          next.klineAt = Date.now();
-          next.klineKlt = klt;
-        }),
-      );
+  const next = { ...(panel?.secid === selected ? panel : {}), secid: selected, klt, error: "", failed: {} };
+  // 切周期先把上一周期的 K 线摘掉：它比失败处理更早生效，
+  // 否则「请求还没回来」的那几秒里，新周期标签下挂的仍是旧周期的图
+  if (next.klineKlt !== klt) {
+    next.kline = null;
+    next.klineKlt = null;
+    next.klineAt = 0;
+  }
+  const failed = {};
+
+  /** 一段取数：成功写进 next，失败只记自己那一段（一段坏不连坐另外两段） */
+  const grab = async (kind, run) => {
+    try {
+      await run();
+    } catch (err) {
+      failed[kind] = briefError(err);
+      ctx?.log?.(`${KIND_NAMES[kind]}取数失败`, err?.detail ?? err);
     }
-    await Promise.all(tasks);
   };
+  const grabDepth = () =>
+    grab("depth", async () => {
+      next.depth = await fetchDepth(request, selected);
+      next.depthAt = Date.now();
+    });
+  const grabTrend = () =>
+    grab("trend", async () => {
+      const { data, source, host } = await fetchTrend(request, selected, { preferred: sourcePrefs.trend });
+      next.trend = data;
+      next.trendAt = Date.now();
+      next.trendSource = source;
+      noteSource("trend", source, host);
+    });
+  const grabKline = () =>
+    grab("kline", async () => {
+      const { data, source, host } = await fetchKline(request, selected, klt, { preferred: sourcePrefs.kline });
+      next.kline = data;
+      next.klineAt = Date.now();
+      next.klineKlt = klt;
+      next.klineSource = source;
+      noteSource("kline", source, host);
+    });
+
   try {
-    await grab();
+    // 三段**按顺序**取，不要 Promise.all：出网闸门的「连续失败」是全插件一份计数，
+    // 三条链并发时，盘口 + 分时 + K线各自要先撞一次坏源（东财整组被重置），
+    // 三次失败会在分时/ K线 还没轮到备用源时就把插件推进冷却（实测：面板一轮里
+    // depth 失败、trend/kline 直接拿到「限流冷却中，约 300 秒后自动恢复」，备用源根本没跑到）。
+    // 串起来之后每段都是「先撞坏源、再换源成功」，成功会把计数清零，冷却不会被误触发。
+    if (withDepth) await grabDepth();
+    if (withTrend) await grabTrend();
+    if (withKline && (next.klineKlt !== klt || isKlineStale(next) || !next.kline)) await grabKline();
+
+    // 失败的那一段：不把上一轮的序列当本轮结果发布（宁可图上写「还没有数据」）
+    if (failed.depth) {
+      next.depth = null;
+      next.depthAt = 0;
+    }
+    if (failed.trend) {
+      next.trend = null;
+      next.trendAt = 0;
+    }
+    if (failed.kline) {
+      next.kline = null;
+      next.klineKlt = null;
+      next.klineAt = 0;
+    }
+    next.failed = failed;
+    next.error = Object.entries(failed)
+      .map(([kind, why]) => `${KIND_NAMES[kind]}：${why}`)
+      .join("；");
     panel = { ...next, at: Date.now() };
-  } catch (err) {
-    // out() 里已经对传输层失败重试过一次，这里不再叠第二层
-    panel = { ...next, at: Date.now(), error: briefError(err) };
-    ctx?.log?.("盘面数据拉取失败", err);
-    status(`盘面数据拉取失败：${panel.error}`, "error");
+    if (next.error) status(`盘面数据拉取失败：${next.error}`, "error");
   } finally {
     panelBusy = false;
     publishPanel();
@@ -618,6 +688,12 @@ function restore(key, saved, fallback) {
       mode: saved.mode === "overlay" || saved.mode === "off" ? saved.mode : "badge",
     };
   }
+  // sources：只认已知的源 id（旧版本写的、手改的都当没记过，下一轮重新探一遍）
+  if (key === "sources") {
+    const s = saved && typeof saved === "object" ? saved : {};
+    const pick = (v) => (typeof v === "string" && SOURCE_IDS.includes(v) ? v : "");
+    return { kline: pick(s.kline), trend: pick(s.trend) };
+  }
   // alerted：只收字符串键、布尔值，且必须是今天的日期前缀（旧日期的直接丢）
   if (saved && typeof saved === "object") {
     const keep = {};
@@ -633,11 +709,12 @@ export async function activate(context) {
   stopped = false;
   ctx = context;
 
-  for (const key of ["watch", "config", "alerted"]) {
+  for (const key of ["watch", "config", "alerted", "sources"]) {
     try {
       const saved = await ctx.storage.get(key);
       if (key === "watch") watch = restore("watch", saved, []);
       else if (key === "config") config = restore("config", saved, config);
+      else if (key === "sources") sourcePrefs = restore("sources", saved, sourcePrefs);
       else alerted = restore("alerted", saved, {});
     } catch (err) {
       ctx.log?.(`读取 ${key} 失败`, err);
@@ -680,4 +757,5 @@ export async function deactivate() {
   selected = "";
   panelWanted = false;
   panelBusy = false;
+  // sourcePrefs 不清：它就是「重启后还认」的那份记忆（storage 里的 sources），下次 activate 读回来
 }
