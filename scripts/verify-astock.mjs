@@ -1,12 +1,13 @@
 // A股盯盘插件的端到端断言。
 //   终端 1: npm run dev:debug      终端 2: npm run verify:astock
 // 覆盖：授权（含按域名的 http 授权）、走宿主代理取行情（UTF-8 中文名是关键证据）、
-// 自选增删与阈值落盘、badge/overlay/插件页三区渲染、提醒链路（系统通知 + 宠物反应）、
-// 停用后定时器与订阅回收。跑完撤销授权并下线插件。
+// 自选增删与阈值落盘、badge/overlay/插件页三区渲染、选中个股的分时/K线/五档（含画布真的画出像素）、
+// 提醒链路（系统通知 + 宠物反应）、停用后定时器与订阅回收。跑完撤销授权并下线插件。
 //
-// 会在屏幕上弹出系统通知（一次「测试提醒」），并短暂开一扇左上角盯盘卡。
+// 会在屏幕上弹出系统通知（一次「测试提醒」），并短暂开一扇左上角盯盘卡、把设置页点到插件页。
 // 收盘后行情时间戳不前进，规则命中会被「本轮没有新数据」这道闸挡住 ——
 // 那部分判定逻辑由 market.js / rules.js 的纯函数断言覆盖，这里只验链路。
+// 分时/K线/五档取的是接口最近一次的数据，所以休市跑也断言得出结构，只有提醒那条要看时段。
 import { argv, env } from "node:process";
 import {
   attach,
@@ -93,8 +94,8 @@ try {
   await c.ev(`(async () => {
     const { bus } = await import('/src/runtime/event-bus.ts');
     window.__bus = bus;
-    window.__seen = { quote: [], alert: [], status: [], suggest: [] };
-    for (const k of ['quote', 'alert', 'status', 'suggest']) {
+    window.__seen = { quote: [], alert: [], status: [], suggest: [], panel: [] };
+    for (const k of ['quote', 'alert', 'status', 'suggest', 'panel']) {
       bus.subscribe(${JSON.stringify(`${PID}:`)} + k, (p) => window.__seen[k].push(p));
     }
     return true;
@@ -127,11 +128,143 @@ try {
       setTimeout(() => { off(); res(null); }, 8000);
     });
   })()`));
-  r.check("视图里两只都有价格", true, typeof view?.quotes?.["1.600519"]?.price === "number");
-  r.check("中文名来自宿主代理仍是 UTF-8", "贵州茅台", view?.quotes?.["1.600519"]?.name);
-  r.check("涨跌幅是小数字而不是 '-'", true, typeof view?.quotes?.["1.600519"]?.pct === "number");
+  const q1 = view?.quotes?.["1.600519"];
+  r.check("中文名来自宿主代理仍是 UTF-8", "贵州茅台", q1?.name);
+  // 盘前（9:15 之前）接口会把个股的现价/涨跌幅打成 "-"，这是数据形态不是 bug，
+  // 所以断言写成「同生同灭 + 脏值不落进界面」，任何时段都成立且仍能抓到解析层出错
+  r.info("本轮时段", `${view?.session?.phase}${Number.isFinite(q1?.price) ? "（有实时成交价）" : "（无实时成交价，按盘前形态断言）"}`);
+  r.check("现价与涨跌幅同生同灭（不会出现有价无幅或有幅无价）", true, Number.isFinite(q1?.price) === Number.isFinite(q1?.pct));
+  r.check("取不到的数值落成 null，不漏出 undefined 或字符串 '-'", true,
+    ["price", "pct", "change", "prevClose", "volume"].every((k) => q1?.[k] === null || Number.isFinite(q1[k])));
+  r.check("行情时间戳始终可用（提醒就靠它判这轮新不新）", true, Number.isFinite(q1?.quoteAt));
   r.check("带上了指数", true, Number.isFinite(view?.quotes?.["1.000001"]?.price));
   r.check("时段判定给了相位", true, typeof view?.session?.phase === "string" && view.session.phase.length > 0);
+
+  r.group("盘面：分时 / K线 / 五档（走 push2his 域名）");
+  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "select", secid: "1.600519" }); true`);
+  const gotPanel = await waitUntil(c, `window.__seen.panel.some(p => p?.depth && p?.trend && p?.kline)`, 45_000);
+  const pnl = (await c.ev(`window.__seen.panel.at(-1) ?? null`)) ?? {};
+  r.check("选中后三段数据都到位", true, gotPanel);
+  // 序列数据体积大，必须走单独 topic；每轮的 *:widget 里不该出现它们
+  const viewAfter = await c.ev(`(async () => {
+    const { bus } = await import('/src/runtime/event-bus.ts');
+    return await new Promise((res) => {
+      const off = bus.subscribe(${JSON.stringify(`${PID}:widget`)}, (d) => { off(); res(d); });
+      bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "sync" });
+      setTimeout(() => { off(); res(null); }, 8000);
+    });
+  })()`);
+  r.check("每轮视图里没夹带分时/K线（省一次跨窗中继）", false, ["trend", "kline", "depth"].some((k) => k in (viewAfter ?? {})));
+  const grants = ((await settings.invoke("permission_list")).v ?? {})[PID] ?? [];
+  r.check("新域名 push2his 也走了按域名授权", true, grants.includes("http:push2his.eastmoney.com"));
+  r.check("五档买/卖各五档", [5, 5], [pnl.depth?.bids?.length, pnl.depth?.asks?.length]);
+  // 竞价阶段盘口很薄，接口会给「价格 - 但量是数字」的半截档（实测 09:16 的买二）；
+  // 解析层已把这种档整档判空，这里只对有价的档排序，并额外钉住「无价必无量」
+  r.check("没有价格的档不带量（界面不会出现「— 配 2 手」）", true,
+    [...(pnl.depth?.bids ?? []), ...(pnl.depth?.asks ?? [])].every((l) => l.price !== null || l.volume === null));
+  const bidPrices = (pnl.depth?.bids ?? []).filter((l) => Number.isFinite(l.price)).map((l) => l.price);
+  const askPrices = (pnl.depth?.asks ?? []).filter((l) => Number.isFinite(l.price)).map((l) => l.price);
+  r.check("买价按买一→买五递减", true, bidPrices.every((p, i, a) => i === 0 || p <= a[i - 1]));
+  r.check("卖价按卖一→卖五递增", true, askPrices.every((p, i, a) => i === 0 || p >= a[i - 1]));
+  r.check("买一不高于卖一", true, bidPrices[0] === undefined || askPrices[0] === undefined || bidPrices[0] <= askPrices[0]);
+  r.check("明细里的中文名仍是 UTF-8", "贵州茅台", pnl.depth?.name);
+  r.check("涨停价是交易所给的数值且高于昨收", true, Number.isFinite(pnl.depth?.limitUp) && pnl.depth.limitUp > pnl.depth.prevClose);
+  r.check("跌停价低于昨收", true, Number.isFinite(pnl.depth?.limitDown) && pnl.depth.limitDown < pnl.depth.prevClose);
+  r.check("分时结构成立：数组 + 昨收基准线可用", true,
+    Array.isArray(pnl.trend?.points) && Number.isFinite(pnl.trend?.preClose));
+  r.check("分时有数据时形状自洽（时刻 HH:MM、价与均价都是数）", true,
+    (pnl.trend?.points ?? []).every((p) => /^\d{2}:\d{2}$/.test(p.time) && Number.isFinite(p.price) && Number.isFinite(p.avg)));
+  if (view?.session?.trading) {
+    r.check("盘中必须拿得到分时采样点", true, (pnl.trend?.points?.length ?? 0) > 0);
+  } else {
+    r.info("非交易时段的分时点数", `${pnl.trend?.points?.length ?? 0}（盘前/竞价前接口可以给 0 点，图上要显示提示而不是空白）`);
+  }
+  r.check("K线拉满 120 根", 120, pnl.kline?.bars?.length);
+  r.check("K线每根的高低价自洽", true, (pnl.kline?.bars ?? []).every((b) => b.high >= b.low && b.high >= Math.max(b.open, b.close) && b.low <= Math.min(b.open, b.close)));
+  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "klt", value: 60 }); true`);
+  const toMinute = await waitUntil(c, `window.__seen.panel.at(-1)?.klt === 60`, 20_000);
+  const pnl60 = (await c.ev(`window.__seen.panel.at(-1) ?? null`)) ?? {};
+  r.check("切到 60 分钟周期", true, toMinute);
+  r.check("60 分钟线的时刻带时分", true, /\d{2}:\d{2}$/.test(pnl60.kline?.bars?.at(-1)?.time ?? ""));
+  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "klt", value: 101 }); true`);
+  await sleep(1500);
+
+  r.group("设置页：图真的画出来了、五档表有行");
+  await settings.client.ev(`document.querySelector('#nav-plugins .nav-item[data-view=${JSON.stringify(PID)}]')?.click()`);
+  const widgetReady = await waitUntil(
+    settings.client,
+    `(async () => {
+      const { widgetHost } = await import('/src/runtime/widget-host.ts');
+      const rec = (widgetHost.mounted.get(${JSON.stringify(PID)}) ?? [])[0];
+      return !!rec?.shadow?.querySelector('canvas');
+    })()`,
+    20_000,
+  );
+  r.check("插件页挂上了画布", true, widgetReady);
+  /** 从 closed shadow root 里取画布，数非背景像素 —— 「没报错」不等于「画出来了」 */
+  const inkOf = () =>
+    settings.client.ev(`(async () => {
+      const { widgetHost } = await import('/src/runtime/widget-host.ts');
+      const rec = (widgetHost.mounted.get(${JSON.stringify(PID)}) ?? [])[0];
+      const cv = rec?.shadow?.querySelector('canvas');
+      if (!cv) return { ok: false, reason: 'no canvas' };
+      const g = cv.getContext('2d');
+      const px = g.getImageData(0, 0, cv.width, cv.height).data;
+      let ink = 0;
+      for (let i = 0; i < px.length; i += 4) {
+        if (Math.abs(px[i] - 17) > 12 || Math.abs(px[i + 1] - 19) > 12 || Math.abs(px[i + 2] - 26) > 12) ink++;
+      }
+      return { ok: true, ink, w: cv.width, h: cv.height, cssW: cv.clientWidth };
+    })()`);
+  const trendInk = await inkOf();
+  r.check("分时画布按 DPR 建了位图（不是 0 尺寸）", true, trendInk.ok === true && trendInk.w >= trendInk.cssW);
+  // 竞价阶段分时可能只有 1 个点（画一个点而不是折线），完全没数据时画的是提示行
+  const trendPoints = pnl.trend?.points?.length ?? 0;
+  const inkFloor = trendPoints > 1 ? 400 : trendPoints === 1 ? 120 : 30;
+  r.info("分时笔迹像素", `${trendInk.ink} 点（分时 ${trendPoints} 个采样）`);
+  r.check(
+    trendPoints > 1 ? "分时图有笔迹（折线+均价+量能）" : trendPoints === 1 ? "竞价阶段单点也画得出来" : "分时为空时画的是提示行而不是空白画布",
+    true,
+    (trendInk.ink ?? 0) > inkFloor,
+  );
+  const depthRows = await settings.client.ev(`(async () => {
+    const { widgetHost } = await import('/src/runtime/widget-host.ts');
+    const rec = (widgetHost.mounted.get(${JSON.stringify(PID)}) ?? [])[0];
+    const rows = [...(rec?.shadow?.querySelectorAll('table.depth tbody tr') ?? [])];
+    return rows.map((r) => r.children[0]?.textContent ?? '');
+  })()`);
+  r.check("五档表是卖五→卖一→现价→买一→买五", 11, depthRows.length);
+  r.check("档位标签顺序对", ["卖5", "卖4", "卖3", "卖2", "卖1", "现价", "买1", "买2", "买3", "买4", "买5"], depthRows);
+  await settings.client.ev(`(async () => {
+    const { widgetHost } = await import('/src/runtime/widget-host.ts');
+    const rec = (widgetHost.mounted.get(${JSON.stringify(PID)}) ?? [])[0];
+    [...rec.shadow.querySelectorAll('.tabs button')].find((b) => b.textContent === 'K线')?.click();
+    return true;
+  })()`);
+  await sleep(400);
+  const klineInk = await inkOf();
+  r.check("K 线图有笔迹（蜡烛+MA+量能）", true, (klineInk.ink ?? 0) > 400);
+  // 周期下拉只在 K 线页出现：这比「两张位图像素数不同」确定，不受数据形态影响
+  const selVisible = await settings.client.ev(`(async () => {
+    const { widgetHost } = await import('/src/runtime/widget-host.ts');
+    const rec = (widgetHost.mounted.get(${JSON.stringify(PID)}) ?? [])[0];
+    const sel = rec.shadow.querySelector('.tabs + select');
+    return { on: [...rec.shadow.querySelectorAll('.tabs button')].filter((b) => b.classList.contains('on')).map((b) => b.textContent), shown: sel ? sel.offsetParent !== null : null };
+  })()`);
+  r.check("切到 K 线后只有 K 线页亮着", ["K线"], selVisible?.on);
+  r.check("K 线页显示周期下拉", true, selVisible?.shown === true);
+  const panelText = await settings.client.ev(`(async () => {
+    const { widgetHost } = await import('/src/runtime/widget-host.ts');
+    const rec = (widgetHost.mounted.get(${JSON.stringify(PID)}) ?? [])[0];
+    return rec.shadow.querySelector('.panel-hd')?.textContent ?? '';
+  })()`);
+  r.check("面板抬头写了选中的标的与涨跌停价", true, /贵州茅台/.test(panelText) && /涨停/.test(panelText) && /分时 \d+ 点/.test(panelText));
+  const selectedRow = await settings.client.ev(`(async () => {
+    const { widgetHost } = await import('/src/runtime/widget-host.ts');
+    const rec = (widgetHost.mounted.get(${JSON.stringify(PID)}) ?? [])[0];
+    return [...rec.shadow.querySelectorAll('tbody tr.sel td:first-child')].map((td) => td.textContent);
+  })()`);
+  r.check("自选列表里高亮的是当前选中那只", true, String(selectedRow?.[0] ?? "").includes("贵州茅台"));
 
   r.group("阈值规则保存与回显");
   await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, ${JSON.stringify({ action: "update", secid: "1.600519", upper: 1, lower: 99999, pct: 3 })}); true`);
@@ -211,9 +344,31 @@ try {
   await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, ${JSON.stringify({ action: "remove", secid: "0.300750" })}); true`);
   await sleep(1500);
   r.check("删掉一只", ["1.600519"], ((await invoke("store_get", { pluginId: PID, key: "watch" })).v ?? []).map((w) => w.secid));
+  // 正开着盘面的那只被删掉时，面板要收掉，不能继续画它的曲线
+  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "remove", secid: "1.600519" }); true`);
+  const panelCleared = await waitUntil(c, `window.__seen.panel.at(-1)?.cleared === true`, 15_000);
+  r.check("删掉选中标的后盘面收掉", true, panelCleared);
   await c.ev(`(async () => { const rt = await import('/src/runtime/plugin-runtime.ts'); await rt.deactivatePlugin(${JSON.stringify(PID)}); return true; })()`);
   await sleep(1500);
-  r.check("停用后卡收掉", false, await c.ev(`(async () => (await window.__TAURI_INTERNALS__.invoke('plugin:window|is_visible', { label: 'overlay-com_pet_astock' })) === true)()`).catch(() => false));
+  r.check("停用后插件确实不在活动列表", false, await c.ev(`(async () => (await import('/src/runtime/plugin-runtime.ts')).isActive(${JSON.stringify(PID)}))()`));
+  const cardGone = await waitUntil(
+    c,
+    `(async () => {
+      try { const v = await window.__TAURI_INTERNALS__.invoke('plugin:window|is_visible', { label: 'overlay-com_pet_astock' }); return v !== true; }
+      catch { return true; } // 窗口记录都没了，当然是收掉了
+    })()`,
+    12_000,
+  ).catch(() => false);
+  if (!cardGone) {
+    // 失败要能说清是哪一类：还在活动列表里被 watcher 重新激活了，还是 destroy 真的没落地
+    r.info("卡仍可见时的现场", JSON.stringify({
+      active: await c.ev(`(async () => (await import('/src/runtime/plugin-runtime.ts')).isActive(${JSON.stringify(PID)}))()`),
+      enabled: await c.ev(`localStorage.getItem('host:enabled-plugins')`),
+      mode: ((await invoke("store_get", { pluginId: PID, key: "config" })).v ?? {}).mode,
+      windows: (await listPages(PORT)).filter((t) => /overlay\.html/.test(t.url)).map((t) => t.title),
+    }));
+  }
+  r.check("停用后卡收掉", true, cardGone);
   r.check(
     "停用后指令 topic 没有残留订阅（宿主回收）",
     true,

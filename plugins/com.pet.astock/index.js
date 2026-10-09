@@ -13,12 +13,23 @@ import {
   TOPIC_ALERT,
   TOPIC_CHANGED,
   TOPIC_CMD,
+  TOPIC_PANEL,
   TOPIC_QUOTE,
   TOPIC_STATUS,
   TOPIC_SUGGEST,
   TOPIC_WIDGET,
 } from "./topics.js";
-import { fetchQuotes, fetchSuggest, marketSession, normalizeCode, secidOf } from "./market.js";
+import {
+  fetchDepth,
+  fetchKline,
+  fetchQuotes,
+  fetchSuggest,
+  fetchTrend,
+  KLT_VALUES,
+  marketSession,
+  normalizeCode,
+  secidOf,
+} from "./market.js";
 import { evalAlerts, markAlerted } from "./rules.js";
 
 const DEFAULT_CONFIG = {
@@ -36,6 +47,10 @@ const MIN_INTERVAL = 10;
 const MAX_WATCH = 20;
 /** 界面上保留的最近提醒条数 */
 const RECENT_ALERTS = 8;
+/** K 线比盘口/分时候份稳定得多，60 秒才重拉一次 */
+const KLINE_STALE_MS = 60_000;
+/** 设置页关掉了（人去干别的了）就停止额外出网，超过这个时长不再刷新盘口面板 */
+const PANEL_TTL_MS = 5 * 60_000;
 
 let ctx = null;
 let config = { ...DEFAULT_CONFIG };
@@ -48,6 +63,16 @@ let busy = false;
 let lastQuoteAt = 0;
 let lastError = "";
 let stopped = false;
+
+/* 选中个股的盘口 / 分时 / K 线：只有设置页在用，走单独 topic，不进每轮的 *:widget */
+let selected = "";
+let klt = 101;
+let panel = null; // { secid, klt, depth, trend, kline, error, at }
+let panelWanted = false;
+let panelAt = 0;
+let panelBusy = false;
+/** 悬浮窗显隐的串行链，见 syncOverlay() */
+let overlayChain = Promise.resolve();
 
 function today() {
   const d = new Date();
@@ -101,7 +126,81 @@ function ruleText(item) {
   return parts.join(" ") || "未设提醒";
 }
 
-async function syncOverlay() {
+/** 面板数据单独一条 topic：badge/overlay 收的是每轮的 *:widget，用不着几十 KB 的序列 */
+function publishPanel() {
+  ctx?.bus.publish(TOPIC_PANEL, panel ?? { secid: "", cleared: true, at: Date.now() });
+}
+
+function clearPanel() {
+  selected = "";
+  panel = null;
+  panelWanted = false;
+  publishPanel();
+}
+
+/**
+ * 宿主代理的原始错误里带着整条 URL 和 rustls 的文档链接，对用户没用还会把面板那行撑成三行；
+ * 完整信息进 ctx.log，界面上只留人话。
+ */
+function briefError(err) {
+  const raw = String(err?.message ?? err);
+  const head = raw.split(/:?\s*https?:\/\//)[0].trim();
+  return (head || raw).slice(0, 90);
+}
+
+/**
+ * 拉选中个股的盘口 / 分时 / K 线。三段可以分开要：切 K 线周期时没必要把盘口和分时再打一遍。
+ * 失败不牵动主轮询 —— 留着旧数据加一行错误，提醒照常出。
+ */
+async function loadPanel({ withDepth = true, withTrend = true, withKline = true } = {}) {
+  if (!ctx || !selected || panelBusy) return;
+  panelBusy = true;
+  panelWanted = true;
+  panelAt = Date.now();
+  const request = (url, opts) => ctx.http.request(url, opts);
+  // 换标的时不继承上一只的曲线，否则名字是 A、图上画的是 B
+  const next = { ...(panel?.secid === selected ? panel : {}), secid: selected, klt, error: "" };
+  const grab = async () => {
+    const tasks = [];
+    if (withDepth) tasks.push(fetchDepth(request, selected).then((v) => (next.depth = v)));
+    if (withTrend) tasks.push(fetchTrend(request, selected).then((v) => (next.trend = v)));
+    if (withKline && (next.klineKlt !== klt || isKlineStale(next) || !next.kline)) {
+      tasks.push(
+        fetchKline(request, selected, klt).then((v) => {
+          next.kline = v;
+          next.klineAt = Date.now();
+          next.klineKlt = klt;
+        }),
+      );
+    }
+    await Promise.all(tasks);
+  };
+  try {
+    try {
+      await grab();
+    } catch (err) {
+      // 公共接口会随机掐 TLS（实测打包版 kline 报过 rustls unexpected-eof），
+      // 面板是用户点开才要的数，重试一次比直接甩错误有用
+      ctx.log?.("盘面数据重试一次", briefError(err));
+      await new Promise((res) => setTimeout(res, 600));
+      await grab();
+    }
+    panel = { ...next, at: Date.now() };
+  } catch (err) {
+    panel = { ...next, at: Date.now(), error: briefError(err) };
+    ctx?.log?.("盘面数据拉取失败", err);
+    status(`盘面数据拉取失败：${panel.error}`, "error");
+  } finally {
+    panelBusy = false;
+    publishPanel();
+  }
+}
+
+function isKlineStale(state) {
+  return !Number.isFinite(state?.klineAt) || Date.now() - state.klineAt > KLINE_STALE_MS;
+}
+
+async function syncOverlayOnce() {
   const want = config.mode === "overlay";
   try {
     if (want) {
@@ -113,6 +212,19 @@ async function syncOverlay() {
   } catch (err) {
     ctx?.log?.("盯盘卡切换失败", err);
   }
+}
+
+/**
+ * 显隐切换排成一条链。
+ * 不排会输在收尾上：刚发出「删掉最后一只自选」的 show 还没落地就停用插件，
+ * destroy 先到、show 后到，卡就留在屏幕上了（回归里就是这么炸的）。
+ */
+function syncOverlay() {
+  overlayChain = overlayChain.then(async () => {
+    if (stopped || !ctx) return; // 已经停用/还没就绪，这一跳直接作废
+    await syncOverlayOnce();
+  });
+  return overlayChain;
 }
 
 /** 宠物反应：涨=开心，跌=沮丧，到价=提醒你看一眼 */
@@ -179,6 +291,10 @@ async function tick(reason = "timer") {
         await persist(["alerted"]);
       }
     }
+    // 面板只在「设置页还要它」的时候跟着行情刷新：人在页上就续期，走了五分钟就自己停
+    if (panelWanted && session.trading && fresh && Date.now() - panelAt < PANEL_TTL_MS) {
+      void loadPanel();
+    }
     ctx?.bus.publish(TOPIC_QUOTE, { count: rows.length, reason, session });
   } catch (err) {
     lastError = String(err?.message ?? err);
@@ -239,6 +355,7 @@ async function handleCmd(cmd) {
   switch (cmd.action) {
     case "sync":
       pushState();
+      publishPanel();
       return;
     case "refresh":
       await tick("manual");
@@ -266,7 +383,11 @@ async function handleCmd(cmd) {
     case "remove": {
       const before = watch.length;
       watch = watch.filter((w) => w.secid !== cmd.secid);
-      if (watch.length !== before) await afterChange("已删除一只自选股");
+      if (watch.length !== before) {
+        // 正开着的那只被删掉，面板不能继续画它的曲线
+        if (cmd.secid === selected) clearPanel();
+        await afterChange("已删除一只自选股");
+      }
       return;
     }
     case "update": {
@@ -282,6 +403,7 @@ async function handleCmd(cmd) {
     }
     case "clear": {
       watch = [];
+      clearPanel();
       await afterChange("已清空自选股");
       return;
     }
@@ -317,6 +439,35 @@ async function handleCmd(cmd) {
       }
       return;
     }
+    case "select": {
+      const secid = typeof cmd.secid === "string" ? cmd.secid : "";
+      if (!/^\d\.\d{6}$/.test(secid) || !watch.some((w) => w.secid === secid)) {
+        status("要点开一只自选股才能看盘口和曲线", "error");
+        return;
+      }
+      selected = secid;
+      await loadPanel();
+      return;
+    }
+    case "klt": {
+      const value = Number(cmd.value);
+      if (!KLT_VALUES.includes(value)) {
+        status(`不支持的K线周期: ${String(cmd.value)}`, "error");
+        return;
+      }
+      klt = value;
+      // 切周期只需要重拉 K 线，盘口和分时上一轮刚取过
+      await loadPanel({ withDepth: false, withTrend: false });
+      return;
+    }
+    case "panel":
+      if (!selected) {
+        status("还没选中自选股", "error");
+        return;
+      }
+      await loadPanel();
+      status(panel?.error ? `刷新失败：${panel.error}` : "盘面数据已刷新", panel?.error ? "error" : "ok");
+      return;
     case "testAlert": {
       // 界面上的「试一下」：绕开按日去重，验证通知与宠物反应这条链路通不通
       const hit = {
@@ -410,6 +561,13 @@ export async function deactivate() {
   stopped = true;
   if (timer) clearInterval(timer);
   timer = 0;
+  // 等在飞的显隐切换落完再收窗，否则后到的 show 会把卡重新点亮
+  try {
+    await overlayChain;
+  } catch {
+    /* 链上的错误都在 syncOverlayOnce 里吞掉了 */
+  }
+  overlayChain = Promise.resolve();
   try {
     await ctx?.overlay.destroy();
   } catch {
@@ -417,4 +575,9 @@ export async function deactivate() {
   }
   ctx = null;
   quotes = {};
+  // 面板状态跟着插件一起下线，重新启用时由设置页重新 select，免得留着上一轮的在飞请求归属
+  panel = null;
+  selected = "";
+  panelWanted = false;
+  panelBusy = false;
 }

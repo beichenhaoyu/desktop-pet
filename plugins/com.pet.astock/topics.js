@@ -9,6 +9,12 @@ export const TOPIC_CMD = `${PID}:cmd`;
 export const TOPIC_STATUS = `${PID}:status`;
 /** 每轮刷新后的行情快照 */
 export const TOPIC_QUOTE = `${PID}:quote`;
+/**
+ * 选中个股的盘口 / 分时 / K 线。
+ * 刻意不塞进 `*:widget`：那是 badge、overlay、插件页三方都在收的视图，
+ * 而分时 241 个点 + 120 根 K 线有几十 KB，每 20 秒跟着推一遍会白白让宿主中继两份。
+ */
+export const TOPIC_PANEL = `${PID}:panel`;
 /** 自选股增删改 */
 export const TOPIC_CHANGED = `${PID}:changed`;
 /** 触发了提醒（到价 / 涨跌幅 / 涨跌停） */

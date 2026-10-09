@@ -4,7 +4,9 @@
 //
 // 遵守 SDK 三条硬规矩：只往 shadow root 里写；清理表按挂载实例存（WeakMap）；
 // 外部数据一律 textContent，绝不拼进 innerHTML（股票名、搜索结果、行情值都算外部数据）。
-import { PID, TOPIC_CMD, TOPIC_STATUS, TOPIC_SUGGEST, TOPIC_WIDGET } from "./topics.js";
+import { PID, TOPIC_CMD, TOPIC_PANEL, TOPIC_STATUS, TOPIC_SUGGEST, TOPIC_WIDGET } from "./topics.js";
+import { KLINE_PERIODS } from "./market.js";
+import { depthRows, drawKline, drawTrend } from "./charts.js";
 
 const scopes = new WeakMap();
 
@@ -231,6 +233,22 @@ function mountSettings(root, ctx, cleanups) {
     .radios label, .checks label { display: flex; gap: 4px; align-items: center; font-size: 12px; }
     .checks { display: flex; gap: 16px; flex-wrap: wrap; }
     .alerts { font-size: 12px; color: #475467; display: flex; flex-direction: column; gap: 2px; }
+    tbody tr.pick { cursor: pointer; }
+    tbody tr.sel td { background: #eef6f1; }
+    .panel-hd { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 12px; }
+    .panel-hd .nm { font-size: 14px; font-weight: 600; color: #2b2f36; }
+    .tabs { display: inline-flex; gap: 4px; }
+    .tabs button.on { background: #2f9e63; border-color: #2f9e63; color: #fff; }
+    .chart { display: block; margin-top: 6px; background: #11131a; border-radius: 8px; overflow: hidden; }
+    .chart canvas { display: block; width: 100%; height: 132px; }
+    table.depth { margin-top: 8px; font-variant-numeric: tabular-nums; }
+    table.depth td.bar { width: 40%; }
+    table.depth .w { display: block; height: 8px; border-radius: 3px; background: #d0d5dd; }
+    table.depth .mid td { background: #f9fafb; font-weight: 600; }
+    .ask .w { background: #f3b7b2; } .bid .w { background: #a9e0c3; }
+    .panel-grid { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+    .panel-grid > .chart-col { flex: 1 1 300px; min-width: 260px; }
+    .panel-grid > .depth-col { flex: 0 1 240px; }
     `,
   );
 
@@ -376,6 +394,158 @@ function mountSettings(root, ctx, cleanups) {
     return box;
   };
 
+  /* ---------- 选中个股的盘面：分时 / K线 / 五档 ---------- */
+  const panelName = text("点下面一行自选股看盘口与曲线", "nm");
+  const panelSub = text("", "muted");
+  const panelErr = text("", "muted");
+  const chartTabs = tag("div", "tabs");
+  const kltSel = tag("select", "klt");
+  const panelRefresh = button("刷新");
+  const canvas = tag("canvas", "cv");
+  const chartBox = tag("div", "chart");
+  chartBox.append(canvas);
+  const depthTable = tag("table", "depth");
+  let chartKind = "trend";
+  let lastPanel = null;
+  let lastView = {};
+  let autoPicked = false;
+
+  for (const p of KLINE_PERIODS) {
+    const opt = tag("option");
+    opt.value = String(p.klt);
+    opt.textContent = p.label;
+    kltSel.append(opt);
+  }
+  kltSel.onchange = () => ctx.bus.publish(TOPIC_CMD, { action: "klt", value: Number(kltSel.value) });
+  panelRefresh.onclick = () => ctx.bus.publish(TOPIC_CMD, { action: "panel" });
+
+  const tabButtons = [];
+  for (const [kind, label] of [
+    ["trend", "分时"],
+    ["kline", "K线"],
+  ]) {
+    const b = button(label, "tab");
+    b.onclick = () => {
+      chartKind = kind;
+      syncTabs();
+      drawChart();
+    };
+    chartTabs.append(b);
+    tabButtons.push([kind, b]);
+  }
+  function syncTabs() {
+    for (const [kind, b] of tabButtons) b.classList.toggle("on", kind === chartKind);
+    // 周期选择只在 K 线页有用，分时页留着会让人以为分时也能切周期
+    kltSel.style.display = chartKind === "kline" ? "" : "none";
+  }
+  syncTabs();
+
+  function drawChart() {
+    const p = lastPanel;
+    // clientWidth 要有值才能定画布位图尺寸；面板刚挂上时可能还没排版，给个兜底宽度
+    const cssWidth = canvas.clientWidth || 300;
+    const cssHeight = canvas.clientHeight || 132;
+    if (chartKind === "kline") {
+      drawKline(canvas, p?.kline?.bars, { width: cssWidth, height: cssHeight, dpr: window.devicePixelRatio || 1 });
+    } else {
+      drawTrend(canvas, p?.trend, { width: cssWidth, height: cssHeight, dpr: window.devicePixelRatio || 1 });
+    }
+  }
+
+  /** 五档：上卖下买，档位深浅按本侧最大量归一 */
+  function renderDepth(p) {
+    depthTable.replaceChildren();
+    const rows = depthRows(p?.depth);
+    if (!rows.asks.length && !rows.bids.length) {
+      const tip = tag("td", "muted");
+      tip.colSpan = 4;
+      tip.textContent = "没有盘口数据（停牌或非交易时段）";
+      const tr = tag("tr");
+      tr.append(tip);
+      depthTable.append(tr);
+      return;
+    }
+    const head = tag("tr");
+    for (const h of ["档位", "价格", "手数", ""]) {
+      const th = tag("th");
+      th.textContent = h;
+      head.append(th);
+    }
+    const thead = tag("thead");
+    thead.append(head);
+    const body = tag("tbody");
+    const mkRow = (r) => {
+      const tr = tag("tr", r.side);
+      const t1 = tag("td");
+      t1.textContent = r.tag;
+      const t2 = tag("td");
+      t2.textContent = fmtPrice(r.price);
+      const t3 = tag("td");
+      t3.textContent = Number.isFinite(r.volume) ? String(r.volume) : "—";
+      const t4 = tag("td", "bar");
+      const bar = tag("span", "w");
+      bar.style.width = `${Math.max(2, r.weight)}%`;
+      t4.append(bar);
+      tr.append(t1, t2, t3, t4);
+      return tr;
+    };
+    for (const r of rows.asks) body.append(mkRow(r));
+    const mid = tag("tr", "mid");
+    const m1 = tag("td");
+    m1.textContent = "现价";
+    const m2 = tag("td");
+    m2.textContent = fmtPrice(p?.depth?.price);
+    const m3 = tag("td", "muted");
+    m3.textContent = `均 ${fmtPrice(p?.depth?.avgPrice)}`;
+    const m4 = tag("td", "muted");
+    m4.textContent = `买/卖 ${rows.totalBid}/${rows.totalAsk}`;
+    mid.append(m1, m2, m3, m4);
+    body.append(mid);
+    for (const r of rows.bids) body.append(mkRow(r));
+    depthTable.append(thead, body);
+  }
+
+  function renderPanel(p) {
+    lastPanel = p ?? null;
+    const live = p && !p.cleared && p.secid ? p : null;
+    const d = live?.depth;
+    if (!live) {
+      panelName.textContent = "点下面一行自选股看盘口与曲线";
+      panelSub.textContent = "";
+      panelErr.textContent = "";
+      canvas.style.visibility = "hidden";
+      depthTable.replaceChildren();
+      return;
+    }
+    canvas.style.visibility = "";
+    panelName.textContent = `${d?.name ?? live.secid}（${d?.code ?? live.secid.slice(2)}）`;
+    const pct = Number.isFinite(d?.price) && Number.isFinite(d?.prevClose) && d.prevClose
+      ? ((d.price / d.prevClose - 1) * 100)
+      : NaN;
+    panelSub.textContent =
+      `现价 ${fmtPrice(d?.price)} ${fmtPct(pct)} · 昨收 ${fmtPrice(d?.prevClose)} · ` +
+      `涨停 ${fmtPrice(d?.limitUp)} / 跌停 ${fmtPrice(d?.limitDown)} · 分时 ${live.trend?.points?.length ?? 0} 点 · K线 ${live.kline?.bars?.length ?? 0} 根`;
+    panelSub.className = `muted ${toneOf({ pct })}`;
+    panelErr.textContent = live.error ? `盘面数据拉取失败：${live.error}` : "";
+    if (Number.isFinite(Number(live.klt))) kltSel.value = String(live.klt);
+    drawChart();
+    renderDepth(live);
+  }
+
+  const panelSection = (() => {
+    const hd = tag("div", "panel-hd");
+    hd.append(panelName, panelSub);
+    const tools = tag("div", "row");
+    tools.append(chartTabs, kltSel, panelRefresh);
+    const left = tag("div", "chart-col");
+    left.append(tools, chartBox, panelErr);
+    const right = tag("div", "depth-col");
+    right.append(depthTable);
+    const grid = tag("div", "panel-grid");
+    grid.append(left, right);
+    return section("盘面（分时 / K线 / 五档）", hd, grid);
+  })();
+
   wrap.append(
     statusLine,
     (() => {
@@ -384,6 +554,7 @@ function mountSettings(root, ctx, cleanups) {
       return section("添加自选股", row, sugBox);
     })(),
     section("自选与提醒规则", table, clearBtn),
+    panelSection,
     section("显示方式", radios),
     (() => {
       const a = tag("div", "row");
@@ -411,6 +582,7 @@ function mountSettings(root, ctx, cleanups) {
   const render = (d) => {
     const cfg = d.config ?? {};
     const list = d.watch ?? [];
+    lastView = d;
 
     if (Date.now() - lastStatusAt > 6000) {
       const phase = PHASE_TEXT[d.session?.phase] ?? "";
@@ -466,6 +638,10 @@ function mountSettings(root, ctx, cleanups) {
       const limitTd = tag("td");
       limitTd.append(limitBox);
       tr.append(nameTd, priceTd, cell(upper), cell(lower), cell(pct), limitTd, ops);
+      // 整行可点：选中的那只就是盘面面板画的那只。输入框上点的还是输入框，不会误改选中
+      tr.classList.add("pick");
+      if (lastPanel?.secid === item.secid) tr.classList.add("sel");
+      tr.onclick = () => ctx.bus.publish(TOPIC_CMD, { action: "select", secid: item.secid });
       tbody.append(tr);
     }
     if (!list.length) {
@@ -490,10 +666,21 @@ function mountSettings(root, ctx, cleanups) {
         alertList.append(row);
       }
     }
+
+    // 一进页面就把第一只的盘面拉出来，省得先点一行才知道这块能看什么。
+    // 只在本次挂载做一次，避免每轮回显都发一遍 select 去打接口。
+    if (!autoPicked && list.length && !lastPanel?.secid) {
+      autoPicked = true;
+      ctx.bus.publish(TOPIC_CMD, { action: "select", secid: list[0].secid });
+    }
   };
 
   cleanups.push(
     watchView(ctx, render),
+    ctx.bus.subscribe(TOPIC_PANEL, (p) => {
+      renderPanel(p);
+      render(lastView); // 选中行的高亮跟着面板选的标的走
+    }),
     ctx.bus.subscribe(TOPIC_SUGGEST, (p) => {
       suggestions = p?.rows ?? [];
       renderSug();
@@ -501,6 +688,13 @@ function mountSettings(root, ctx, cleanups) {
     }),
     ctx.bus.subscribe(TOPIC_STATUS, (s) => setStatus(s.text, s.level ?? "info")),
   );
+
+  // 设置窗可以拉伸，画布位图尺寸跟着 CSS 尺寸走，所以要重画一次
+  const onResize = () => drawChart();
+  window.addEventListener("resize", onResize);
+  cleanups.push(() => window.removeEventListener("resize", onResize));
+
+  renderPanel(null);
 }
 
 function cell(child) {
