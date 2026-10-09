@@ -140,11 +140,17 @@ try {
   r.check("带上了指数", true, Number.isFinite(view?.quotes?.["1.000001"]?.price));
   r.check("时段判定给了相位", true, typeof view?.session?.phase === "string" && view.session.phase.length > 0);
 
-  r.group("盘面：分时 / K线 / 五档（走 push2his 域名）");
+  r.group("盘面：分时 / K线 / 五档（走 push2his 域名）+ 出网节制");
+  const selectAt = Date.now();
   await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "select", secid: "1.600519" }); true`);
   const gotPanel = await waitUntil(c, `window.__seen.panel.some(p => p?.depth && p?.trend && p?.kline)`, 45_000);
   const pnl = (await c.ev(`window.__seen.panel.at(-1) ?? null`)) ?? {};
   r.check("选中后三段数据都到位", true, gotPanel);
+  // 一次 select 要发 3 条请求（盘口/分时/K线）。闸门是 350ms 最小间隔，
+  // 所以三条串起来至少要 2×350ms —— 用耗时证明请求真的过了闸门，而不是只写了个函数
+  const panelMs = (pnl.at ?? 0) - selectAt;
+  r.info("面板一轮三条请求耗时", `${panelMs}ms`);
+  r.check("三条出网被闸门串了起来（≥2×最小间隔）", true, panelMs >= 700);
   // 序列数据体积大，必须走单独 topic；每轮的 *:widget 里不该出现它们
   const viewAfter = await c.ev(`(async () => {
     const { bus } = await import('/src/runtime/event-bus.ts');
@@ -155,6 +161,11 @@ try {
     });
   })()`);
   r.check("每轮视图里没夹带分时/K线（省一次跨窗中继）", false, ["trend", "kline", "depth"].some((k) => k in (viewAfter ?? {})));
+  const net = viewAfter?.net ?? {};
+  r.check("视图带出了网关节流状态（界面据此解释为什么没更新）", true, Number.isFinite(net.window) && Number.isFinite(net.intervalSec));
+  r.check("每分钟上限与最小间隔都下发了", true, net.perMinute === 30 && net.minGapMs === 350);
+  r.check("间隔不会低于 10 秒下限，也不会超过 30 分钟退避顶", true, net.intervalSec >= 10 && net.intervalSec <= 1800);
+  r.check("近 1 分钟请求数在窗口上限之内", true, net.window >= 1 && net.window <= net.perMinute);
   const grants = ((await settings.invoke("permission_list")).v ?? {})[PID] ?? [];
   r.check("新域名 push2his 也走了按域名授权", true, grants.includes("http:push2his.eastmoney.com"));
   r.check("五档买/卖各五档", [5, 5], [pnl.depth?.bids?.length, pnl.depth?.asks?.length]);
@@ -265,6 +276,12 @@ try {
     return [...rec.shadow.querySelectorAll('tbody tr.sel td:first-child')].map((td) => td.textContent);
   })()`);
   r.check("自选列表里高亮的是当前选中那只", true, String(selectedRow?.[0] ?? "").includes("贵州茅台"));
+  const netText = await settings.client.ev(`(async () => {
+    const { widgetHost } = await import('/src/runtime/widget-host.ts');
+    const rec = (widgetHost.mounted.get(${JSON.stringify(PID)}) ?? [])[0];
+    return [...rec.shadow.querySelectorAll('.muted')].map((n) => n.textContent).find((t) => /出网/.test(t)) ?? '';
+  })()`);
+  r.check("设置页把节流状态写给了用户（而不是默默不更新）", true, /近 1 分钟出网 \d+ 次/.test(netText));
 
   r.group("阈值规则保存与回显");
   await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, ${JSON.stringify({ action: "update", secid: "1.600519", upper: 1, lower: 99999, pct: 3 })}); true`);

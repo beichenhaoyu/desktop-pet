@@ -31,6 +31,15 @@ import {
   secidOf,
 } from "./market.js";
 import { evalAlerts, markAlerted } from "./rules.js";
+import {
+  cooldownMs,
+  createGate,
+  FAILS_BEFORE_COOLDOWN,
+  isThrottleError,
+  isTransportError,
+  jittered,
+  nextIntervalSec,
+} from "./throttle.js";
 
 const DEFAULT_CONFIG = {
   intervalSec: 20, // 盘中轮询间隔
@@ -49,8 +58,8 @@ const MAX_WATCH = 20;
 const RECENT_ALERTS = 8;
 /** K 线比盘口/分时候份稳定得多，60 秒才重拉一次 */
 const KLINE_STALE_MS = 60_000;
-/** 设置页关掉了（人去干别的了）就停止额外出网，超过这个时长不再刷新盘口面板 */
-const PANEL_TTL_MS = 5 * 60_000;
+/** 设置页开着的时候会每分钟续一次期；人走了（关窗/切到别的插件页）就没人续，90 秒后自动停 */
+const PANEL_TTL_MS = 90_000;
 
 let ctx = null;
 let config = { ...DEFAULT_CONFIG };
@@ -73,6 +82,80 @@ let panelAt = 0;
 let panelBusy = false;
 /** 悬浮窗显隐的串行链，见 syncOverlay() */
 let overlayChain = Promise.resolve();
+
+/* 出网节制：所有请求都必须过 out()，别绕过去直接调 ctx.http.request */
+const gate = createGate();
+let strikes = 0; // 被判定为限流的次数，决定冷却阶梯
+let cooldownUntil = 0; // 冷却到什么时候（毫秒时间戳）
+let fails = 0; // 连续普通失败次数
+let noProgress = 0; // 连续多少轮行情时间戳没前进（休市/停牌/节假日）
+let targetSec = 0; // 当前生效的未抖动间隔，用于判断要不要重建定时器
+
+function clockText(ms) {
+  return new Date(ms).toLocaleTimeString("zh-CN", { hour12: false });
+}
+
+function enterCooldown(reason) {
+  strikes += 1;
+  cooldownUntil = Date.now() + cooldownMs(strikes);
+  lastError = `接口在限流（${reason}），暂停到 ${clockText(cooldownUntil)}`;
+  status(lastError, "error");
+}
+
+/**
+ * 唯一的出网口子：冷却 → 闸门（最小间隔 + 每分钟上限）→ 请求 → 记账。
+ * 传输层失败（连接被掐）在这里重试一次，所以面板/主轮询/搜索三条路径都能享受到，
+ * 不用各自再写一遍；429/403 与「连续多次失败」则进冷却阶梯 —— 被拒之后继续按原节奏撞，
+ * 等于把一次临时限流坐实成长期封禁。
+ */
+async function out(url, opts) {
+  if (!ctx) throw new Error("插件已停用");
+  const check = () => {
+    const now = Date.now();
+    if (now < cooldownUntil) {
+      const err = new Error(`限流冷却中，约 ${Math.ceil((cooldownUntil - now) / 1000)} 秒后自动恢复`);
+      err.cooldown = true;
+      throw err;
+    }
+  };
+  const once = async () => {
+    check();
+    await gate.acquire();
+    const resp = await ctx.http.request(url, opts);
+    if (isThrottleError(resp)) enterCooldown(`HTTP ${resp.status}`);
+    return resp;
+  };
+  try {
+    const resp = await once();
+    fails = 0;
+    return resp;
+  } catch (err) {
+    if (err?.cooldown) throw err;
+    if (isThrottleError(err)) {
+      enterCooldown(String(err?.message ?? err));
+      throw err;
+    }
+    if (!isTransportError(err)) {
+      countFailure(err);
+      throw err;
+    }
+    try {
+      const resp = await once();
+      fails = 0;
+      return resp;
+    } catch (err2) {
+      if (!err2?.cooldown) countFailure(err2);
+      throw err2;
+    }
+  }
+}
+
+function countFailure(err) {
+  if (isThrottleError(err)) return enterCooldown(String(err?.message ?? err));
+  fails += 1;
+  if (fails >= FAILS_BEFORE_COOLDOWN) enterCooldown(`连续 ${fails} 次请求失败`);
+  return undefined;
+}
 
 function today() {
   const d = new Date();
@@ -105,6 +188,7 @@ async function persist(keys) {
 /** 推给 badge / overlay / 插件页的同一份视图：界面只读它，不自己算 */
 function pushState() {
   const session = marketSession();
+  const now = Date.now();
   ctx?.widget.update({
     config,
     watch: watch.map((w) => ({ ...w, rule: ruleText(w) })),
@@ -112,8 +196,16 @@ function pushState() {
     session,
     recent,
     error: lastError,
-    updatedAt: Date.now(),
+    updatedAt: now,
     quoteAt: lastQuoteAt,
+    /** 出网节制对用户可见：为什么没更新、还要等多久，别让人以为插件挂了 */
+    net: {
+      ...gate.stats(),
+      strikes,
+      cooldownLeftSec: cooldownUntil > now ? Math.ceil((cooldownUntil - now) / 1000) : 0,
+      noProgress,
+      intervalSec: targetSec || currentIntervalSec(),
+    },
   });
 }
 
@@ -157,7 +249,7 @@ async function loadPanel({ withDepth = true, withTrend = true, withKline = true 
   panelBusy = true;
   panelWanted = true;
   panelAt = Date.now();
-  const request = (url, opts) => ctx.http.request(url, opts);
+  const request = out;
   // 换标的时不继承上一只的曲线，否则名字是 A、图上画的是 B
   const next = { ...(panel?.secid === selected ? panel : {}), secid: selected, klt, error: "" };
   const grab = async () => {
@@ -176,17 +268,10 @@ async function loadPanel({ withDepth = true, withTrend = true, withKline = true 
     await Promise.all(tasks);
   };
   try {
-    try {
-      await grab();
-    } catch (err) {
-      // 公共接口会随机掐 TLS（实测打包版 kline 报过 rustls unexpected-eof），
-      // 面板是用户点开才要的数，重试一次比直接甩错误有用
-      ctx.log?.("盘面数据重试一次", briefError(err));
-      await new Promise((res) => setTimeout(res, 600));
-      await grab();
-    }
+    await grab();
     panel = { ...next, at: Date.now() };
   } catch (err) {
+    // out() 里已经对传输层失败重试过一次，这里不再叠第二层
     panel = { ...next, at: Date.now(), error: briefError(err) };
     ctx?.log?.("盘面数据拉取失败", err);
     status(`盘面数据拉取失败：${panel.error}`, "error");
@@ -269,9 +354,13 @@ async function tick(reason = "timer") {
     if (watch.length === 0) pushState();
     return;
   }
+  if (reason === "timer" && Date.now() < cooldownUntil) {
+    pushState(); // 界面上要看得见「为什么这几分钟没更新」
+    return;
+  }
   busy = true;
   try {
-    const rows = await fetchQuotes((url, opts) => ctx.http.request(url, opts), watchSecids());
+    const rows = await fetchQuotes(out, watchSecids());
     const next = {};
     for (const q of rows) next[q.secid] = q;
     quotes = next;
@@ -282,6 +371,10 @@ async function tick(reason = "timer") {
     // 行情没前进 = 停牌/休市/节假日，这一轮不该产生任何提醒
     const fresh = newest > 0 && newest !== lastQuoteAt;
     lastQuoteAt = newest || lastQuoteAt;
+    // 连续没进展就把间隔按 2 的幂拉长到 30 分钟封顶：休市还 7×24 每几分钟打一次，
+    // 是这套接口最像爬虫的地方；一有进展立刻回到正常节奏
+    noProgress = fresh ? 0 : noProgress + 1;
+    if (currentIntervalSec() !== targetSec) restartTimer();
 
     if (config.alertsOn && fresh && session.trading) {
       const hits = evalAlerts({ quotes, watch, alerted, today: today() });
@@ -291,37 +384,44 @@ async function tick(reason = "timer") {
         await persist(["alerted"]);
       }
     }
-    // 面板只在「设置页还要它」的时候跟着行情刷新：人在页上就续期，走了五分钟就自己停
-    if (panelWanted && session.trading && fresh && Date.now() - panelAt < PANEL_TTL_MS) {
+    // 面板只在「设置页还要它」且没在冷却的时候跟着行情刷新
+    if (panelWanted && session.trading && fresh && Date.now() - panelAt < PANEL_TTL_MS && Date.now() >= cooldownUntil) {
       void loadPanel();
     }
     ctx?.bus.publish(TOPIC_QUOTE, { count: rows.length, reason, session });
   } catch (err) {
-    lastError = String(err?.message ?? err);
-    status(`行情拉取失败：${lastError}`, "error");
+    if (!err?.cooldown) {
+      lastError = String(err?.message ?? err);
+      status(`行情拉取失败：${lastError}`, "error");
+    }
   } finally {
     busy = false;
     pushState();
   }
 }
 
+/** 当前该用多长的间隔（未抖动）。冷却期由 tick 自己跳过，不参与间隔计算 */
+function currentIntervalSec() {
+  const trading = marketSession().trading;
+  return nextIntervalSec({
+    tradingSec: Math.max(MIN_INTERVAL, config.intervalSec),
+    idleSec: Math.max(MIN_INTERVAL, config.idleIntervalSec),
+    noProgress: trading ? 0 : noProgress,
+  });
+}
+
 function restartTimer() {
   if (timer) clearInterval(timer);
-  const session = marketSession();
-  const sec = Math.max(
-    MIN_INTERVAL,
-    session.trading ? config.intervalSec : Math.max(config.intervalSec, config.idleIntervalSec),
-  );
+  targetSec = currentIntervalSec();
+  const fire = jittered(targetSec);
   timer = setInterval(() => {
-    // 跨过午休/收盘边界时把间隔调回来，不必等到下一次改配置
-    const nowTrading = marketSession().trading;
-    const want = nowTrading ? config.intervalSec : Math.max(config.intervalSec, config.idleIntervalSec);
-    if (Math.max(MIN_INTERVAL, want) !== sec) {
+    // 跨午休/收盘边界、或退避档位变了，就重建定时器，不必等下一次改配置
+    if (currentIntervalSec() !== targetSec) {
       restartTimer();
       return;
     }
     void tick();
-  }, sec * 1000);
+  }, fire * 1000);
 }
 
 async function afterChange(note) {
@@ -431,7 +531,7 @@ async function handleCmd(cmd) {
       const kw = String(cmd.keyword ?? "").trim();
       if (!kw) return;
       try {
-        const rows = await fetchSuggest((url, opts) => ctx.http.request(url, opts), kw);
+        const rows = await fetchSuggest(out, kw);
         ctx?.bus.publish(TOPIC_SUGGEST, { keyword: kw, rows });
         if (!rows.length) status(`没找到与「${kw}」匹配的股票`, "error");
       } catch (err) {

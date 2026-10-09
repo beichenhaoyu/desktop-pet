@@ -94,11 +94,20 @@ const PHASE_TEXT = {
   weekend: "周末休市",
 };
 
-/** 订阅视图数据；返回退订函数交给 cleanups */
-function watchView(ctx, render) {
+/**
+ * 订阅视图数据；返回退订函数交给 cleanups。
+ * beatMs > 0 时定时重发一次 sync —— 设置页用它给盘面面板续期（人不在页上就没人续，
+ * 主逻辑那边 90 秒后自动停止额外出网）。
+ */
+function watchView(ctx, render, { beatMs = 0 } = {}) {
   const off = ctx.bus.subscribe(TOPIC_WIDGET, (d) => render(d ?? {}));
   ctx.bus.publish(TOPIC_CMD, { action: "sync" }); // 面板刚建好时主动要一份（宿主回灌是双保险）
-  return off;
+  if (!(beatMs > 0)) return off;
+  const timer = setInterval(() => ctx.bus.publish(TOPIC_CMD, { action: "sync" }), beatMs);
+  return () => {
+    clearInterval(timer);
+    off();
+  };
 }
 
 /* ================= badge：宠物旁小字 ================= */
@@ -385,6 +394,7 @@ function mountSettings(root, ctx, cleanups) {
   indexSel.onchange = () => ctx.bus.publish(TOPIC_CMD, { action: "config", value: { indexSecid: indexSel.value } });
 
   const alertList = tag("div", "alerts");
+  const netLine = tag("div", "muted");
 
   const section = (title, ...nodes) => {
     const box = tag("div", "sec");
@@ -567,7 +577,7 @@ function mountSettings(root, ctx, cleanups) {
       const l3 = tag("label");
       l3.append(showIndexBox, document.createTextNode("带指数"));
       b.append(l1, l2, l3, indexSel);
-      return section("刷新与提醒", a, b);
+      return section("刷新与提醒", a, b, netLine);
     })(),
     section("最近提醒", alertList),
   );
@@ -586,10 +596,15 @@ function mountSettings(root, ctx, cleanups) {
 
     if (Date.now() - lastStatusAt > 6000) {
       const phase = PHASE_TEXT[d.session?.phase] ?? "";
-      statusLine.textContent = `${phase} · 盯 ${list.length} 只 · 间隔 ${cfg.intervalSec ?? "—"}s${
+      const net = d.net ?? {};
+      const cool = net.cooldownLeftSec > 0 ? ` · 限流冷却 ${net.cooldownLeftSec}s` : "";
+      statusLine.textContent = `${phase} · 盯 ${list.length} 只 · 间隔 ${net.intervalSec ?? cfg.intervalSec ?? "—"}s${cool}${
         d.error ? ` · ${d.error}` : ""
       }`;
-      statusLine.className = `status${d.error ? " error" : ""}`;
+      statusLine.className = `status${d.error || net.cooldownLeftSec > 0 ? " error" : ""}`;
+      netLine.textContent = `近 1 分钟出网 ${net.window ?? 0} 次（上限 ${net.perMinute ?? "—"}，两次之间至少 ${net.minGapMs ?? "—"}ms）` +
+        `${net.noProgress > 0 ? ` · 行情未更新，已退避到 ${net.intervalSec}s` : ""}` +
+        `${net.strikes > 0 ? ` · 已被限流 ${net.strikes} 次` : ""}`;
     }
 
     for (const [value, box] of Object.entries(modeInputs)) box.checked = (cfg.mode ?? "badge") === value;
@@ -676,7 +691,7 @@ function mountSettings(root, ctx, cleanups) {
   };
 
   cleanups.push(
-    watchView(ctx, render),
+    watchView(ctx, render, { beatMs: 60_000 }),
     ctx.bus.subscribe(TOPIC_PANEL, (p) => {
       renderPanel(p);
       render(lastView); // 选中行的高亮跟着面板选的标的走
