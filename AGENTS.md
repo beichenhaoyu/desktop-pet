@@ -8,7 +8,12 @@
 - **已完成**：宠物窗（Petdex 图集九状态 + 状态机 + 呼吸/轻摆渲染层 + 点击穿透）、Petdex 桌宠资源安装（设置窗按名字下载、默认 `deepseek`）、插件运行时、Rust 能力服务（ble / store / http / notify / 权限同意框 / Agent hook 收件）、设置窗（分区导航 + 插件搜索 + 桌宠形象 + 全局快捷键 + 开机自启 + Agent hook + 游戏模式）、按插件分开的透明 overlay 悬浮窗、心率蓝牙 / Agent 桥 / 待办 / A股盯盘四个示例插件。
 - **未完成**：`llm-token-usage` 示例插件（用户已明确暂缓）。
 - **评审波次（2026-10-08）**：[docs/CODE-REVIEW.md](docs/CODE-REVIEW.md) 的 45 条已逐条核过并修掉可复现的部分。两条不成立，别再照着"修"：P0 #1（Tauri 2 的 `Window::emit` 走 `manager().emit`，本来就向全部 webview 广播，跨窗总线一直是通的，`verify:todo` 的桌面卡片就是它的运行时证据）；P2 #32（`request()` 里 includes 与优先级判断的先后没有可观察差异 —— 会打断的请求根本不进队列）。
-- 完整设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；插件作者文档见 [PLUGIN_SDK.md](PLUGIN_SDK.md)。
+- 完整设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；插件 API 见 [PLUGIN_SDK.md](PLUGIN_SDK.md)。
+- **协作分工（2026-10-09 起）**：插件由外部 AI 助手编写，本会话负责**规划、派单与评审**。三份文档是这条流水线的接口：
+  [docs/PLUGIN-HANDBOOK.md](docs/PLUGIN-HANDBOOK.md)（接活者的交付标准与坑清单）、
+  [docs/PLUGIN-REVIEW.md](docs/PLUGIN-REVIEW.md)（评审口径，含「先取证再下结论」与两次误判先例）、
+  [docs/PLUGIN-BACKLOG.md](docs/PLUGIN-BACKLOG.md)（任务卡、派单模板、需要宿主新能力才能做的提案区、已否决项）。
+  派单时复制 BACKLOG §0 的模板；评审时按 REVIEW §7 的格式输出，「已核不成立」一节必须写。
 
 ## 技术决策（已确认，勿重新选型）
 
