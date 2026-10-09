@@ -15,7 +15,8 @@
     "verify:skin": "node scripts/verify-skins.mjs",
     "verify:todo": "node scripts/verify-todo.mjs",
     "verify:release": "node scripts/verify-release.mjs",
-    "verify:astock": "node scripts/verify-astock.mjs"
+    "verify:astock": "node scripts/verify-astock.mjs",
+    "verify:http": "node scripts/verify-http.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.0"

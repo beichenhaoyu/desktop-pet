@@ -157,6 +157,51 @@ fn is_credential_header(name: &str) -> bool {
     )
 }
 
+/// 从 Content-Type 里取 `charset=` 参数值（去空白与引号，大小写保持原样）。
+///
+/// 真实响应头的写法很杂：腾讯是 `text/html; charset=GBK`（大写值），新浪是
+/// `application/javascript; charset=GB18030`，还有 `text/html;charset=gbk;` 这种
+/// 无空格且带尾分号的。所以按 `;` 切开逐个参数比对键名（键名大小写不敏感），
+/// 值只做 trim，匹配留给调用方按大小写不敏感做。
+fn charset_of(content_type: Option<&str>) -> Option<&str> {
+    let ct = content_type?;
+    for param in ct.split(';').skip(1) {
+        let Some((key, value)) = param.split_once('=') else {
+            continue;
+        };
+        if key.trim().eq_ignore_ascii_case("charset") {
+            let value = value.trim().trim_matches('"').trim();
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+/// 把响应字节解成字符串。
+///
+/// 只认 GBK 家族这三个标签，其余（没有 charset、utf-8、认不出来的值）一律保持原先的
+/// UTF-8 lossy 行为不变 —— 不做「猜编码」，也就不会让既有插件的解析结果漂移。
+///
+/// 为什么必须解对而不能只影响显示：腾讯的行情用 `~` 分段，名称段排在数字段前面，
+/// 而 GBK 允许 0x7E（就是 `~`）做尾字节（如「硚」= b3 7e）。按 UTF-8 lossy 解时那个
+/// 字节会变成一个真的分隔符，后面每个字段整体挪一位，把「今开」读成「现价」——
+/// 这是静默错价，比显示乱码严重得多。
+///
+/// WHATWG 里 gbk / gb2312 / gb18030 共用同一个 GBK 解码器，所以三个标签走同一条路；
+/// 用 `decode_without_bom_handling` 是刻意的：不做 BOM 嗅探、不改判编码，声明什么就用什么，
+/// 且该解码器只会把坏字节换成 U+FFFD，没有「解码失败」这种状态，不必也不该向上抛错。
+fn decode_body(buf: &[u8], content_type: Option<&str>) -> String {
+    let gbk_family = charset_of(content_type)
+        .is_some_and(|cs| ["gbk", "gb2312", "gb18030"].iter().any(|k| cs.eq_ignore_ascii_case(k)));
+    if gbk_family {
+        let (text, _had_errors) = encoding_rs::GBK.decode_without_bom_handling(buf);
+        return text.into_owned();
+    }
+    String::from_utf8_lossy(buf).into_owned()
+}
+
 fn read_body(resp: ureq::Response, status: u16) -> Result<HttpResponse, String> {
     let content_type = resp.header("content-type").map(str::to_string);
     let mut buf = Vec::new();
@@ -170,10 +215,11 @@ fn read_body(resp: ureq::Response, status: u16) -> Result<HttpResponse, String> 
     if truncated {
         buf.truncate(MAX_BODY_BYTES);
     }
+    let body = decode_body(&buf, content_type.as_deref());
     Ok(HttpResponse {
         status,
         content_type,
-        body: String::from_utf8_lossy(&buf).into_owned(),
+        body,
         truncated,
     })
 }
@@ -234,8 +280,92 @@ fn is_valid_header_name(name: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// 腾讯实时行情响应的真实前缀（实抓 `https://qt.gtimg.cn/q=sh600000`，
+    /// 响应头 `text/html; charset=GBK`）。「浦发银行」的 GBK 字节是 c6 d6 b7 a2 d2 f8 d0 d0。
+    const TENCENT_GBK_PREFIX: &[u8] = b"v_sh600000=\"1~\xc6\xd6\xb7\xa2\xd2\xf8\xd0\xd0~600000~9.54~9.70~9.70\";";
+
     fn granted(caps: &[&str]) -> Vec<String> {
         caps.iter().map(|c| c.to_string()).collect()
+    }
+
+    #[test]
+    fn charset_parameter_is_parsed_from_the_real_world_shapes() {
+        assert_eq!(charset_of(Some("text/html; charset=GBK")), Some("GBK"));
+        assert_eq!(
+            charset_of(Some("application/javascript; charset=GB18030")),
+            Some("GB18030")
+        );
+        // 无空格、带尾分号
+        assert_eq!(charset_of(Some("text/html;charset=gbk;")), Some("gbk"));
+        assert_eq!(charset_of(Some("text/html; charset=gbk; boundary=x")), Some("gbk"));
+        // 带引号 / 键名大写 / 等号周围有空格
+        assert_eq!(charset_of(Some("text/html; charset=\"GB2312\"")), Some("GB2312"));
+        assert_eq!(charset_of(Some("text/html; CHARSET = gb18030")), Some("gb18030"));
+        assert_eq!(charset_of(Some("text/html")), None);
+        assert_eq!(charset_of(Some("text/html; charset=")), None);
+        assert_eq!(charset_of(Some("text/html; charset")), None);
+        assert_eq!(charset_of(None), None);
+    }
+
+    #[test]
+    fn gbk_charset_decodes_chinese_stock_name() {
+        // 真实响应头是大写的 GBK，别按小写写死
+        let text = decode_body(TENCENT_GBK_PREFIX, Some("text/html; charset=GBK"));
+        assert!(text.contains("浦发银行"), "{text}");
+        assert!(!text.contains('\u{FFFD}'), "{text}");
+        let fields: Vec<&str> = text.split('~').collect();
+        assert_eq!(fields[1], "浦发银行");
+        assert_eq!(fields[3], "9.54");
+    }
+
+    #[test]
+    fn gb18030_charset_decodes_too() {
+        // 新浪的形状：application/javascript; charset=GB18030，名称在逗号分段的开头
+        let body = b"var hq_str_sh600000=\"\xc6\xd6\xb7\xa2\xd2\xf8\xd0\xd0,9.700,9.700,9.540\";";
+        let text = decode_body(body, Some("application/javascript; charset=GB18030"));
+        assert!(text.contains("\"浦发银行,9.700"), "{text}");
+        assert!(!text.contains('\u{FFFD}'), "{text}");
+        // 三个标签走同一条路：小写、gb2312 等价标签也必须命中
+        assert_eq!(decode_body(body, Some("text/html; charset=gb18030")), text);
+        assert_eq!(decode_body(body, Some("text/html;charset=gb2312;")), text);
+    }
+
+    #[test]
+    fn gbk_name_with_tilde_trailing_byte_does_not_shift_fields() {
+        // 「硚」的 GBK 是 b3 7e —— 尾字节正好等于腾讯的分段符 `~`。按 UTF-8 lossy 解时，
+        // 这个字节会变成真分隔符，名称段被切成两段，后面数字整体挪一位：现价那格读到股票代码。
+        let body: &[u8] = b"v_sh600000=\"1~\xb3\x7e\xbf\xda\xd2\xf8\xd0\xd0~600000~9.54~9.70\";";
+        let text = decode_body(body, Some("text/html; charset=GBK"));
+        let fields: Vec<&str> = text.split('~').collect();
+        assert_eq!(fields[1], "硚口银行");
+        assert_eq!(fields[3], "9.54", "现价被名称里的 0x7E 挪位了: {text}");
+
+        // 对照：lossy 那一份确实多切一刀、现价那格被顶成股票代码（这就是必须解字节的理由）
+        let lossy = String::from_utf8_lossy(body);
+        let lossy_fields: Vec<&str> = lossy.split('~').collect();
+        assert_eq!(lossy_fields.len(), fields.len() + 1, "样例没构造出多切一刀的效果");
+        assert_eq!(lossy_fields[3], "600000", "样例没构造出错位的效果");
+    }
+
+    #[test]
+    fn absent_or_unrecognised_charset_keeps_the_lossy_behaviour() {
+        // 样例本身含非法 UTF-8 字节（GBK 的「浦发银行」），这条回归才不是空断言
+        let lossy = String::from_utf8_lossy(TENCENT_GBK_PREFIX).into_owned();
+        assert!(lossy.contains('\u{FFFD}'), "样例不含非法字节，证明不了回落没被改掉");
+        for ct in [
+            None,
+            Some("text/html"),
+            Some("text/html; charset=utf-8"),
+            Some("text/html; charset=UTF-8"),
+            // 认不出来的标签不猜编码，保持原行为
+            Some("text/html; charset=iso-8859-1"),
+            Some("text/html; charset=big5"),
+            // 只整体命中这三个标签，不做前缀/包含匹配
+            Some("text/html; charset=gb2312x"),
+            Some("text/html; charset=utf-8; charset=gbk"),
+        ] {
+            assert_eq!(decode_body(TENCENT_GBK_PREFIX, ct), lossy, "content-type = {ct:?}");
+        }
     }
 
     #[test]

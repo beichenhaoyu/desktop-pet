@@ -65,7 +65,7 @@ export async function deactivate() { /* 停用/移除时调用 */ }
 | `ble:connect` | `ctx.ble.connect/disconnect/connectedDevice` | 连接与订阅通知 |
 | `widget` | `ctx.widget.update` | 向自己的 widget 推数据（走 `<id>:widget` topic） |
 | `overlay` | `ctx.overlay.show(opts?)` / `hide` / `destroy` | **本插件专属**的透明悬浮窗（窗口标签 `overlay-<你的 id>`）。`show({ placement: "above-pet", height: 104 })` 让它贴着宠物头顶并跟随拖动；不传就是桌面左上角 |
-| `http` | `ctx.http.request` | 出站请求，**按域名逐个再授权**（`http:<host>`，键不带默认端口：`https://x.com` 的键是 `x.com`） |
+| `http` | `ctx.http.request` | 出站请求，**按域名逐个再授权**（`http:<host>`，键不带默认端口：`https://x.com` 的键是 `x.com`）。`body` 按响应 Content-Type 的 charset 解码：目前支持 UTF-8 与 GBK/GB2312/GB18030（新浪、腾讯行情这类 GBK 接口能直接拿到中文），其余 charset 与不带 charset 的响应仍按 UTF-8 lossy 解 |
 | `notify` | `ctx.notify.show` | 系统通知 |
 | `pet:react` | `ctx.pet.react` | 让宠物插播一个状态，参数只能是 petdex 的九个状态之一：`idle` `running-right` `running-left` `waving` `jumping` `failed` `waiting` `running` `review`（其余名字会被桥拒绝） |
 | `pet:say` | `ctx.pet.say` | 让宠物弹一句台词 |
@@ -91,6 +91,7 @@ export async function activate(ctx) {
     headers: [["authorization", "Bearer ..."]],
   });
   // res: { status, contentType, body, truncated }，body 上限 1 MiB
+  // body 按响应 Content-Type 的 charset 解码，目前支持 UTF-8 与 GBK/GB18030，其余仍按 UTF-8 lossy
 
   ctx.notify.show("同步完成", "本次 1.2k tokens");
   ctx.pet.react("jumping"); // 九状态之一：idle/running-right/running-left/waving/jumping/failed/waiting/running/review
