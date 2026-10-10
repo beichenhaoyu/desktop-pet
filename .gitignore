@@ -34,3 +34,7 @@ release-package/
 .DS_Store
 *.suo
 *.sw?
+
+# 外部 AI 助手在本机留下的东西，不纳入版本控制（用户 2026-10-10 定）
+.workbuddy/
+.zcodeignore
