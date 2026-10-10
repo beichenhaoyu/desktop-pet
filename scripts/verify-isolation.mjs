@@ -493,6 +493,46 @@ try {
   r.check("徽标位置跟随立绘几何而非各自硬编", true, geo.badgeBottom > 0 && geo.badgeBottom < geo.innerH);
   r.check("气泡位置同理", true, geo.bubbleBottom > 0 && geo.bubbleBottom <= geo.innerH);
 
+  // 气泡的水平归属：它属于角色的头顶，不是窗口的右上角。
+  // 之前钉在 right:16px，长台词会往角色右侧探出去 30 多像素，整只宠物看起来占了一大块横向空间。
+  const bubbleGeo = await c.ev(`(async () => {
+    const b = document.getElementById('pet-bubble');
+    const { petController, } = await import('/src/pet/host.ts');
+    petController().say('一二三四五六七八九〇一二三四五六七八九〇一二三四五六七八九〇一二三四五六七八九〇');
+    await new Promise((res) => setTimeout(res, 320));
+    const cs = getComputedStyle(document.documentElement);
+    const size = parseFloat(cs.getPropertyValue('--pet-size'));
+    const left = parseFloat(cs.getPropertyValue('--pet-left'));
+    const r = b.getBoundingClientRect();
+    return {
+      width: Math.round(r.width), size,
+      center: +((r.left + r.width / 2) - (left + size / 2)).toFixed(1),
+      inside: r.left >= left - 0.5 && r.right <= left + size + 0.5,
+      boxSizing: getComputedStyle(b).boxSizing,
+    };
+  })()`);
+  r.check("超长台词也被压在角色宽度内", true, bubbleGeo.inside && bubbleGeo.width <= bubbleGeo.size + 1);
+  r.check("气泡水平居中在头顶", true, Math.abs(bubbleGeo.center) <= 3);
+  r.check("max-width 含内边距（border-box，否则 padding 让它再宽 24px）", "border-box", bubbleGeo.boxSizing);
+
+  // 真实台词不能顶出窗口上沿：头顶上方的余量只有 47px，两行刚好、三行会被裁
+  const longestFit = await c.ev(`(async () => {
+    const { pickLine } = await import('/src/pet/dialogue.ts');
+    const states = ['idle', 'running-right', 'running-left', 'waving', 'jumping', 'failed', 'waiting', 'running', 'review', 'wake'];
+    let longest = '';
+    for (const s of states) for (let i = 0; i < 60; i++) {
+      const l = pickLine(s);
+      if ([...l].length > [...longest].length) longest = l;
+    }
+    const { petController } = await import('/src/pet/host.ts');
+    petController().say(longest);
+    await new Promise((res) => setTimeout(res, 320));
+    const r = document.getElementById('pet-bubble').getBoundingClientRect();
+    return { chars: [...longest].length, top: Math.round(r.top), lines: Math.max(1, Math.round((r.height - 16) / 19.2)) };
+  })()`);
+  r.info("最长内置台词", `${longestFit.chars} 字 / ${longestFit.lines} 行`);
+  r.check("最长台词也没被窗口上沿裁掉", true, longestFit.top >= 0);
+
   r.group("已解码图集缓存有上限（换装不再一份份攒下去）");
   const atlasCap = await c.ev(`(async () => {
     const s = await import('/src/pet/sprites.ts');

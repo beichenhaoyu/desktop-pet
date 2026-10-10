@@ -37,14 +37,19 @@ html.over-pet body:active {
   font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
 }
 
-/* 台词气泡：立绘头顶弹出（wm-pop 式），不拦截鼠标 */
+/* 台词气泡：立绘头顶弹出（wm-pop 式），不拦截鼠标。
+   水平方向钉在角色正中而不是窗口右边缘 —— 之前 right:16px 会让气泡探出角色右缘 30 多像素，
+   整只宠物看起来占了一大块横向空间。宽度按内容收缩、上限就是角色宽度，所以永远不会超出角色。 */
 #pet-bubble {
   position: fixed;
-  right: 16px;
+  left: 50%;
   bottom: var(--pet-bubble-bottom, 305px);
-  max-width: 240px;
+  width: max-content;
+  /* border-box：否则 max-width 只管内容宽，左右各 12px 的内边距会让气泡又探出角色 24px */
+  box-sizing: border-box;
+  max-width: var(--pet-size, 266px);
   padding: 8px 12px;
-  border-radius: 12px 12px 3px 12px;
+  border-radius: 12px;
   background: rgba(255, 255, 255, 0.96);
   color: #2b2f36;
   font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
@@ -52,14 +57,28 @@ html.over-pet body:active {
   line-height: 1.6;
   box-shadow: 0 4px 18px rgba(0, 0, 0, 0.2);
   opacity: 0;
-  transform: translateY(8px) scale(0.92);
-  transform-origin: bottom right;
+  transform: translate(-50%, 8px) scale(0.92);
+  transform-origin: bottom center;
   transition: opacity 0.18s ease, transform 0.18s cubic-bezier(0.34, 1.4, 0.64, 1);
   pointer-events: none;
   z-index: 10;
 }
 
+/* 尾巴指向头顶中央；垫在盒子后面，这样它的直角与阴影被气泡本体盖住 */
+#pet-bubble::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -4px;
+  width: 11px;
+  height: 11px;
+  background: rgba(255, 255, 255, 0.96);
+  border-radius: 2px;
+  transform: translateX(-50%) rotate(45deg);
+  z-index: -1;
+}
+
 #pet-bubble.show {
   opacity: 1;
-  transform: translateY(0) scale(1);
+  transform: translate(-50%, 0) scale(1);
 }
