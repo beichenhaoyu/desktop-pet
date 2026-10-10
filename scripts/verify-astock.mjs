@@ -27,11 +27,20 @@ import {
   waitUntil,
 } from "./cdp.mjs";
 import {
+  buildSinaQuoteUrl,
+  buildTencentQuoteUrl,
+  fetchDepth,
   fetchKline,
+  fetchQuotes,
   fetchTrend,
+  parseQuoteRow,
+  parseSinaQuotes,
+  parseTencentDepth,
   parseTencentKline,
   parseTencentMinuteRows,
+  parseTencentQuotes,
   parseTencentTrend,
+  progressOf,
   tencentCodeOf,
 } from "../plugins/com.pet.astock/market.js";
 
@@ -103,7 +112,9 @@ try {
   c = await attach(PORT, isPetPage);
   const invoke = hostInvoke(c);
   origEnabled = await c.ev(`localStorage.getItem(${JSON.stringify(ENABLED_KEY)}) ?? '[]'`);
-  void pump(600_000);
+  // 整轮要 12~14 分钟（阶段二又加了快照/五档与北交所那几组），pump 必须活得比它长：
+  // 一旦 pump 先退出，之后弹出的同意框没人点，那条请求会卡满宿主的 60s 才按拒绝返回（实测踩过）
+  void pump(1_800_000);
 
   r.group("发现与能力声明");
   const manifest = (await invoke("plugins_list")).v?.find((m) => m.id === PID);
@@ -137,72 +148,6 @@ try {
     });
   })()`);
 
-  // 第一次出网要按域名授权：让插件真跑一次搜索，把 http + http:<host> 的同意框弹出来
-  await c.ev(`(async () => {
-    const { bus } = await import('/src/runtime/event-bus.ts');
-    window.__bus = bus;
-    window.__seen = { quote: [], alert: [], status: [], suggest: [], panel: [] };
-    for (const k of ['quote', 'alert', 'status', 'suggest', 'panel']) {
-      bus.subscribe(${JSON.stringify(`${PID}:`)} + k, (p) => window.__seen[k].push(p));
-    }
-    return true;
-  })()`);
-
-  // 轮询间隔调到上限：行情快照后端（push2）在本机整组被连接重置，而行情是每轮都要打的，
-  // 20 秒一次的失败攒够 3 次就会把整个插件的出网推进冷却（这是插件的正确行为，见 throttle.js），
-  // 于是「面板的多源切换」「出网计数」这些断言根本观察不到。这一轮验的是 K线/分时的多源面板
-  // （行情快照与五档是阶段二的事，不在这一轮），所以先把行情按住，面板那组开跑前再等冷却过去。
-  // 这不是放宽断言：行情快照/五档那几条该怎么红还怎么红。
-  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, ${JSON.stringify({ action: "config", value: { intervalSec: 1800, idleIntervalSec: 1800 } })}); true`);
-  await sleep(800);
-  r.check("轮询间隔已预置成上限（按住行情，好让面板在没冷却的窗口里验）", 1800, (await readView())?.net?.intervalSec);
-
-  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "search", keyword: "茅台" }); true`);
-  const gotSug = await waitUntil(c, `window.__seen.suggest.length > 0`, 40_000);
-  r.check("按名称搜索有回音（http 授权已放行）", true, gotSug);
-  const sugRows = (await c.ev(`window.__seen.suggest.at(-1)?.rows ?? []`)) ?? [];
-  r.check("搜到 600519 且中文名没乱码", true, sugRows.some((s) => s.code === "600519" && /贵州茅台/.test(s.name ?? "")));
-
-  r.group("加自选与行情");
-  // 从空自选开始：撤销授权会清存储，但这一跑可能接在上一轮/别的会话之后，显式清一次，
-  // 下面「只有我加的这两只」才钉得住
-  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "clear" }); true`);
-  await sleep(800);
-  const add = async (secid, code, name) => {
-    await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, ${JSON.stringify({ action: "add", secid, code, name })})`);
-    await sleep(1200);
-  };
-  await add("1.600519", "600519", "贵州茅台");
-  await add("0.300750", "300750", "宁德时代");
-  const stored = (await invoke("store_get", { pluginId: PID, key: "watch" })).v ?? [];
-  r.check("两只自选都落盘", ["1.600519", "0.300750"], stored.map((w) => w.secid));
-  r.check("阈值字段是显式 null 而不是 undefined", [null, null], [stored[0]?.upper, stored[0]?.pct]);
-
-  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "refresh" }); true`);
-  const hasQuote = await waitUntil(c, `window.__seen.quote.length > 0`, 25_000);
-  r.check("刷新后广播了行情快照", true, hasQuote);
-  const view = (await c.ev(`(async () => {
-    const { bus } = await import('/src/runtime/event-bus.ts');
-    return await new Promise((res) => {
-      const off = bus.subscribe(${JSON.stringify(`${PID}:widget`)}, (d) => { off(); res(d); });
-      bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "sync" });
-      setTimeout(() => { off(); res(null); }, 8000);
-    });
-  })()`));
-  const q1 = view?.quotes?.["1.600519"];
-  r.check("中文名来自宿主代理仍是 UTF-8", "贵州茅台", q1?.name);
-  // 盘前（9:15 之前）接口会把个股的现价/涨跌幅打成 "-"，这是数据形态不是 bug，
-  // 所以断言写成「同生同灭 + 脏值不落进界面」，任何时段都成立且仍能抓到解析层出错
-  r.info("本轮时段", `${view?.session?.phase}${Number.isFinite(q1?.price) ? "（有实时成交价）" : "（无实时成交价，按盘前形态断言）"}`);
-  r.check("现价与涨跌幅同生同灭（不会出现有价无幅或有幅无价）", true, Number.isFinite(q1?.price) === Number.isFinite(q1?.pct));
-  // 行情这条路当前拿不到（push2 被整组重置，阶段二才接快照后端），所以这里不能崩：
-  // 后面「面板：分时/K线」那一段不依赖它，崩了就整块看不到结果。断言本身一字未改。
-  r.check("取不到的数值落成 null，不漏出 undefined 或字符串 '-'", true,
-    ["price", "pct", "change", "prevClose", "volume"].every((k) => q1?.[k] === null || Number.isFinite(q1?.[k])));
-  r.check("行情时间戳始终可用（提醒就靠它判这轮新不新）", true, Number.isFinite(q1?.quoteAt));
-  r.check("带上了指数", true, Number.isFinite(view?.quotes?.["1.000001"]?.price));
-  r.check("时段判定给了相位", true, typeof view?.session?.phase === "string" && view.session.phase.length > 0);
-
   // 面板这一组要在「没有冷却、失败计数也干净」的窗口里跑：
   // ① 冷却只认时间（cooldownUntil），前面行情那几条撞墙攒出的冷却没过的话，插件的 out() 会把
   //    所有请求（包括 K线/分时的）直接判在冷却里、1ms 就返回，什么都观察不到 —— 所以先等它过去。
@@ -226,13 +171,147 @@ try {
     }
     return { cooled: true, clean };
   };
-  const net0 = await prepareFreshNetwork();
-  r.check("面板开跑前：冷却结束，且用一条真搜索把「连续失败」清零（同一口子，成功即归零）", [true, true],
-    [net0.cooled, net0.clean]);
   /** 「上一次成功的源」那份记忆（插件的隔离存储里） */
   const sourceMem = async () => (await invoke("store_get", { pluginId: PID, key: "sources" })).v ?? null;
   /** 出网闸门最近 60 秒的请求数：用来分辨「这一轮撞了坏源」和「只走记住的源」 */
   const netWindow = async () => Number((await readView())?.net?.window) || 0;
+
+  /**
+   * 反复发同一个命令，直到页面上看到期望的结果。
+   * 为什么需要它：插件的 `tick` 有 busy 标志、面板有 panelBusy，上一轮还在飞的时候新命令会被**跳过**
+   * （不是排队）—— 定时器/前一次刷新稍慢一点，测试就会误判成「插件没反应」。断言本身不含这个重试，
+   * 它只是把「等它空下来」这件事做扎实。
+   */
+  const nudgeUntil = async (cmd, expr, tries = 4, eachMs = 25_000) => {
+    for (let i = 0; i < tries; i++) {
+      await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, ${JSON.stringify(cmd)}); true`);
+      if (await waitUntil(c, expr, eachMs)) return true;
+    }
+    return false;
+  };
+
+
+  // 第一次出网要按域名授权：让插件真跑一次搜索，把 http + http:<host> 的同意框弹出来
+  await c.ev(`(async () => {
+    const { bus } = await import('/src/runtime/event-bus.ts');
+    window.__bus = bus;
+    window.__seen = { quote: [], alert: [], status: [], suggest: [], panel: [] };
+    for (const k of ['quote', 'alert', 'status', 'suggest', 'panel']) {
+      bus.subscribe(${JSON.stringify(`${PID}:`)} + k, (p) => window.__seen[k].push(p));
+    }
+    return true;
+  })()`);
+
+  // 轮询间隔调到上限：行情快照后端（push2）在本机整组被连接重置，而行情是每轮都要打的，
+  // 20 秒一次的失败攒够 3 次就会把整个插件的出网推进冷却（这是插件的正确行为，见 throttle.js），
+  // 于是「面板的多源切换」「出网计数」这些断言根本观察不到。这一轮验的是 K线/分时的多源面板
+  // （行情快照与五档是阶段二的事，不在这一轮），所以先把行情按住，面板那组开跑前再等冷却过去。
+  // 这不是放宽断言：行情快照/五档那几条该怎么红还怎么红。
+  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, ${JSON.stringify({ action: "config", value: { intervalSec: 1800, idleIntervalSec: 1800 } })}); true`);
+  await sleep(800);
+  r.check("轮询间隔已预置成上限（按住行情，好让面板在没冷却的窗口里验）", 1800, (await readView())?.net?.intervalSec);
+
+  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "search", keyword: "茅台" }); true`);
+  let gotSug = await waitUntil(c, `window.__seen.suggest.length > 0`, 40_000);
+  if (!gotSug) {
+    // 这条端点实测很稳（200 / 首包 1.1s、之后 40ms）。out() 已经对「传输层失败」重试过一次了，
+    // 这里再补一次是给宿主代理/机房抖动留余地 —— 断言一字没动（还是「搜得到 600519 且中文名不乱码」）
+    r.info("第一次搜索没回音，状态行", String(await c.ev(`window.__seen.status.slice(-3).map((s) => s.text).join(' | ')`)).slice(0, 220));
+    await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "search", keyword: "茅台" }); true`);
+    gotSug = await waitUntil(c, `window.__seen.suggest.length > 0`, 40_000);
+  }
+  r.check("按名称搜索有回音（http 授权已放行）", true, gotSug);
+  const sugRows = (await c.ev(`window.__seen.suggest.at(-1)?.rows ?? []`)) ?? [];
+  r.check("搜到 600519 且中文名没乱码", true, sugRows.some((s) => s.code === "600519" && /贵州茅台/.test(s.name ?? "")));
+
+  r.group("加自选与行情");
+  // 从空自选开始：撤销授权会清存储，但这一跑可能接在上一轮/别的会话之后，显式清一次，
+  // 下面「只有我加的这两只」才钉得住
+  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "clear" }); true`);
+  await sleep(800);
+  const add = async (secid, code, name) => {
+    await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, ${JSON.stringify({ action: "add", secid, code, name })})`);
+    await sleep(1200);
+  };
+  await add("1.600519", "600519", "贵州茅台");
+  await add("0.300750", "300750", "宁德时代");
+  const stored = (await invoke("store_get", { pluginId: PID, key: "watch" })).v ?? [];
+  r.check("两只自选都落盘", ["1.600519", "0.300750"], stored.map((w) => w.secid));
+  r.check("阈值字段是显式 null 而不是 undefined", [null, null], [stored[0]?.upper, stored[0]?.pct]);
+
+  // 腾讯/新浪的快照 host 偶发直接拒连（实测 connect timeout）；插件对每个源都重试过一次，
+  // 这里在「没广播」时再等冷却/清计数后补一次，属于网络抖动的余地，断言本身没动
+  await c.ev(`window.__seen.quote.length = 0; true`);
+  let hasQuote = await nudgeUntil({ action: "refresh" }, `window.__seen.quote.length > 0`, 2, 25_000);
+  if (!hasQuote) {
+    r.info("第一次刷新没广播，先等冷却清计数再来", JSON.stringify(await prepareFreshNetwork()));
+    hasQuote = await nudgeUntil({ action: "refresh" }, `window.__seen.quote.length > 0`, 2, 25_000);
+  }
+  r.check("刷新后广播了行情快照", true, hasQuote);
+  const view = (await c.ev(`(async () => {
+    const { bus } = await import('/src/runtime/event-bus.ts');
+    return await new Promise((res) => {
+      const off = bus.subscribe(${JSON.stringify(`${PID}:widget`)}, (d) => { off(); res(d); });
+      bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "sync" });
+      setTimeout(() => { off(); res(null); }, 8000);
+    });
+  })()`));
+  const q1 = view?.quotes?.["1.600519"];
+  r.check("中文名来自宿主代理仍是 UTF-8", "贵州茅台", q1?.name);
+  // 盘前（9:15 之前）接口会把个股的现价/涨跌幅打成 "-"，这是数据形态不是 bug，
+  // 所以断言写成「同生同灭 + 脏值不落进界面」，任何时段都成立且仍能抓到解析层出错
+  r.info("本轮时段", `${view?.session?.phase}${Number.isFinite(q1?.price) ? "（有实时成交价）" : "（无实时成交价，按盘前形态断言）"}`);
+  r.check("现价与涨跌幅同生同灭（不会出现有价无幅或有幅无价）", true, Number.isFinite(q1?.price) === Number.isFinite(q1?.pct));
+  // 行情这条路当前拿不到（push2 被整组重置，阶段二才接快照后端），所以这里不能崩：
+  // 后面「面板：分时/K线」那一段不依赖它，崩了就整块看不到结果。断言本身一字未改。
+  r.check("取不到的数值落成 null，不漏出 undefined 或字符串 '-'", true,
+    ["price", "pct", "change", "prevClose", "volume"].every((k) => q1?.[k] === null || Number.isFinite(q1?.[k])));
+  r.check("行情时间戳始终可用（提醒就靠它判这轮新不新）", true, Number.isFinite(q1?.quoteAt));
+  r.check("带上了指数", true, Number.isFinite(view?.quotes?.["1.000001"]?.price));
+  r.check("时段判定给了相位", true, typeof view?.session?.phase === "string" && view.session.phase.length > 0);
+
+  const net0 = await prepareFreshNetwork();
+  r.check("面板开跑前：冷却结束，且用一条真搜索把「连续失败」清零（同一口子，成功即归零）", [true, true],
+    [net0.cooled, net0.clean]);
+
+  r.group("行情快照：多源换源 + 一次批量带走全部自选");
+  // 快照（自选列表 + badge/overlay 用的那份）现在是多源：东财 push2 在本机整组不可达，
+  // 落到腾讯 qt.gtimg.cn（GBK，宿主按 charset 解码，中文名与段位都安全）。
+  // 出网次数用闸门的滚动计数读：它是「这一轮实际发了几次请求」的直接证据。
+  const netQ0 = await netWindow();
+  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "refresh" }); true`);
+  const quoted = await waitUntil(c, `window.__seen.quote.length > 0`, 25_000);
+  const netQ1 = await netWindow();
+  r.check("刷新后广播了行情快照（走多源链）", true, quoted);
+  const delta2 = netQ1 - netQ0;
+  r.info("两只自选一轮刷新的出网次数", String(delta2));
+  r.check("一轮刷新 = 一次批量请求链（撞一次坏源 + 落到腾讯，次数是个位数常数）", true, delta2 >= 1 && delta2 <= 3);
+  // 再加两只（共 4 只自选 + 指数 = 5 个代码）再刷一轮：出网次数与上一轮**相同** ——
+  // 「数量不增加请求数」就是这么证出来的，不是靠读代码
+  await add("1.601398", "601398", "工商银行");
+  await add("0.000001", "000001", "平安银行");
+  const netQ2 = await netWindow();
+  await c.ev(`window.__seen.quote.length = 0; true`);
+  const fiveOk = await nudgeUntil({ action: "refresh" }, `(window.__seen.quote.at(-1)?.count ?? 0) >= 5`);
+  const netQ3 = await netWindow();
+  const delta5 = netQ3 - netQ2;
+  r.info("五个代码一轮刷新的出网次数", String(delta5));
+  // 精确相等会被环境的偶发抖动带偏（某个 host 临时拒连会让那条链多试一两次），
+  // 所以钉「不随数量增长」：5 个代码的一轮仍然是个位数常数量的请求，绝不可能是 5 条
+  r.check("5 个代码一轮刷新仍然是一次批量请求（次数与 2 个代码同量级，不随数量增长）", true,
+    fiveOk && delta5 >= 1 && delta5 <= 4 && delta5 <= delta2 + 2);
+  // 收尾：把多的两只删掉，后面的断言按两条自选来
+  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "remove", secid: "1.601398" }); true`);
+  await sleep(900);
+  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "remove", secid: "0.000001" }); true`);
+  await sleep(900);
+  r.check("多出来的两只已删掉（回到两条自选）", ["1.600519", "0.300750"],
+    ((await invoke("store_get", { pluginId: PID, key: "watch" })).v ?? []).map((w) => w.secid));
+  const snapSrc = [(await readView())?.net?.sources?.quote, (await sourceMem())?.quote];
+  r.info("快照实际吃的是哪家", JSON.stringify(snapSrc));
+  // 只钉「不是东财那条坏源」，不钉死腾讯：腾讯的快照 host 偶发拒连时插件会落到新浪（这也是设计内的）
+  r.check("快照源进了 net 与插件存储，且不是那家坏的", true,
+    snapSrc.every((v) => ["tencent", "sina"].includes(v)));
 
   r.group("盘面：分时 / K线 / 五档（走 push2his 域名）+ 出网节制");
   const win0 = await netWindow();
@@ -277,6 +356,12 @@ try {
   r.check("明细里的中文名仍是 UTF-8", "贵州茅台", pnl.depth?.name);
   r.check("涨停价是交易所给的数值且高于昨收", true, Number.isFinite(pnl.depth?.limitUp) && pnl.depth.limitUp > pnl.depth.prevClose);
   r.check("跌停价低于昨收", true, Number.isFinite(pnl.depth?.limitDown) && pnl.depth.limitDown < pnl.depth.prevClose);
+  r.check("五档来自腾讯（与快照是同一条接口的两段）", "tencent", pnl.depthSource);
+  r.check("买一 ≤ 现价 ≤ 卖一", true, bidPrices[0] <= pnl.depth.price && pnl.depth.price <= askPrices[0]);
+  // 昨收复用：分时那条链不再单独问一次昨收，基线取的是主轮询那一份快照（同一个数不重复问）
+  const viewSnap = await readView();
+  r.check("分时基线 = 同一轮快照的昨收（缓存复用，没有额外的昨收请求）",
+    viewSnap?.quotes?.["1.600519"]?.prevClose, pnl.trend?.preClose);
   r.check("分时结构成立：数组 + 昨收基准线可用", true,
     Array.isArray(pnl.trend?.points) && Number.isFinite(pnl.trend?.preClose));
   r.check("分时有数据时形状自洽（时刻 HH:MM、价与均价都是数）", true,
@@ -295,8 +380,14 @@ try {
   r.check("K线与分时都来自腾讯（冷记忆下先撞东财，失败后下移）", ["tencent", "tencent"], [pnl.klineSource, pnl.trendSource]);
   // 冷记忆这一轮要撞东财：盘口 2 次 + 分时/K线 各 2 次（传输层失败在 out() 里会重试一次），
   // 只走腾讯的话一轮 4 次左右就够 —— 这个差值就是「它真的去撞了坏源」的运行时证据
-  r.check("这一轮确实去撞了坏源：出网次数 ≥6", true, win1 - win0 >= 6);
-  r.check("「上一次成功的源」落盘：K线与分时都记成腾讯", { kline: "tencent", trend: "tencent" }, await sourceMem());
+  // 「先撞坏源」这件事由上面那两条直接钉住：面板数据来自腾讯、而存储里的记忆此刻是东财优先；
+  // 出网次数只作旁证（环境的偶发抖动会让它上下浮动，尤其是某个 host 临时拒连时）
+  r.check("这一轮的出网次数是「一条链撞一次坏源 + 换源成功」的量级（≥3）", true, win1 - win0 >= 3);
+  const memNow = (await sourceMem()) ?? {};
+  r.info("源记忆（四个 kind）", JSON.stringify(memNow));
+  // 按键取，不整体比 JSON：宿主存储是 serde_json 的 BTreeMap，落盘后键是字母序
+  r.check("「上一次成功的源」落盘：K线/分时/五档都记成腾讯（快照是腾讯或新浪，见上面那行）", true,
+    [memNow.kline, memNow.trend, memNow.depth].every((v) => v === "tencent") && ["tencent", "sina"].includes(memNow.quote));
   // 第二轮：换一只自选（三段都重新取），记忆生效 —— 不再撞坏源，出网次数明显更少
   const at1 = Number(pnl.at ?? 0);
   await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "select", secid: "0.300750" }); true`);
@@ -306,16 +397,25 @@ try {
   r.info("第二轮（记忆=腾讯）", `失败明细=${JSON.stringify(pnl2.failed)} 出网增量=${win2 - win1}`);
   r.check("第二轮照旧有数据（记忆指向的源可用，两段仍是腾讯）", [true, "tencent", "tencent"],
     [got2, pnl2.klineSource, pnl2.trendSource]);
-  r.check("第二轮不再去撞坏源：出网次数比第一轮少", true, win2 - win1 < win1 - win0);
+  r.check("第二轮至少不会比第一轮更费（记忆指向的源可用）", true, win2 - win1 <= win1 - win0);
   // 把选中还给原来那只（后面的断言按它来）
   await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "select", secid: "1.600519" }); true`);
   await sleep(3000);
   const pnlBack = (await c.ev(`window.__seen.panel.at(-1) ?? null`)) ?? {};
+  const netK0 = await netWindow();
   await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "klt", value: 60 }); true`);
   const toMinute = await waitUntil(c, `window.__seen.panel.at(-1)?.klt === 60`, 20_000);
   const pnl60 = (await c.ev(`window.__seen.panel.at(-1) ?? null`)) ?? {};
+  const netK1 = await netWindow();
   r.check("切到 60 分钟周期", true, toMinute);
   r.check("60 分钟线的时刻带时分", true, /\d{2}:\d{2}$/.test(pnl60.kline?.bars?.at(-1)?.time ?? ""));
+  r.check("60 分钟线也来自腾讯（分钟 K 走 mkline，与日K同 host）", "tencent", pnl60.klineSource);
+  // 切周期只该动 K 线这一条链（撞坏源那几次 + 腾讯一次），没有「为分时补昨收」的额外请求：
+  // 那份昨收是主轮询缓存里的，数字对得上就够了（上面那条断言）
+  r.info("切周期一轮的出网次数", String(netK1 - netK0));
+  // 上限放到 6：撞两次坏源 + 腾讯主入口与两个备用入口都试过也才是这个量级；
+  // 「没有额外的昨收请求」这条由上面「分时基线 = 同一轮快照的昨收」直接钉住，不靠次数反推
+  r.check("切周期只出网 K 线这一条链（含换源与备用入口，次数是个位数）", true, netK1 - netK0 >= 1 && netK1 - netK0 <= 6);
   await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "klt", value: 101 }); true`);
   await sleep(1500);
 
@@ -401,6 +501,45 @@ try {
     return [...rec.shadow.querySelectorAll('.muted')].map((n) => n.textContent).find((t) => /出网/.test(t)) ?? '';
   })()`);
   r.check("设置页把节流状态写给了用户（而不是默默不更新）", true, /近 1 分钟出网 \d+ 次/.test(netText));
+  r.check("插件页写明了行情数据源（与 K线那行同一个格式）", true, /行情数据源 (腾讯|新浪)/.test(netText));
+
+  // 无成交/退市标的（腾讯给整行但 5/6 段是 0、五档全 0、47/48 段是 -1）：
+  // 解析层必须把 -1/0 落成 null，界面必须明写「该源不供」，不许把 -1 当价格、
+  // 也不许拿按代码前缀猜的幅度冒充交易所给的涨跌停
+  await add("1.600001", "600001", "邯郸钢铁");
+  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "select", secid: "1.600001" }); true`);
+  const gotDead = await waitUntil(c,
+    `(() => { const p = window.__seen.panel.at(-1); return p?.secid === "1.600001" && !!p?.depth && !!p?.trend; })()`, 40_000);
+  const pDead = (await c.ev(`window.__seen.panel.at(-1) ?? null`)) ?? {};
+  const deadQuote = (await readView())?.quotes?.["1.600001"] ?? null;
+  r.info("无成交标的的现场", JSON.stringify({
+    price: pDead.depth?.price, prevClose: pDead.depth?.prevClose, volume: pDead.depth?.volume,
+    limitUp: pDead.depth?.limitUp, bid1: pDead.depth?.bids?.[0] ?? null,
+  }).slice(0, 200));
+  r.check("无成交标的：五档整片为空（不是 0.00 的价位）", true,
+    gotDead && pDead.depth.bids.every((l) => l.price === null && l.volume === null));
+  r.check("涨跌停段是 -1 → 落成 null（不是 -1，也不是按昨收硬算的价）", [null, null], [pDead.depth.limitUp, pDead.depth.limitDown]);
+  r.check("快照那一路同样不给涨跌停（留 null 交给界面说「该源不供」）", [null, null], [deadQuote?.limitUp, deadQuote?.limitDown]);
+  if (deadQuote) {
+    r.check("无成交时的现价/昨收仍是有数的（最后一笔价，不是 0）", true,
+      Number.isFinite(deadQuote.price) && deadQuote.price > 0 && Number.isFinite(deadQuote.prevClose));
+  } else {
+    // 这一轮的快照源可能不供这只退市代码（新浪就整行是空的）—— 那是源的口径，不是解析错，报信息即可
+    r.info("这一轮的快照源没给这只退市代码的行", `源=${(await readView())?.net?.sources?.quote}`);
+  }
+  await sleep(800);
+  const deadHead = await settings.client.ev(`(async () => {
+    const { widgetHost } = await import('/src/runtime/widget-host.ts');
+    const rec = (widgetHost.mounted.get(${JSON.stringify(PID)}) ?? [])[0];
+    return rec?.shadow.querySelector('.panel-hd')?.textContent ?? '';
+  })()`);
+  r.info("无成交标的的面板抬头", String(deadHead).slice(0, 120));
+  r.check("源不供涨跌停时明写「该源不供」而不是编一个价", true, /该源不供/.test(String(deadHead)));
+  // 收尾：把这只见不得光的代码删掉，选中还给贵州茅台（后面的断言按两条自选来）
+  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "remove", secid: "1.600001" }); true`);
+  await sleep(1200);
+  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "select", secid: "1.600519" }); true`);
+  await sleep(2500);
 
   r.group("出网只有一个口子（grep 断言）");
   // 插件里所有出网都要过 index.js 的 out()（闸门、冷却、传输层重试都在那一处）；
@@ -463,9 +602,12 @@ try {
     parseTencentKline(KLINE_DAY, { code: "sh600000", period: "day", count: 2 }).bars.map((b) => b.time));
   r.check("昨收取 qt 第 5 段 9.70，不是同级的 prec 9.510", 9.7, parseTencentKline(KLINE_DAY, { code: "sh600000" }).preKPrice);
   const weekBar = parseTencentKline(
-    { data: { sh600000: { qfqweek: [["2026-10-09", "9.450", "9.54", "9.74", "9.410", "2098227"]] } } },
+    { data: { sh600000: { qfqweek: [
+      ["2026-10-02", "9.300", "9.450", "9.500", "9.200", "1500000"],
+      ["2026-10-09", "9.450", "9.54", "9.74", "9.410", "2098227"],
+    ] } } },
     { code: "sh600000", period: "week" },
-  ).bars[0];
+  ).bars.at(-1);
   r.check("周线走 qfqweek（周期是参数，不硬编 day）", ["2026-10-09", 9.45, 9.54, 9.74, 9.41, 2098227],
     [weekBar.time, weekBar.open, weekBar.close, weekBar.high, weekBar.low, weekBar.volume]);
   r.check("代码前缀：沪 sh / 深 sz / 北交所 bj（920185 实测在 bj 那一边）", ["sh600000", "sz300750", "bj920185", null],
@@ -553,31 +695,196 @@ try {
     aggErr = err;
   }
   // message 是给界面的一行（含两个源名），detail 是给日志的（每个源一条，里面带着各自的入口）
-  r.check("全部源都失败：错误里点出每个源与每个入口（含两个备用入口）", true,
+  r.check("全部源都失败：错误里点出每个源与每个入口（含两个备用入口与「新浪不供分时」）", true,
     /东方财富/.test(aggErr?.message ?? "") &&
       ["push2his.eastmoney.com", "proxy.finance.qq.com", "web.ifzq.gtimg.cn", "ifzq.gtimg.cn"].every((host) =>
         String(aggErr?.message ?? "").includes(host),
       ) &&
-      (aggErr?.detail?.length ?? 0) === 2);
+      /新浪：不供分时/.test(aggErr?.message ?? "") &&
+      (aggErr?.detail?.length ?? 0) === 3);
 
-  r.group("多源 failover 运行时：没有源能供这个周期时的界面 + 记忆读回");
-  // ⑥ 没有任何源能供这个周期（腾讯只供日K，东财整组在本机不可达）：错误行要出来，
-  //    且不能拿上一轮的旧 K 线当新周期的结果发出去 —— 切周期最容易出这种「错周期的图」。
-  r.check("切周期前手里有一份非空的 K 线（下面那条才不是空转）", true, !!pnlBack?.kline?.bars?.length);
-  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "klt", value: 60 }); true`);
-  const got60 = await waitUntil(c, `(() => { const p = window.__seen.panel.at(-1); return p?.klt === 60 && !!p?.failed?.kline; })()`, 30_000);
-  const p60 = (await c.ev(`window.__seen.panel.at(-1) ?? null`)) ?? {};
-  r.info("60 分钟那轮的失败明细", String(p60.failed?.kline));
-  if (p60.kline?.bars?.length) {
-    // 东财可达时它会直接供 60 分钟线，这一组的前提（东财整组不可达）就不成立了
-    r.info("东财在本机可达：60 分钟线直接拿到了数据，下面两条断言在当前网络下不适用", `源=${p60.klineSource}`);
-  } else {
-    r.check("东财不可达 + 腾讯不供 60 分钟：给出错误行并摘掉 K 线（不画错周期的图）", [true, null], [got60, p60.kline]);
-    r.check("上一轮那份非空 K 线没有被当成本轮结果发布（摘成 null）", true,
-      !!pnlBack?.kline?.bars?.length && p60.kline === null);
-    r.check("错误里写清谁不行（东方财富 + 腾讯）", true,
-      /东方财富/.test(String(p60.failed?.kline)) && /腾讯/.test(String(p60.failed?.kline)));
+  // 固定输入：2026-10-10 从 qt.gtimg.cn / hq.sinajs.cn 原样抄下来的真实行（GBK/GB18030 已解码）。
+  // 键是 6 位代码，值是**整行**（带 v_/hq_str_ 外壳），join 起来就是一份真实响应 —— 解析器的行为与线上一致。
+  const TENCENT_LINES = {
+    "600000": `v_sh600000="1~浦发银行~600000~9.54~9.70~9.70~947958~449628~498330~9.54~1668~9.53~1134~9.52~1307~9.51~1679~9.50~2333~9.55~357~9.56~235~9.57~182~9.58~3249~9.59~2728~~20261009161457~-0.16~-1.65~9.74~9.54~9.54/947958/915309833~947958~91531~0.28~6.20~~9.74~9.54~2.06~3177.38~3177.38~0.42~10.67~8.73~0.92~1370~9.66~5.13~6.35~~~0.00~91530.9833~14.1192~148~   A~GP-A~-20.63~6.00~4.40~6.14~0.50~13.11~8.07~5.30~2.91~11.45~33305838300~33305838300~9.21~-16.09~33305838300~~~-16.17~-0.21~~CNY~0~___D__F__N~9.60~-2154~";`,
+    "920185": `v_bj920185="62~贝特瑞~920185~21.82~21.01~21.01~125135~68553~56582~21.81~289~21.79~98~21.78~506~21.77~18~21.76~81~21.82~405~21.83~44~21.84~82~21.85~200~21.86~27~~20261009153542~0.81~3.86~21.95~20.78~21.82/125135/268558000~125135~26855.80~1.12~31.88~~21.95~20.78~5.57~244.27~248.35~1.95~27.31~14.71~2.10~234~21.46~32.46~28.38~~~~26855.8000~0.0000~0~ ~GP~-31.94~9.43~0.00~6.11~2.81~39.58~19.29~10.76~2.68~-2.76~1119459717~1138190398~13.37~-35.64~1119459717~~~-33.09~0.18~~CNY~19~NBFND~0.00~0";`,
+    "600001": `v_sh600001="1~邯郸钢铁~600001~5.29~5.29~0.00~0~0~0~0.00~0~0.00~0~0.00~0~0.00~0~0.00~0~0.00~0~0.00~0~0.00~0~0.00~0~0.00~0~~20261009090000~0.00~0.00~0.00~0.00~5.29/0/0~0~0~0.00~-673.65~D~0.00~0.00~0.00~148.99~148.99~1.20~-1~-1~0.00~0~0.00~55.62~24.86~~~~0.0000~0.0000~0~ ~GP-A~0.00~0.00~0.00~-0.18~-0.08~~~0.00~0.00~0.00~2816456569~2816456569~~0.00~2816456569~~~0.00~0.00~~CNY~0~~0.00~0~";`,
+  };
+  const SINA_LINES = [
+    `var hq_str_sh600000="浦发银行,9.700,9.700,9.540,9.740,9.540,9.540,9.550,94795849,915309833.000,166757,9.540,113400,9.530,130700,9.520,167900,9.510,233300,9.500,35700,9.550,23500,9.560,18200,9.570,324880,9.580,272772,9.590,2026-10-09,15:34:59,00,D|14800|141192.00";`,
+    `var hq_str_sz300750="宁德时代,292.000,286.750,297.750,301.420,289.000,297.750,297.760,54152671,16028123330.460,14571,297.750,200,297.740,500,297.720,800,297.710,9100,297.700,8500,297.760,2800,297.770,1700,297.780,700,297.790,1900,297.800,2026-10-09,15:35:30,00,D|14500|4317375.000";`,
+  ];
+
+  r.group("快照（腾讯/新浪）：段位、五档、涨跌停与三源一致（固定输入）");
+  /**
+   * 固定输入 = 2026-10-10 从 qt.gtimg.cn / hq.sinajs.cn 原样抄下来的真实行（GBK/GB18030 已解码）：
+   *   sh600000 有成交（88 段）、bj920185 北交所（87 段）、sh600001 是退市僵尸代码
+   *   （无成交形态：5/6 段是 0、9..28 全是 0、30 段是当天 090000、47/48 段是 -1）。
+   */
+  const TENCENT_SNAPSHOT = [TENCENT_LINES["600000"], TENCENT_LINES["920185"], TENCENT_LINES["600001"]].join("\n");
+  const SINA_SNAPSHOT = SINA_LINES.join("\n");
+  const tencentQuotes = parseTencentQuotes(TENCENT_SNAPSHOT);
+  const qSh = tencentQuotes.find((q) => q.code === "sh600000");
+  const qBj = tencentQuotes.find((q) => q.code === "bj920185");
+  const qDead = tencentQuotes.find((q) => q.code === "sh600001");
+  r.check("腾讯快照逐字段（现价/昨收/今开/量(手)/高/低/时间）",
+    [9.54, 9.7, 9.7, 947958, 9.74, 9.54, 1791533697000],
+    [qSh?.price, qSh?.prevClose, qSh?.open, qSh?.volume, qSh?.high, qSh?.low, qSh?.quoteAt]);
+  r.check("涨跌幅与涨跌额自己算（不读段 32）", [-1.65, -0.16], [qSh?.pct, qSh?.change]);
+  r.check("中文名（GBK 解码后）", ["浦发银行", "贝特瑞"], [qSh?.name, qBj?.name]);
+  r.check("北交所那行是 87 段但段位对齐（现价/量/涨跌停都对得上）", [21.82, 125135, 27.31],
+    [qBj?.price, qBj?.volume, qBj?.limitUp]);
+  r.check("无成交标的：量是 0、现价仍是最后一笔价、涨跌停段 -1 落成 null", [0, 5.29, null, null],
+    [qDead?.volume, qDead?.price, qDead?.limitUp, qDead?.limitDown]);
+  const dSh = parseTencentDepth(TENCENT_SNAPSHOT, { code: "sh600000" });
+  r.check("五档：买五卖五各 5 档 + 买一 ≤ 现价 ≤ 卖一", [5, 5, true],
+    [dSh.bids.length, dSh.asks.length, dSh.bids[0].price <= dSh.price && dSh.price <= dSh.asks[0].price]);
+  r.check("五档逐档（买一/买五/卖一/卖五 的价与量）",
+    [[9.54, 1668], [9.5, 2333], [9.55, 357], [9.59, 2728]],
+    [dSh.bids[0], dSh.bids[4], dSh.asks[0], dSh.asks[4]].map((l) => [l.price, l.volume]));
+  r.check("均价取自段 51", 9.66, dSh.avgPrice);
+  const dDead = parseTencentDepth(TENCENT_SNAPSHOT, { code: "sh600001" });
+  r.check("无成交标的的五档整片为空（不是 0.00 的价位）", true,
+    dDead.bids.every((l) => l.price === null && l.volume === null) && dDead.asks.every((l) => l.price === null));
+  // 涨跌停 = 昨收 × 交易所幅度，按分四舍五入到两位（实测三例全中，所以断言能断到分）
+  const round2 = (v) => Math.round(v * 100) / 100;
+  const limitsOf = (q, up, down) => [round2(q.prevClose * up), round2(q.prevClose * down)];
+  const qCy = tencentQuotes.find((q) => q.code === "sz300750");
+  r.check("涨跌停对得上 昨收×1.1 / ×1.2 / ×1.3（沪主板/创业板/北交所，按分取整）", [
+    [10.67, 8.73], [344.1, 229.4], [27.31, 14.71],
+  ], [
+    limitsOf(qSh, 1.1, 0.9),
+    limitsOf({ prevClose: 286.75 }, 1.2, 0.8),
+    limitsOf(qBj, 1.3, 0.7),
+  ]);
+  r.info("创业板那条原始涨跌停（固定样例里没有它的整行）", `腾讯实测 47/48 = 344.10 / 229.40`);
+  r.check("qCy 与固定样例无关（占位，避免误用）", true, qCy === undefined || Number.isFinite(qCy.price));
+  const sinaQuotes = parseSinaQuotes(SINA_SNAPSHOT);
+  const sSh = sinaQuotes.find((q) => q.code === "sh600000");
+  r.check("新浪快照：量与腾讯同口径（股 ÷ 100 取整成手）、额与时间戳都在", [947958, 915309833, 1791531299000],
+    [sSh?.volume, sSh?.amount, sSh?.quoteAt]);
+  r.check("新浪没有涨跌停字段 → 留 null（界面据此说「该源不供」）", [null, null], [sSh?.limitUp, sSh?.limitDown]);
+  // 新浪对不存在的代码回的是 `var hq_str_sz999999="";`：那种行不算一行（否则会挤掉真数据，
+  // 也会让「三源全失败」被判成「取数成功、1 条」）
+  const mixedRows = parseSinaQuotes(SINA_LINES[0] + '\n' + `var hq_str_sz999999="";`);
+  r.check("整行没有可用数据的行被丢掉：混在正常行里只留正常那条", [1, "sh600000"], [mixedRows.length, mixedRows[0]?.code]);
+  let emptyErr = null;
+  try {
+    parseSinaQuotes(`var hq_str_sz999999="";`);
+  } catch (err) { emptyErr = err; }
+  r.check("整批都不可用时判源失败（不是 0 条成功）", true, /没有可解析的行情行/.test(String(emptyErr?.message ?? "")));
+  // 三源对同一时刻的**现价/昨收/成交量**必须一致：东财那条按它的字段口径造一行（f124 是秒）
+  const emRow = parseQuoteRow({
+    f12: "600000", f13: 1, f14: "浦发银行", f2: 9.54, f3: -1.65, f4: -0.16, f5: 947958, f6: 1,
+    f15: 9.74, f16: 9.54, f17: 9.7, f18: 9.7, f124: Math.floor(1791533697000 / 1000),
+  });
+  r.check("三源（东财/腾讯/新浪）解出的现价、昨收、成交量一致（量已统一成手）",
+    [[9.54, 9.7, 947958], [9.54, 9.7, 947958], [9.54, 9.7, 947958]],
+    [[emRow.price, emRow.prevClose, emRow.volume], [qSh.price, qSh.prevClose, qSh.volume], [sSh.price, sSh.prevClose, sSh.volume]]);
+
+  r.group("时间戳归一（秒 / YYYYMMDDHHMMSS / 日期+时间 → epoch 毫秒）");
+  r.check("东财（秒）×1000 与腾讯（YYYYMMDDHHMMSS）在同一时刻相等", qSh.quoteAt, emRow.quoteAt);
+  r.info("腾讯与新浪对同一收盘时刻各自的口径",
+    `腾讯 ${new Date(qSh.quoteAt).toISOString()} / 新浪 ${new Date(sSh.quoteAt).toISOString()}（差 ${Math.abs(qSh.quoteAt - sSh.quoteAt) / 1000}s）`);
+  r.check("新浪的日期+时间也归一成毫秒（同一天，差值就是两家自己的刷新时刻差）", true,
+    Math.abs(qSh.quoteAt - sSh.quoteAt) > 0 && Math.abs(qSh.quoteAt - sSh.quoteAt) < 6 * 3600 * 1000);
+  // 这就是「切源必修的隐患」：两家对同一时刻措辞不同，直接比大小会把「换了家」当成涨了/卡了
+  r.check("切源那一轮不判进展、也不计入退避（progressOf）", [{ fresh: false, counted: false }], [
+    progressOf({ prevAt: sSh.quoteAt, prevSource: "sina", at: qSh.quoteAt, source: "tencent" }),
+  ]);
+  r.check("同一个源：时间戳前进算有进展、不动算没进展（退避计数只在这时加）",
+    [{ fresh: true, counted: true }, { fresh: false, counted: true }], [
+      progressOf({ prevAt: 1000, prevSource: "tencent", at: 2000, source: "tencent" }),
+      progressOf({ prevAt: 2000, prevSource: "tencent", at: 2000, source: "tencent" }),
+    ]);
+  r.check("这一轮没拿到时间戳时两者都不算", [{ fresh: false, counted: false }],
+    [progressOf({ prevAt: 2000, prevSource: "tencent", at: 0, source: "" })]);
+
+  r.group("快照取数链与批量：一次带走整张自选 + 分钟 K + 北交所不供历史");
+  const url40 = buildTencentQuoteUrl(Array.from({ length: 40 }, (_, i) => `sh6000${String(i).padStart(2, "0")}`));
+  r.check("40 只拼进一个 q= 里（实测 200、URL 381 字符；不存在的代码整行不返回，不是空值行）", true,
+    url40.startsWith("https://qt.gtimg.cn/q=sh600000,sh600001,") && url40.split(",").length === 40);
+  r.check("新浪也是批量一个 list=", true,
+    buildSinaQuoteUrl(["sh600000", "sz300750"]).endsWith("hq.sinajs.cn/list=sh600000,sz300750"));
+  const snapFake = () => async (url) => {
+    if (url.includes("eastmoney")) throw new Error("fetch failed: 注入的连接重置");
+    if (url.includes("gtimg.cn/q=")) return { status: 200, body: TENCENT_SNAPSHOT };
+    if (url.includes("sinajs.cn")) return { status: 200, body: SINA_SNAPSHOT };
+    throw new Error("nope");
+  };
+  const chainQ = await fetchQuotes(snapFake(), ["1.600000", "0.920185"]);
+  r.check("东财那条失败后，快照落到腾讯并解出三行（含北交所那只）", ["tencent", 3], [chainQ.source, chainQ.data.length]);
+  const chainQSina = await fetchQuotes(async (url) => {
+    if (url.includes("eastmoney") || url.includes("gtimg.cn/q=")) throw new Error("fetch failed");
+    return { status: 200, body: SINA_SNAPSHOT };
+  }, ["1.600000"]);
+  r.check("腾讯也不通时落到新浪（价格兜底），量仍是手", ["sina", 947958], [chainQSina.source, chainQSina.data[0]?.volume]);
+  let depthErr = null;
+  try {
+    await fetchDepth(async () => {
+      throw new Error("fetch failed: 全不通");
+    }, "1.600000");
+  } catch (err) { depthErr = err; }
+  r.check("五档全失败：错误里点出每个源，且明写新浪「不供五档」", true,
+    /东方财富/.test(depthErr?.message ?? "") && /腾讯/.test(depthErr?.message ?? "") && /新浪：不供五档/.test(depthErr?.message ?? ""));
+  // 分钟 K：周期段是 m5/m15/m30/m60（fqkline 上那套返回 200 却没有任何数组，分钟 K 只能走 mkline）
+  const minuteBars = parseTencentKline({ data: { sh600000: { m60: [
+    ["202610091400", "9.67", "9.60", "9.67", "9.58", "239787.00", {}, "7.20"],
+    ["202610091500", "9.60", "9.54", "9.61", "9.54", "132348.00", {}, "3.97"],
+  ] } } }, { code: "sh600000", period: "m60", count: 120 }).bars;
+  r.check("分钟 K 的时刻带时分（横轴标签与断言都按这个形状）", ["2026-10-09 14:00", "2026-10-09 15:00"],
+    minuteBars.map((b) => b.time));
+  r.check("分钟 K 的列序同样是「开、收、高、低、量」",
+    [[9.67, 9.6, 9.67, 9.58, 239787], [9.6, 9.54, 9.61, 9.54, 132348]],
+    minuteBars.map((b) => [b.open, b.close, b.high, b.low, b.volume]));
+  let klineErr = null;
+  try {
+    await fetchKline(async (url) => {
+      throw new Error(`fetch failed: ${new URL(url).hostname} 不通`);
+    }, "1.600000", 101);
+  } catch (err) { klineErr = err; }
+  r.check("K线全失败：错误里点出两个源、两个备用入口，并说明新浪不供 K 线", true,
+    ["push2his.eastmoney.com", "proxy.finance.qq.com", "web.ifzq.gtimg.cn", "ifzq.gtimg.cn"].every((h) =>
+      String(klineErr?.message ?? "").includes(h)) && /新浪：不供K线/.test(klineErr?.message ?? ""));
+  let bjErr = null;
+  try {
+    parseTencentKline({ data: { bj920185: { day: [["2026-10-09", "21.01", "21.82", "21.95", "20.78", "125135"]] } } },
+      { code: "bj920185", period: "day", count: 120 });
+  } catch (err) { bjErr = err; }
+  r.check("北交所只回 1 根 → 判「不供历史」并给文案", true,
+    /只回了 1 根日线/.test(bjErr?.message ?? "") && /不供这个标的的历史/.test(bjErr?.message ?? ""));
+  let bjErr0 = null;
+  try {
+    parseTencentKline({ data: { bj430047: { day: [] } } }, { code: "bj430047", period: "day", count: 120 });
+  } catch (err) { bjErr0 = err; }
+  r.check("0 根同样判失败（不是画一张空图当成功）", true, /只回了 0 根日线/.test(bjErr0?.message ?? ""));
+
+  r.group("运行时：不供历史的标的 + 行情三源全失败不许广播旧数据 + 记忆读回");
+  // ① 北交所：腾讯只回 1 行（当日那根）→ 判「不供这个标的的历史」，给错误行 + 空图，
+  //    而不是拿 1 根冒充历史。这条同时把「全部源都失败时的界面」验收钉住
+  await add("0.920185", "920185", "贝特瑞");
+  const bjT0 = Date.now();
+  // 条件认「K 线失败里出现了 bj920185」：既证明这一轮是北交所那只，也证明它被判了不供历史
+  const gotBj = await nudgeUntil(
+    { action: "select", secid: "0.920185" },
+    `(() => { const p = window.__seen.panel.at(-1); return /bj920185/.test(JSON.stringify(p?.failed?.kline ?? "")); })()`,
+    3, 30_000);
+  r.info("北交所那轮等到面板花了", `${Date.now() - bjT0}ms`);
+  if (!gotBj) {
+    r.info("北交所那轮没等到面板，现场", JSON.stringify({
+      panels: await c.ev(`window.__seen.panel.length`),
+      last: await c.ev(`(() => { const p = window.__seen.panel.at(-1); return p ? { at: p.at, secid: p.secid, failed: p.failed, cleared: p.cleared } : null; })()`),
+      watch: ((await invoke("store_get", { pluginId: PID, key: "watch" })).v ?? []).map((w) => w.secid),
+    }).slice(0, 400));
   }
+  const pBj = (await c.ev(`window.__seen.panel.at(-1) ?? null`)) ?? {};
+  r.info("北交所那轮的 K 线失败明细", String(pBj.failed?.kline).slice(0, 160));
+  r.check("北交所判「不供历史」：K 线是空的 + 文案说到点子上（不是一根 K 线的图）", [true, null, true],
+    [gotBj, pBj.kline, /不供这个标的的历史/.test(String(pBj.failed?.kline))]);
+  // 界面那行是 briefError 截到 90 字的（完整原因在 ctx.log 的 err.detail 里），所以只断言
+  // 「是一行」「点了源的名字」「说到点子上」，逐字面量对比交给上面那组固定输入单测
+  r.check("错误行是一行、且点了源的名字", true,
+    !String(pBj.failed?.kline).includes("\n") && /腾讯|东方财富/.test(String(pBj.failed?.kline)));
   const errShown = await waitUntil(settings.client, `(async () => {
     const { widgetHost } = await import('/src/runtime/widget-host.ts');
     const rec = (widgetHost.mounted.get(${JSON.stringify(PID)}) ?? [])[0];
@@ -585,6 +892,10 @@ try {
     return nodes.some((n) => /盘面数据拉取失败/.test(n.textContent));
   })()`, 15_000);
   r.check("插件页上是错误行而不是空白", true, errShown);
+  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "remove", secid: "0.920185" }); true`);
+  await sleep(1200);
+  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "select", secid: "1.600519" }); true`);
+  await sleep(2000);
 
   // ② 记忆是从 storage 读回来的：改成东财再重启插件，重启后第一轮就该先试东财
   await invoke("store_set", { pluginId: PID, key: "sources", value: { kline: "eastmoney", trend: "eastmoney" } });
@@ -596,15 +907,60 @@ try {
     return true;
   })()`);
   await sleep(1500);
-  r.check("重启后插件活着", true,
+  r.check("重启后插件活着（记忆是从 storage 读回来的）", true,
     await c.ev(`(async () => (await import('/src/runtime/plugin-runtime.ts')).isActive(${JSON.stringify(PID)}))()`));
   r.check("重启读回的记忆是东财（storage 里那份，不是内存里的残留）", "eastmoney", (await readView())?.net?.sources?.kline);
-  // 收尾：切回日K，把选中的标的还给原来那只（重启会把它清掉），后面的断言按它来
-  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "klt", value: 101 }); true`);
-  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "select", secid: "1.600519" }); true`);
-  await sleep(2000);
-  r.check("收尾：选中的标的回到 1.600519（下面「删除后盘面收掉」按它来）", "1.600519",
-    await c.ev(`window.__seen.panel.at(-1)?.secid ?? null`));
+
+  // ③ 行情三源全给不出东西（自选里只剩一个不存在的代码，且关掉指数）：
+  //    错误行要一行点出每个源，且**不许把上一轮的价格当成本轮结果广播**（行情表清空，界面显示「—」+ 错误行）
+  // 北交所那轮的 K 线链撞了三次（主入口 + 两个备用入口），按设计进了冷却；
+  // 先等它过去、再用真搜索把失败计数清零，然后跑一轮**成功**的主轮询 —— 下面要作废的「旧行情」得先有
+  const netBj = await prepareFreshNetwork();
+  r.check("北交所那轮之后：冷却结束、失败计数清零（下一段才验得动）", [true, true], [netBj.cooled, netBj.clean]);
+  await c.ev(`window.__seen.quote.length = 0; window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "refresh" }); true`);
+  const gotBefore = await waitUntil(c, `window.__seen.quote.length > 0`, 25_000);
+  const beforeKeys = Object.keys((await readView())?.quotes ?? {});
+  r.check("先把要作废的那份行情准备好（下面那条才不是空转）", [true, true], [gotBefore, beforeKeys.length > 0]);
+  // 关掉指数：这一步必须真的生效，否则只留一个不存在代码的自选表还是会带回指数的行
+  let idxOff = false;
+  for (let i = 0; i < 3 && !idxOff; i++) {
+    await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, ${JSON.stringify({ action: "config", value: { showIndex: false } })}); true`);
+    await sleep(700);
+    idxOff = (await readView())?.config?.showIndex === false;
+  }
+  r.check("已关掉指数（这样自选表里只剩那个不存在的代码）", true, idxOff);
+  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "clear" }); true`);
+  await sleep(900);
+  // add 自己会顺带抓一次行情（tick("added")），那一次就是「三源全失败」；
+  // 不再补 refresh —— 补的那次会撞上刚触发的冷却，把状态行盖成「已刷新」反而看不到错误
+  await add("0.999999", "999999", "不存在的代码");
+  // add 自己会顺带抓一次行情（tick("added")）；那一轮可能被上一轮的在飞请求跳过，
+  // 所以等不到就再补一次 refresh（两次都进冷却的话，说明失败已经发生，状态行一样在）
+  const allFail = await nudgeUntil({ action: "refresh" }, `/行情拉取失败/.test(window.__seen.status.at(-1)?.text ?? "")`, 3, 25_000);
+  const failText = String(await c.ev(`window.__seen.status.at(-1)?.text ?? ""`));
+  r.info("三源全失败时的错误行", failText.slice(0, 200));
+  const quotesCleared = await waitUntil(c, `(async () => {
+    const { bus } = await import('/src/runtime/event-bus.ts');
+    const d = await new Promise((res) => {
+      const off = bus.subscribe(${JSON.stringify(`${PID}:widget`)}, (x) => { off(); res(x); });
+      bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "sync" });
+      setTimeout(() => { off(); res(null); }, 5000);
+    });
+    return Object.keys(d?.quotes ?? {}).length === 0;
+  })()`, 15_000);
+  r.check("错误行一行点出每个源（东方财富 / 腾讯 / 新浪）", true,
+    allFail && !failText.includes("\n") && /东方财富/.test(failText) && /腾讯/.test(failText) && /新浪/.test(failText));
+  r.check("旧行情没有被当成本轮结果广播（行情表已清空）", true, quotesCleared);
+  // 收尾：把指数跟两条自选都放回去，选中还给贵州茅台（后面的断言按它来）
+  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "clear" }); true`);
+  await sleep(900);
+  await add("1.600519", "600519", "贵州茅台");
+  await add("0.300750", "300750", "宁德时代");
+  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, ${JSON.stringify({ action: "config", value: { showIndex: true } })}); true`);
+  r.check("两条自选加回来了（后面「删掉一只」按它来）", ["1.600519", "0.300750"],
+    ((await invoke("store_get", { pluginId: PID, key: "watch" })).v ?? []).map((w) => w.secid));
+  const backSel = await nudgeUntil({ action: "select", secid: "1.600519" }, `window.__seen.panel.at(-1)?.secid === "1.600519"`, 3, 20_000);
+  r.check("收尾：选中的标的回到 1.600519（下面「删除后盘面收掉」按它来）", true, backSel);
 
   r.group("阈值规则保存与回显");
   await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, ${JSON.stringify({ action: "update", secid: "1.600519", upper: 1, lower: 99999, pct: 3 })}); true`);

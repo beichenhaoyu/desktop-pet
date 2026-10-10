@@ -30,6 +30,7 @@ import {
   KLT_VALUES,
   marketSession,
   normalizeCode,
+  progressOf,
   secidOf,
   SOURCE_IDS,
   sourceLabelOf,
@@ -85,10 +86,12 @@ let panelWanted = false;
 let panelAt = 0;
 let panelBusy = false;
 /**
- * 「上一次成功的源」：K线与分时各记一个 id，落在插件自己的隔离存储里（key: sources），
+ * 「上一次成功的源」：K线、分时、行情快照、五档各记一个 id，落在插件自己的隔离存储里（key: sources），
  * 重启后第一轮就先用它 —— 坏源不必每轮都再撞一次。插件页那行「K线数据源 腾讯」也是它。
  */
-let sourcePrefs = { kline: "", trend: "" };
+let sourcePrefs = { kline: "", trend: "", quote: "", depth: "" };
+/** 上一轮行情是哪家给的：切源那一轮不判「有没有进展」（两个源对同一时刻的措辞可能差几十分钟） */
+let lastQuoteSource = "";
 /** 悬浮窗显隐的串行链，见 syncOverlay() */
 let overlayChain = Promise.resolve();
 
@@ -294,13 +297,20 @@ async function loadPanel({ withDepth = true, withTrend = true, withKline = true 
   };
   const grabDepth = () =>
     grab("depth", async () => {
-      next.depth = await fetchDepth(request, selected);
+      const { data, source, host } = await fetchDepth(request, selected, { preferred: sourcePrefs.depth });
+      next.depth = data;
       next.depthAt = Date.now();
+      next.depthSource = source;
+      noteSource("depth", source, host);
     });
   const grabTrend = () =>
     grab("trend", async () => {
       const { data, source, host } = await fetchTrend(request, selected, { preferred: sourcePrefs.trend });
-      next.trend = data;
+      // 昨收优先取**主轮询那一份快照**（缓存复用）：同一个数不重复问，
+      // 而且分时基线跟着列表里的昨收走，不会出现「列表一个昨收、图上一个昨收」。
+      // 快照这一轮没成功（或这只不在自选里）时才退回分时响应自带的那个。
+      const cached = quotes[selected]?.prevClose;
+      next.trend = Number.isFinite(cached) ? { ...data, preClose: cached } : data;
       next.trendAt = Date.now();
       next.trendSource = source;
       noteSource("trend", source, host);
@@ -430,20 +440,25 @@ async function tick(reason = "timer") {
   }
   busy = true;
   try {
-    const rows = await fetchQuotes(out, watchSecids());
+    const { data: rows, source, host } = await fetchQuotes(out, watchSecids(), { preferred: sourcePrefs.quote });
     const next = {};
     for (const q of rows) next[q.secid] = q;
     quotes = next;
     lastError = "";
+    if (source) noteSource("quote", source, host);
 
     const session = marketSession();
     const newest = Math.max(0, ...rows.map((r) => r.quoteAt ?? 0));
-    // 行情没前进 = 停牌/休市/节假日，这一轮不该产生任何提醒
-    const fresh = newest > 0 && newest !== lastQuoteAt;
+    // 行情没前进 = 停牌/休市/节假日，这一轮不该产生任何提醒。
+    // 时间戳已在解析层归一成毫秒，但**切源那一轮不判**（各家措辞差几十分钟，见 progressOf），
+    // 否则换一次源就会被当成「涨了」白刷一轮、或者被当成「卡住了」把间隔退避到 30 分钟。
+    const step = progressOf({ prevAt: lastQuoteAt, prevSource: lastQuoteSource, at: newest, source });
+    const fresh = step.fresh;
     lastQuoteAt = newest || lastQuoteAt;
+    if (source) lastQuoteSource = source;
     // 连续没进展就把间隔按 2 的幂拉长到 30 分钟封顶：休市还 7×24 每几分钟打一次，
     // 是这套接口最像爬虫的地方；一有进展立刻回到正常节奏
-    noProgress = fresh ? 0 : noProgress + 1;
+    if (step.counted) noProgress = fresh ? 0 : noProgress + 1;
     if (currentIntervalSec() !== targetSec) restartTimer();
 
     if (config.alertsOn && fresh && session.trading) {
@@ -460,6 +475,9 @@ async function tick(reason = "timer") {
     }
     ctx?.bus.publish(TOPIC_QUOTE, { count: rows.length, reason, session });
   } catch (err) {
+    // 一个源都没成时**把行情清空**：留着上一轮的价格再配一个「刚刚更新」的时间，
+    // 就是把旧数据当新数据广播（与面板失败时摘掉序列是同一条规矩），界面显示「—」+ 错误行
+    quotes = {};
     if (!err?.cooldown) {
       lastError = String(err?.message ?? err);
       status(`行情拉取失败：${lastError}`, "error");
@@ -692,7 +710,7 @@ function restore(key, saved, fallback) {
   if (key === "sources") {
     const s = saved && typeof saved === "object" ? saved : {};
     const pick = (v) => (typeof v === "string" && SOURCE_IDS.includes(v) ? v : "");
-    return { kline: pick(s.kline), trend: pick(s.trend) };
+    return { kline: pick(s.kline), trend: pick(s.trend), quote: pick(s.quote), depth: pick(s.depth) };
   }
   // alerted：只收字符串键、布尔值，且必须是今天的日期前缀（旧日期的直接丢）
   if (saved && typeof saved === "object") {

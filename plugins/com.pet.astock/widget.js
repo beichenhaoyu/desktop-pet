@@ -532,9 +532,18 @@ function mountSettings(root, ctx, cleanups) {
     const pct = Number.isFinite(d?.price) && Number.isFinite(d?.prevClose) && d.prevClose
       ? ((d.price / d.prevClose - 1) * 100)
       : NaN;
+    // 涨停/跌停优先用五档那一路（腾讯段 47/48、东财 f51/f52 都是交易所给的价），
+    // 它没给就退回快照那一路；两路都没有就明写「该源不供」—— 不拿按代码前缀猜的幅度冒充交易所的价
+    const q = lastView?.quotes?.[live.secid] ?? null;
+    const limitUp = Number.isFinite(d?.limitUp) ? d.limitUp : Number.isFinite(q?.limitUp) ? q.limitUp : null;
+    const limitDown = Number.isFinite(d?.limitDown) ? d.limitDown : Number.isFinite(q?.limitDown) ? q.limitDown : null;
+    const limitText =
+      limitUp === null && limitDown === null
+        ? `涨停/跌停 该源不供（${sourceLabelOf(live.depthSource || lastView?.net?.sources?.quote || "") || "未知来源"}）`
+        : `涨停 ${fmtPrice(limitUp)} / 跌停 ${fmtPrice(limitDown)}`;
     panelSub.textContent =
       `现价 ${fmtPrice(d?.price)} ${fmtPct(pct)} · 昨收 ${fmtPrice(d?.prevClose)} · ` +
-      `涨停 ${fmtPrice(d?.limitUp)} / 跌停 ${fmtPrice(d?.limitDown)} · 分时 ${live.trend?.points?.length ?? 0} 点 · K线 ${live.kline?.bars?.length ?? 0} 根`;
+      `${limitText} · 分时 ${live.trend?.points?.length ?? 0} 点 · K线 ${live.kline?.bars?.length ?? 0} 根`;
     panelSub.className = `muted ${toneOf({ pct })}`;
     panelErr.textContent = live.error ? `盘面数据拉取失败：${live.error}` : "";
     if (Number.isFinite(Number(live.klt))) kltSel.value = String(live.klt);
@@ -602,9 +611,12 @@ function mountSettings(root, ctx, cleanups) {
         d.error ? ` · ${d.error}` : ""
       }`;
       statusLine.className = `status${d.error || net.cooldownLeftSec > 0 ? " error" : ""}`;
-      // 吃的是哪家的数据要看得见（换源是自动的，别让用户以为行情变了口径）
+      // 吃的是哪家的数据要看得见（换源是自动的，别让用户以为行情变了口径）。
+      // 行情（自选列表快照）与五档各报一句，跟 K线/分时同一个格式
       const src = net.sources ?? {};
       const srcParts = [];
+      if (src.quote) srcParts.push(`行情数据源 ${sourceLabelOf(src.quote)}`);
+      if (src.depth && src.depth !== src.quote) srcParts.push(`五档数据源 ${sourceLabelOf(src.depth)}`);
       if (src.kline) srcParts.push(`K线数据源 ${sourceLabelOf(src.kline)}`);
       if (src.trend && src.trend !== src.kline) srcParts.push(`分时数据源 ${sourceLabelOf(src.trend)}`);
       netLine.textContent = `近 1 分钟出网 ${net.window ?? 0} 次（上限 ${net.perMinute ?? "—"}，两次之间至少 ${net.minGapMs ?? "—"}ms）` +
