@@ -26,7 +26,7 @@ npm run verify         # 终端 2：宿主回归（147 条）
 - 只写插件时不需要碰 Rust；`npm run build`（tsc + vite）能过就说明你没弄坏前端。
 - 插件目录改动**不需要重启宿主**：在设置窗把该插件关掉再打开即可（宿主按文件 mtime 给模块 URL 加版本串）。
   Vite 不 watch `plugins/`，不会有热重载。
-- 单实例锁：dev 实例和便携包**共用**标识。如果桌面上已经跑着 `dist\DesktopPet-0.1.0\desktop-pet.exe`，
+- 单实例锁：dev 实例和便携包**共用**标识。如果桌面上已经跑着 `release-package\DesktopPet-0.1.0\desktop-pet.exe`，
   你起的 dev 会立刻退出且没有任何提示 —— 先确认 `Get-Process desktop-pet` 只有一个。
 
 ## 2. 交付物清单（缺一项就是没做完）
@@ -75,7 +75,7 @@ npm run verify         # 终端 2：宿主回归（147 条）
 | CSP 只在打包版生效 | dev 一切正常，`tauri build` 产物黑屏/加载失败 | 涉及新脚本源、图片源、协议，收尾必须跑 `npm run verify:release`；判断 CSP 不能用 CDP 求值（它不受 CSP 约束），要看页面自身代码的副作用 |
 | 测试脚本造窗口 | 全屏置顶窗 + `timeout` 杀父进程会耗尽会话 desktop heap（真发生过，只能强制重启） | 测试窗**非置顶、任务栏可见、定时自关**，脚本自己检查父进程存活；**不要在外层套 `timeout`** |
 | 杀进程 | `pkill -f` / `taskkill /IM` 会连带杀掉工具自身的进程 | 只按 PID + 可执行路径精确杀 |
-| 临时文件 | 污染工作区 | 只进 `<仓库>/temp/`，收尾删干净；打包产物进 `<仓库>/dist/`（注意 `npm run build` 会清空 `dist`） |
+| 临时文件 | 污染工作区 | 只进 `<仓库>/temp/`，收尾删干净；打包产物进 `<仓库>/release-package/`（**不要放 `dist/`**，那是 Vite 输出目录，每次 `npm run build` / `tauri build` 都会把它清空，已经丢过两次成品包） |
 
 ## 5. 交活前自检
 

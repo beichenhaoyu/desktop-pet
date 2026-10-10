@@ -14,6 +14,11 @@
   [docs/PLUGIN-REVIEW.md](docs/PLUGIN-REVIEW.md)（评审口径，含「先取证再下结论」与两次误判先例）、
   [docs/PLUGIN-BACKLOG.md](docs/PLUGIN-BACKLOG.md)（任务卡、派单模板、需要宿主新能力才能做的提案区、已否决项）。
   派单时复制 BACKLOG §0 的模板；评审时按 REVIEW §7 的格式输出，「已核不成立」一节必须写。
+  **候选插件 A1–A7 已被用户否决（2026-10-10）**：不要主动提"再加个 XX 插件"，新插件等用户直接提需求。
+- **便携包出到 `release-package/`，不要出到 `dist/`**：`dist/` 是 Vite 的输出目录，任何 `npm run build` / `tauri build`
+  都会把它清空 —— 已经因此丢过两次成品包。产物 = `release-package/DesktopPet-<版本>/`（exe + 旁边的 `plugins/` + 更新说明.txt）
+  + 同名 zip，`.gitignore` 已覆盖。重出前先核 `src-tauri/target/release/desktop-pet.exe` 的 mtime 晚于
+  `src/` 与 `src-tauri/` 的最后一次提交，否则是过期二进制；插件是磁盘加载，改 `plugins/` 不需要重编本体。
 
 ## 技术决策（已确认，勿重新选型）
 
