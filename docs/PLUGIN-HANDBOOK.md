@@ -26,7 +26,7 @@ npm run verify         # 终端 2：宿主回归（147 条）
 - 只写插件时不需要碰 Rust；`npm run build`（tsc + vite）能过就说明你没弄坏前端。
 - 插件目录改动**不需要重启宿主**：在设置窗把该插件关掉再打开即可（宿主按文件 mtime 给模块 URL 加版本串）。
   Vite 不 watch `plugins/`，不会有热重载。
-- 单实例锁：dev 实例和便携包**共用**标识。如果桌面上已经跑着 `release-package\DesktopPet-0.1.0\desktop-pet.exe`，
+- 单实例锁：dev 实例和便携包**共用**标识。如果桌面上已经跑着 `release-package\DesktopPet-0.2.0\desktop-pet.exe`，
   你起的 dev 会立刻退出且没有任何提示 —— 先确认 `Get-Process desktop-pet` 只有一个。
 
 ## 2. 交付物清单（缺一项就是没做完）

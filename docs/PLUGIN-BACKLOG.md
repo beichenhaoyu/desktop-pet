@@ -204,6 +204,54 @@ MVP 范围：<这一轮只做什么>
 - **交付**：git 提交（不 push）、temp 清空、无遗留进程、`verify:astock` 全绿输出粘贴；
   注释里写清每个源的**实测日期**、字段下标来源，以及上面两处「必须交叉验证」的结论。
 
+## 1.2 待派卡片
+
+### A9 `com.pet.agent-bridge` 改造 —— 配置归插件页 + 多 Agent 单选 + 去掉会话卡片 · 状态：**待排，阻塞于 B2 / B3 / B4**
+
+- **任务**：把「Agent 事件接入」的 UI 与操作全部搬进 agent 桥自己的设置页；页内单选当前联动的 Agent；
+  移除头顶那张 overlay 会话卡，改用本体气泡的常驻状态行 + 节点台词。
+- **依赖（硬性）**：[HOST-BACKLOG.md](HOST-BACKLOG.md) 的 **B2**（`agent:hooks` 能力 + widget settings 区注入）、
+  **B3**（`pet:status` 常驻行）、**B4**（适配器注册表 + `agent_hooks_switch` + 联动状态宿主持久化）**三张全部放行**后才能开工。
+  任一张没过就在插件侧凑合实现 = 必然写出错的近似物，评审直接打回。
+- **必读**：[../CONTEXT.md](../CONTEXT.md)（生命周期四个动作 + 显示三层的定义，本卡的词汇全在那里）、
+  [PLUGIN-HANDBOOK.md](PLUGIN-HANDBOOK.md)、[../PLUGIN_SDK.md](../PLUGIN_SDK.md) §3、
+  [adr/0001](adr/0001-agent-hooks-capability-in-plugin-page.md) / [adr/0002](adr/0002-single-agent-linkage-uninstall-then-install.md) /
+  [adr/0003](adr/0003-session-visibility-on-pet-bubble.md)、参考实现 `plugins/com.pet.astock/`（纯函数分层 + 串行链的写法）。
+- **边界**：只准动 `plugins/com.pet.agent-bridge/`（四个文件）与 `scripts/verify-agent-bridge.mjs`。
+  **不得**动 `src/`、`src-tauri/`、`tauri.conf.json`、CSP、其他插件目录、`PLUGIN_SDK.md`。
+  需要宿主再让一步 —— 停下来提出来，不要绕（尤其不要 `import { invoke }` 直连宿主命令，那是 REVIEW §1 的 P0）。
+- **manifest 变更**：新增 `agent:hooks`、`pet:status`；**删除 `overlay`**（会话卡去掉后它不再持有任何悬浮窗）；
+  `pet:say`/`pet:react`/`bus:subscribe`/`bus:publish`/`storage`/`widget` 保留。逐项核对实际用量：
+  声明了没用的要删，用了没声明的激活时会被拒（这是 REVIEW §1 的 P0 检查项）。
+- **方案约束（已定）**：
+  1. 联动 Agent 的选择器**只显示 `qoder` 可选**；`zcode`/`codex`/`dsh` 作为禁用项列出并注明「接入方式尚未验证」。
+     不要在插件侧写任何"猜路径"的逻辑，也不要用 `PET_AGENT_CONFIG_FILES` 糊一个假的可选项。
+  2. 装/卸都是**用户显式点按钮**；切 Agent 走 `agent_hooks_switch` 一次调用（事务在宿主侧，插件不要自己串两步）。
+  3. 关闭联动 / `deactivate()` → 卸载 hook 的快速路径由插件发起，但要 `await` 在飞的 hook 调用再退出：
+     **照 `com.pet.astock/index.js` 的 `overlayChain` 那条教训**排一条串行链，不要用固定 sleep 赌顺序
+     （AGENTS.md 记着：后到的 `show` 会把卡重新点亮，`deactivate` 先 `await overlayChain` 再 destroy，同一个坑换个名字再踩一次）。
+  4. 显示层：`agent:event` → `setStatus("<状态> · <工具名> · N 步")`（宿主截 60 字，插件侧别再拼长句、别塞 HTML）；
+     `needs_input`/`completed`/`failed` 保留 `say()` 台词；`completed` 后 3 秒**清除常驻行**
+     （现在那个 `HIDE_AFTER_DONE_MS = 3000` 的语义从"收 overlay"平移成"清常驻行"，别删掉这条时间常量当没需求）。
+  5. `widget.js` 的 overlay 区渲染（`mountCard` 那一套标题/状态/步数/工具名）随 `overlay` 权限一起删除，
+     不留死代码；badge 区照旧。
+  6. 隐私开关 `showTitle`/`showDetail` 留在插件页，且**改一项不能把另一项抹回默认**（`verify:astock` 有这条同类断言，照抄形式）。
+- **明确不做**：不接任何新 Agent、不给事件加来源字段、不做多 Agent 并行、不改气泡样式（B3 的地盘）、
+  不引入定时器新轮询（插件自己的 `setInterval` 不在宿主回收范围内，必须自己清 —— HANDBOOK §2）。
+- **验收**（`verify-agent-bridge` 总数**只增不减**，B2/B3 迁移后的基线是 **50** 条）：
+  - 悬浮窗：断言 `overlay_list` 里**不再有** `overlay-com_pet_agent-bridge`，且 HR 心率那张不受影响；
+  - **「两扇悬浮窗互不抢占」那组（`:382-409`）改用 `com.pet.hr-ble` + 一个临时探针插件继续跑**，
+    不许因为 agent 桥没有 overlay 就把整组删掉 —— 它守的是宿主的按插件分窗机制，不是 agent 桥的功能；
+  - 「卡片贴在宠物正上方 / 宽度 ≤360」（`:411-419`）与「游戏模式隐身时卡片一起收/回来」（`:421-425`）
+    **改写成气泡断言**（常驻行随宠物窗隐藏、回来仍在），而不是删除；这是 REVIEW §5「断言只许变严」的红线；
+  - 常驻行断言：会话进行中 >5 秒文字仍在且含工具名与步数；`completed` 后 3 秒清除；期间 `say` 台词收起不影响常驻行；
+  - 生命周期：关闭联动 → 配置文件里 `--pet-hook` 条目归零；重新开启联动 → **不会自动装回来**（用户口径：装要显式点）；
+  - 切 Agent：只有 qoder 可选，禁用项点了不产生任何文件改动；
+  - 撤销授权确认框两条分支（连带卸载 / 只撤能力）各自断言，且撤能力后再调用 `agent:hooks` 被拒并重新弹同意框；
+  - `npm run verify:agent` 全绿 + `npm run verify` ≥ 147（改了本体的话由 B 卡负责，插件侧不得声称）。
+- **交付**：git 提交（不 push）、temp 清空、无遗留进程、`verify-agent-bridge` 完整尾部汇总与退出码粘贴、
+  `git diff --stat` 证明只动了允许的文件、manifest 最终权限列表原文。
+
 ## 2. 需要宿主新能力 —— 先提案，不要开工
 
 这些卡片**当前无法在插件内正确实现**，接活的助手如果硬做会写出错误的近似物。要做的先交一份提案：

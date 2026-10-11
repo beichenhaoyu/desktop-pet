@@ -9,12 +9,14 @@
 - **未完成**：`llm-token-usage` 示例插件（用户已明确暂缓）。
 - **评审波次（2026-10-08）**：[docs/CODE-REVIEW.md](docs/CODE-REVIEW.md) 的 45 条已逐条核过并修掉可复现的部分。两条不成立，别再照着"修"：P0 #1（Tauri 2 的 `Window::emit` 走 `manager().emit`，本来就向全部 webview 广播，跨窗总线一直是通的，`verify:todo` 的桌面卡片就是它的运行时证据）；P2 #32（`request()` 里 includes 与优先级判断的先后没有可观察差异 —— 会打断的请求根本不进队列）。
 - 完整设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；插件 API 见 [PLUGIN_SDK.md](PLUGIN_SDK.md)。
-- **协作分工（2026-10-09 起）**：插件由外部 AI 助手编写，本会话负责**规划、派单与评审**。三份文档是这条流水线的接口：
+- **协作分工（2026-10-11 起，全项目）**：本会话任**项目经理**——需求拆分、规划、派单、验收；**实现一律交给外部敏捷开发模型**，本会话不接自己的卡（发布/工程类 `S` 卡除外）。四份文档是这条流水线的接口：
   [docs/PLUGIN-HANDBOOK.md](docs/PLUGIN-HANDBOOK.md)（接活者的交付标准与坑清单）、
   [docs/PLUGIN-REVIEW.md](docs/PLUGIN-REVIEW.md)（评审口径，含「先取证再下结论」与两次误判先例）、
-  [docs/PLUGIN-BACKLOG.md](docs/PLUGIN-BACKLOG.md)（任务卡、派单模板、需要宿主新能力才能做的提案区、已否决项）。
-  派单时复制 BACKLOG §0 的模板；评审时按 REVIEW §7 的格式输出，「已核不成立」一节必须写。
-  **候选插件 A1–A7 已被用户否决（2026-10-10）**：不要主动提"再加个 XX 插件"，新插件等用户直接提需求。
+  [docs/PLUGIN-BACKLOG.md](docs/PLUGIN-BACKLOG.md)（插件域任务卡、派单模板、需要宿主新能力才能做的提案区、已否决项）、
+  [docs/HOST-BACKLOG.md](docs/HOST-BACKLOG.md)（本体/构建发布/文档域的派单模板、状态板、**验收证据矩阵**：哪类改动必须跑哪个 verify 套件与其断言下限）。
+  派单时复制对应 BACKLOG §0 的模板（插件用 PLUGIN-BACKLOG，本体/工程用 HOST-BACKLOG）；
+  评审时按 REVIEW §7 的格式输出，「已核不成立」一节必须写，**断言只许变严不许变松**。
+  规划方不凭「看起来缺」自行开需求卡，**候选插件 A1–A7 已被用户否决（2026-10-10）**：不要主动提"再加个 XX 插件"，新需求等用户直接提。
 - **便携包出到 `release-package/`，不要出到 `dist/`**：`dist/` 是 Vite 的输出目录，任何 `npm run build` / `tauri build`
   都会把它清空 —— 已经因此丢过两次成品包。产物 = `release-package/DesktopPet-<版本>/`（exe + 旁边的 `plugins/` + 更新说明.txt）
   + 同名 zip，`.gitignore` 已覆盖。重出前先核 `src-tauri/target/release/desktop-pet.exe` 的 mtime 晚于
