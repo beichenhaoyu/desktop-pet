@@ -132,16 +132,27 @@ async fn fail_pump(app: &AppHandle, device_id: &str, gen: u64, reason: &str) {
     clear_generation(app, device_id, gen).await;
 }
 
+/// 通知流退出时该不该清掉 task 槽位：只有仍属于自己那一代才清。
+/// 同设备重连后旧流才退出，代际已经不是当前那个 —— 不清就把新连接的记录抹了。
+fn task_is_this_generation(held: Option<u64>, gen: u64) -> bool {
+    held == Some(gen)
+}
+
+/// 该不该清掉「当前连接」：只有连着的就是这台设备才清（断开 A 不该影响 B）。
+fn connected_is_this_device(held: Option<&str>, device_id: &str) -> bool {
+    held == Some(device_id)
+}
+
 async fn clear_generation(app: &AppHandle, device_id: &str, gen: u64) {
     let state = app.state::<BleState>();
     {
         let mut task = state.notify_task.lock().await;
-        if matches!(task.as_ref(), Some((g, _)) if *g == gen) {
+        if task_is_this_generation(task.as_ref().map(|(g, _)| *g), gen) {
             *task = None;
         }
     }
     let mut connected = state.connected.lock().await;
-    if connected.as_deref() == Some(device_id) {
+    if connected_is_this_device(connected.as_deref(), device_id) {
         *connected = None;
     }
 }
@@ -388,3 +399,7 @@ pub async fn ble_connected_device(
     require_granted(&perms, &plugin_id, "ble:connect")?;
     Ok(state.connected.lock().await.clone())
 }
+
+#[cfg(test)]
+#[path = "ble.tests.rs"]
+mod tests;

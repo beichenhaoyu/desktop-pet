@@ -246,7 +246,7 @@ MVP 范围：<这一轮只做什么>
 |---|---|---|
 | `src/pet/`（状态机、图集切片、点击穿透、气泡） | `npm run verify` + `npm run verify:skin`（动了形象/协议）+ `verify:game`（动了显隐） | verify **189** / skin 26 / game 15 |
 | `src/runtime/`（插件运行时、bridge、widget 宿主、订阅回收） | `npm run verify` | **189** |
-| `src-tauri/`（Rust 能力服务、gate、fsutil、hotkeys） | `cargo test --lib` + `npm run verify` + 对应 `verify:<域>` | cargo **97** / verify **230**（S 卡与 Q1 后；verify 的条数随同意框流程实际弹出与否在 215~230 间浮动，下限按 215） |
+| `src-tauri/`（Rust 能力服务、gate、fsutil、hotkeys） | `cargo test --lib` + `npm run verify` + 对应 `verify:<域>` | cargo **105** / verify **230**（S 卡与 Q1 后；verify 的条数随同意框流程实际弹出与否在 215~230 间浮动，下限按 215） |
 | `http` 能力 / charset 解码 / 重定向 | `npm run verify:http` | 21 |
 | Agent hook 链路 | `npm run verify:agent` | **72**（A9a 加了插件页端到端组；当批实测 `cargo` 72 / `verify` 189。本波只改了 overlay/bus 门禁那条采样路径，verify:agent 72/72 复跑过） |
 | 待办链路 | `npm run verify:todo` | 30 |
