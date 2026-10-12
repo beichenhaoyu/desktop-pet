@@ -1,0 +1,76 @@
+# 机器验收底座（E2）。
+#
+# 诚实标注：这条工作流是在本机写就、逐步等价复跑过每条命令的，但**没有在真实 runner 上跑绿过**
+# —— 本机对 GitHub 主站没有可用通路（只有 SSH），推上去之前 runner 差异（rustup 拉 1.98.1、
+# MSVC 版本、WebView2 运行时）仍未证明。第一次真实运行如果红，按「先取证再下结论」修，别直接删步骤。
+#
+# 只跑零 GUI、零联网的部分。CDP 运行时套件（verify / verify:agent / verify:astock …）
+# 要真实 webview 与桌面会话，属于 A3 的 workflow_dispatch 范畴，不进这条必须绿的门。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装 Rust 工具链（rust-toolchain.toml 钉 1.98.1）
+        run: |
+          rustup set profile minimal
+          rustup show
+          rustfmt --version
+          cargo clippy --version
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: 缓存 cargo 依赖
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      # tsc --noEmit 由 npm run build 的前半段负责
+      - name: 类型检查与前端构建
+        run: npm run build
+
+      - name: 离线常驻单测（astock 解析层 + 判定层）
+        run: npm run unit:astock
+
+      - name: Rust 格式检查
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
+      - name: Rust lint
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Rust 单测
+        working-directory: src-tauri
+        run: cargo test
+
+      # --no-bundle：只要证明 dev/debug 全链路能编出来，产物与打包版 CSP 归 verify:release
+      - name: Tauri debug 构建
+        run: npx tauri build --debug --no-bundle
