@@ -28,7 +28,6 @@ import {
   waitUntil,
 } from "./harness/cdp.mjs";
 import {
-  MARKET_SOURCES,
   SOURCE_IDS,
   buildSinaQuoteUrl,
   buildTencentQuoteUrl,
@@ -522,7 +521,6 @@ try {
   // 把选中还给原来那只（后面的断言按它来）
   await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "select", secid: "1.600519" }); true`);
   await sleep(3000);
-  const pnlBack = (await c.ev(`window.__seen.panel.at(-1) ?? null`)) ?? {};
   const memKlineBefore60 = (await readView())?.net?.sources?.kline ?? "";
   const netK0 = await netWindow();
   await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "klt", value: 60 }); true`);

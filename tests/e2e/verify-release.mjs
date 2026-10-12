@@ -111,7 +111,7 @@ try {
     r.group("无 CSP 违规");
     const violations = c.noise.filter((n) => n.startsWith("CSP:"));
     r.check("违规条数", 0, violations.length);
-    c.noise.filter((n) => !n.startsWith("CSP:")).forEach((n) => console.log("   " + n));
+    for (const n of c.noise.filter((n) => !n.startsWith("CSP:"))) console.log("   " + n);
 
     await c.ev(`localStorage.setItem('host:enabled-plugins', ${JSON.stringify(prev)})`);
   } finally {

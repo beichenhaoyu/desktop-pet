@@ -172,7 +172,12 @@ export function drawTrend(canvas, data, { width = 300, height = 132, dpr = 1 } =
     if (!Number.isFinite(points[i].avg)) continue;
     const x = xOf(i);
     const y = yOf(points[i].avg);
-    started ? g.lineTo(x, y) : (g.moveTo(x, y), (started = true));
+    if (started) {
+      g.lineTo(x, y);
+    } else {
+      g.moveTo(x, y);
+      started = true;
+    }
   }
   g.stroke();
 
@@ -275,7 +280,12 @@ export function drawKline(canvas, bars, { width = 300, height = 132, dpr = 1 } =
       if (ma[i] === null) continue;
       const x = xOf(i);
       const y = yOf(ma[i]);
-      started ? g.lineTo(x, y) : (g.moveTo(x, y), (started = true));
+      if (started) {
+        g.lineTo(x, y);
+      } else {
+        g.moveTo(x, y);
+        started = true;
+      }
     }
     if (started) g.stroke();
   }

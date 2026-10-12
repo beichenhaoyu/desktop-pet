@@ -146,7 +146,7 @@ try {
 
   // 上一轮崩溃可能把探针留在启用清单里：目录 watcher 会据此自动激活它，
   // 于是测试自己看到的 badge 里多出别人（宿主）挂的容器。起点钉死清单。
-  const baselineEnabled = await c.ev(`(() => {
+  await c.ev(`(() => {
     const key = 'host:enabled-plugins';
     const prev = JSON.parse(localStorage.getItem(key) ?? '[]');
     const clean = Array.isArray(prev) ? prev.filter((id) => id !== ${JSON.stringify(PROBE_ID)} && id !== ${JSON.stringify(NET_ID)}) : [];
@@ -926,7 +926,7 @@ try {
   };
   const settingsTarget = await findSettings();
   r.check("设置窗可被宿主唤出（快捷键与回归共用这个入口）", true, !!settingsTarget);
-  let sc = settingsTarget
+  const sc = settingsTarget
     ? await attach(PORT, (t) => t.webSocketDebuggerUrl === settingsTarget.webSocketDebuggerUrl, 15_000)
     : null;
   if (sc) {
@@ -1293,7 +1293,7 @@ export function unmount() {}
   r.info("导航过渡期告警（reload 切断在飞 IPC 的产物，单独归类）", String(c.transitionNoise.length));
   const unexpected = c.noise.filter((n) => !n.includes("派发递归"));
   r.check("无", 0, unexpected.length);
-  if (unexpected.length) unexpected.forEach((n) => console.log("   " + n));
+  for (const n of unexpected) console.log("   " + n);
 } catch (err) {
   // 断言中途抛错时别只丢一个栈：给出可读原因
   aborted = true;

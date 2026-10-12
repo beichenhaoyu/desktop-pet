@@ -56,6 +56,9 @@ jobs:
       - name: 类型检查与前端构建
         run: npm run build
 
+      - name: 前端 lint（Biome）
+        run: npm run lint
+
       - name: 离线常驻单测（astock 解析层 + 判定层）
         run: npm run unit:astock
 

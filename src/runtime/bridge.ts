@@ -15,7 +15,7 @@ function requireController() {
 }
 
 // 插件为普通 JS（第三方交付物），上下文保持宽松类型
-/* eslint-disable @typescript-eslint/no-explicit-any */
+// biome-ignore lint/suspicious/noExplicitAny: PluginContext 的形状由 manifest 动态决定，SDK 侧的类型面见 packages/sdk（K1）
 export type PluginContext = any;
 
 interface ManifestLike {

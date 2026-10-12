@@ -112,7 +112,7 @@ export async function attach(port, match, timeoutMs = 90_000) {
     once(method, timeoutMs = 30_000) {
       return new Promise((res, rej) => {
         const timer = setTimeout(() => rej(new Error(`等 ${method} 超时`)), timeoutMs);
-        onceWatchers.push({ method, done: () => (clearTimeout(timer), res()) });
+        onceWatchers.push({ method, done: () => { clearTimeout(timer); res(); } });
       });
     },
     /**

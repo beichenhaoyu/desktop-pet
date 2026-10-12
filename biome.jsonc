@@ -1,0 +1,50 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "includes": ["src/**", "plugins/**", "tests/**", "tools/**", "vite.config.ts"]
+  },
+  // 格式化器先不启用：本仓库没有既成的排版约定，在同一波里全量重排会把
+  // 八个 verify 套件与四个插件的 diff 撑成几千行，评审看不到真正的改动。
+  // 要开的话单独一个只含格式化的提交（沿用 E1「移动与修改分家」的口径）。
+  "formatter": {
+    "enabled": false
+  },
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": "off"
+      }
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      // 默认就是 recommended 那套；这里只写偏离与升级严重度的部分。
+      // 未用 import / 未用变量在回归脚本里意味着「断言准备到一半没接上」，按 error 挡；
+      // biome 2.5 已把 rules.recommended 标记为废弃，所以不写它。
+      "correctness": {
+        "noUnusedImports": "error",
+        "noUnusedVariables": "error"
+      },
+      "style": {
+        // 回归脚本里的表达式是给 CDP 求值的字符串，改成模板字面量要动嵌套引号，
+        // 收益是排版、风险是把断言写错 —— 不值
+        "useTemplate": "off",
+        // 宿主自己的页面元素取不到就是宿主 bug，`!` 是有意的（见 consent/main.ts、main.ts）；
+        // 换成运行时判空等于给不可能发生的情形加兜底
+        "noNonNullAssertion": "off"
+      },
+      "complexity": {
+        // 修复被 biome 标为 unsafe：`!set || !set.delete(x)` 与 `!set?.delete(x)`
+        // 在「set 存在但 delete 返回 false」上依赖的是同一个 falsy 判定，改写不改义，
+        // 但这类等价性要靠人核对而不是让 lint 自动落笔
+        "useOptionalChain": "off"
+      }
+    }
+  }
+}

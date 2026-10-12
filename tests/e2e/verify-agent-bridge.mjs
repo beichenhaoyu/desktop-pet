@@ -26,7 +26,6 @@ const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
 const r = createReport("Agent 事件链路（dev）");
 
-let seq = 0;
 function emitPhase(phase, payload = {}) {
   const line = JSON.stringify({ phase, at: Date.now(), payload: { session_id: "verify-sess", ...payload } });
   appendFileSync(join(INBOX, `${phase}.jsonl`), line + "\n");

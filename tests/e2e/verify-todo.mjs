@@ -9,7 +9,6 @@ import {
   listPages,
   openSettingsInvoker,
   reloadAndWait,
-  waitForPage,
   waitUntil,
 } from "./harness/cdp.mjs";
 

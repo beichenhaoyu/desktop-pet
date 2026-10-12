@@ -17,7 +17,6 @@ import {
   TOPIC_QUOTE,
   TOPIC_STATUS,
   TOPIC_SUGGEST,
-  TOPIC_WIDGET,
 } from "./topics.js";
 import {
   briefReason,

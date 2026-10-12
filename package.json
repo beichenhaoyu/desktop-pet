@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "dev:debug": "node tools/dev-debug.mjs",
+    "lint": "biome lint .",
     "unit:astock": "node tests/unit/unit-market.mjs && node tests/unit/unit-aux.mjs",
     "verify": "node tests/e2e/verify-isolation.mjs",
     "verify:agent": "node tests/e2e/verify-agent-bridge.mjs",
@@ -23,6 +24,7 @@
     "@tauri-apps/api": "^2.12.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
     "@tauri-apps/cli": "^2.12.0",
     "@types/node": "^26.6.5",
     "typescript": "~6.0.3",
