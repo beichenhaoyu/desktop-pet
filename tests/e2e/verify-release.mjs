@@ -40,14 +40,14 @@ const app = spawn(EXE, [], {
 let exitCode = 1;
 try {
   writeFixtures(PLUGINS_DIR);
-  const c = await attach(PORT, (t) => /tauri\.localhost\/$/.test(t.url), 90_000);
+  const c = await attach(PORT, (t) => /tauri\.localhost\/src\/index\.html$/.test(t.url), 90_000);
   try {
     r.info("已连接", c.url);
     const invoke = hostInvoke(c);
 
     r.group("CSP 是否随文档下发（Tauri 用响应头，不是 meta 标签）");
     const header = await c.ev(
-      `(async () => { const res = await fetch('/index.html'); return res.headers.get('content-security-policy') ?? ''; })()`,
+      `(async () => { const res = await fetch('/src/index.html'); return res.headers.get('content-security-policy') ?? ''; })()`,
     );
     r.check("响应头含 CSP", true, header.includes("default-src 'none'"));
     r.check("script-src 不含 unsafe-inline", false, /script-src[^;]*unsafe-inline/.test(header));

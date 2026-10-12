@@ -174,7 +174,7 @@ fn ensure_window(app: &AppHandle, plugin_id: &str, height: u32) -> Result<(), St
         return Ok(());
     }
     // 页面靠自己的窗口标签（overlay-<插件 id>）认卡片属于谁，不必再传查询串
-    let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("overlay.html".into()))
+    let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("src/overlay.html".into()))
         // 标题带上插件 id：多扇悬浮窗在 CDP / 任务管理器里才分得清是谁的
         .title(format!("DesktopPet Overlay · {plugin_id}"))
         .position(24.0, 24.0)

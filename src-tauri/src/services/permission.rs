@@ -271,7 +271,7 @@ pub async fn permission_request(
         );
 
     let label = format!("consent-{}", req_id);
-    let win = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("consent.html".into()))
+    let win = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("src/consent.html".into()))
         .title("权限确认")
         .inner_size(420.0, 320.0)
         .resizable(false)

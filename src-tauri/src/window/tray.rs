@@ -67,7 +67,7 @@ pub fn open_settings(app: &AppHandle) {
         let _ = win.set_focus();
         return;
     }
-    let _ = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
+    let _ = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("src/settings.html".into()))
         .title("DesktopPet 设置")
         .inner_size(760.0, 600.0)
         .min_inner_size(660.0, 460.0)

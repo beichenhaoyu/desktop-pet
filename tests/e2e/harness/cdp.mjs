@@ -186,7 +186,7 @@ export async function openSettingsInvoker(port, petClient, timeoutMs = 25_000) {
   // dev 是 localhost:1420，打包版是 tauri.localhost —— 两边都要认（verify:release 用的就是后者）
   const target = await waitForPage(
     port,
-    (t) => /(localhost:1420|tauri\.localhost)\/settings\.html/.test(t.url),
+    (t) => /(localhost:1420|tauri\.localhost)\/src\/settings\.html/.test(t.url),
     timeoutMs,
   );
   const client = await attach(port, (t) => t.webSocketDebuggerUrl === target.webSocketDebuggerUrl, 15_000);

@@ -17,7 +17,7 @@ if (!env.APPDATA) {
   process.exit(2);
 }
 const INBOX = `${env.APPDATA}\\com.desktoppet.pet\\agent\\inbox`;
-const isPetPage = (t) => /localhost:1420\/(index\.html)?$/.test(t.url);
+const isPetPage = (t) => /localhost:1420\/(src\/)?index\.html$/.test(t.url);
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 const r = createReport("游戏模式（dev）");
 

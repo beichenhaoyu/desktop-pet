@@ -21,7 +21,7 @@ const TENCENT = "https://qt.gtimg.cn/q=sh600000";
 const SINA = "https://hq.sinajs.cn/list=sh600000";
 // 新浪不带 referer 会 403；这条头也顺带证明插件的自定义请求头真的透传到了宿主
 const SINA_HEADERS = [["referer", "https://finance.sina.com.cn"]];
-const isPetPage = (t) => /localhost:1420\/(index\.html)?$/.test(t.url);
+const isPetPage = (t) => /localhost:1420\/(src\/)?index\.html$/.test(t.url);
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 const r = createReport("宿主 http 能力的 charset 解码（dev）");
 

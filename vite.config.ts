@@ -31,10 +31,10 @@ export default defineConfig(() => ({
   build: {
     rollupOptions: {
       input: {
-        pet: "index.html",
-        settings: "settings.html",
-        overlay: "overlay.html",
-        consent: "consent.html",
+        pet: "src/index.html",
+        settings: "src/settings.html",
+        overlay: "src/overlay.html",
+        consent: "src/consent.html",
       },
     },
   },

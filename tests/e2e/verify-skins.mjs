@@ -6,8 +6,8 @@ import { argv, env } from "node:process";
 import { attach, createReport, hostInvoke, waitForPage, waitUntil } from "./harness/cdp.mjs";
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
-const isPetPage = (t) => /localhost:1420\/(index\.html)?$/.test(t.url);
-const isSettingsPage = (t) => /localhost:1420\/settings\.html/.test(t.url);
+const isPetPage = (t) => /localhost:1420\/(src\/)?index\.html$/.test(t.url);
+const isSettingsPage = (t) => /localhost:1420\/src\/settings\.html/.test(t.url);
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 const r = createReport("桌宠资源安装（dev）");
 

@@ -94,7 +94,7 @@ MVP 范围：<这一轮只做什么>
 - **边界（只准动这些，其余一律不碰）**：
   - `src-tauri/src/gate.rs`、`src-tauri/src/commands/agent.rs`、`src-tauri/src/lib.rs`（仅命令注册处）
   - `src/runtime/bridge.ts`、`src/runtime/widget-host.ts`、`src/runtime/topic-acl.ts`
-  - `src/settings/main.ts`、`settings.html`
+  - `src/settings/main.ts`、`src/settings.html`
   - `PLUGIN_SDK.md`（§3 能力表加一行）、`AGENTS.md`（改那条约定的含义）
   - `tests/e2e/verify-isolation.mjs`、`tests/e2e/verify-agent-bridge.mjs`（只做断言迁移，不做功能改动）
   - **不得**动 `plugins/com.pet.agent-bridge/`（归 A9）、`src/main.ts` 与 `src/pet/`（归 B3）、`services/agent.rs` 的收件与归一化、
@@ -109,7 +109,7 @@ MVP 范围：<这一轮只做什么>
      **必须改写**成 ADR-0001 的口径：挡的是别的窗口，不挡同 realm 的主动越权（那条缺口要等 Web Worker 宿主才收口）。
      留着旧注释就是给下一批人一个假安全感。
   5. `src/settings/main.ts:360-435` 的 `renderAgent/runAgentAction/wireAgentBox`、`:574-575` 的启动调用、
-     `settings.html:83-96` 那张卡片，**一起删干净**，不留"以后可能还要"的死代码。
+     `src/settings.html:83-96` 那张卡片，**一起删干净**，不留"以后可能还要"的死代码。
   6. 撤销授权的连带卸载确认框由**宿主**弹（撤销入口在宿主壳里，插件拦不到这一步）：默认勾选「同时卸载 hook」，
      用户可以只撤能力。选「连带卸载」时复用 uninstall 那条路径，不要另写一份删除逻辑。
 - **MVP 范围**：上面 6 条 + 断言，做完就停。
@@ -127,7 +127,7 @@ MVP 范围：<这一轮只做什么>
   - **只删自家条目**（P0）：构造一份含他人 hook 条目的样例 `settings.json`，走完 install→uninstall 后断言
     `--pet-hook` 条目归零且**别人的条目逐字节未变**。
   - 撤销授权确认后两条分支都要有断言：「连带卸载」→ 配置文件干净；「只撤能力」→ 文件保持装好状态且能力缓存失效。
-  - 动了 `settings.html` → 必须跑 `npm run verify:release` 且 ≥ **12** 全绿。
+  - 动了 `src/settings.html` → 必须跑 `npm run verify:release` 且 ≥ **12** 全绿。
   - `git diff` 复核：出现 `src/main.ts`、`src/pet/`、`plugins/` 的改动就是越界，直接打回。
 - **落地后回改（规划方做，接活者在提交说明里提醒即可）**：AGENTS.md 那条约定补上"指 realm、不指宿主独占"，
   `agent:hooks` 进能力名清单与 PLUGIN_SDK 表格，README 功能清单同步。
