@@ -11,12 +11,7 @@ pub fn notify_show(
     title: String,
     body: String,
 ) -> Result<(), String> {
-    if !crate::commands::plugins::is_safe_id(&plugin_id) {
-        return Err("invalid plugin id".into());
-    }
-    if !perms.is_granted(&plugin_id, "notify") {
-        return Err("未授权发送系统通知：需要 manifest 声明 notify 并已同意".into());
-    }
+    crate::gate::plugin_capability(&perms, &plugin_id, "notify")?;
     let title = sanitize(&title, 80);
     let text = sanitize(&body, 240);
     if title.is_empty() && text.is_empty() {

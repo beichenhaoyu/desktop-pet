@@ -235,7 +235,7 @@ pub async fn http_request(
     headers: Option<Vec<(String, String)>>,
     body: Option<String>,
 ) -> Result<HttpResponse, String> {
-    if !crate::commands::plugins::is_safe_id(&plugin_id) {
+    if !crate::ids::is_safe_id(&plugin_id) {
         return Err("invalid plugin id".into());
     }
     let host = parse_host(&url)?;

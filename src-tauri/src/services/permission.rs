@@ -9,6 +9,7 @@ use tokio::sync::oneshot;
 
 use super::store::StoreState;
 use crate::fsutil::write_atomic;
+use crate::ids::is_safe_id;
 
 /// 插件权限管理：授权表持久化 + 首次调用未授权能力时弹同意框。
 /// 进程内插件不是硬安全边界，这里是策略层（见 ARCHITECTURE.md 信任模型）。
@@ -151,9 +152,9 @@ impl PermissionState {
     }
 }
 
-fn valid_id(id: &str) -> bool {
-    !id.is_empty() && !id.contains("..") && !id.contains('/') && !id.contains('\\')
-}
+/// 插件 id 一律用 `crate::ids::is_safe_id`（S4）。
+/// 这里以前另有一份 `valid_id`（只挡 `..` `/` `\`），比 overlay/store 那两份都松 ——
+/// 三份各写各的正是一个 id 能穿过某道门、又被另一道挡住的来源。
 
 /// 插件目录变动后回收孤儿授权。
 /// 读不到目录时什么都不做 —— 宁可留着过期授权，也不要在一次临时 IO 失败上把用户给过的权限抹掉。
@@ -165,13 +166,17 @@ pub fn prune_orphan_grants(app: &AppHandle) {
     let removed = app.state::<PermissionState>().retain_known(&known);
     if !removed.is_empty() {
         log::info!("回收已卸载插件的授权: {}", removed.join(", "));
+        // 目录都没了，能力也收走了，它的悬浮层再没人能关（同 permission_revoke 那条理由）
+        for id in &removed {
+            crate::window::overlay::reclaim_for_permission(app, id);
+        }
     }
 }
 
 /// 检查单个能力是否已授权
 #[tauri::command]
 pub fn permission_check(state: tauri::State<PermissionState>, plugin_id: String, capability: String) -> bool {
-    valid_id(&plugin_id) && state.is_granted(&plugin_id, &capability)
+    is_safe_id(&plugin_id) && state.is_granted(&plugin_id, &capability)
 }
 
 /// 请求授权：只受理 manifest 已声明的能力；已全部授权则立即放行；
@@ -184,7 +189,7 @@ pub async fn permission_request(
     plugin_name: String,
     capabilities: Vec<String>,
 ) -> Result<bool, String> {
-    if !valid_id(&plugin_id) {
+    if !is_safe_id(&plugin_id) {
         return Err("invalid plugin id".into());
     }
     // 磁盘 manifest 是声明能力的唯一事实来源：未声明的能力直接拒绝，不弹框。
@@ -330,13 +335,16 @@ pub fn permission_revoke(
     store: tauri::State<StoreState>,
 ) -> Result<Vec<String>, String> {
     crate::gate::settings(&window, "撤销授权")?;
-    if !valid_id(&plugin_id) {
+    if !is_safe_id(&plugin_id) {
         return Err("invalid plugin id".into());
     }
     let revoked = state.revoke_all(&plugin_id);
     if let Err(e) = store.clear_plugin(&plugin_id) {
         log::warn!("清理 {plugin_id} 存储失败: {e}");
     }
+    // 能力已经收走了，插件面的 overlay 门禁此后过不去 —— 那扇置顶透明窗必须由宿主先收掉，
+    // 否则撤销授权反而留下一张再也没人能关的卡片（信息泄露 + 窗口泄漏）
+    crate::window::overlay::reclaim_for_permission(&app, &plugin_id);
     // 前端桥会缓存「这个能力已授权」来省掉逐次 IPC（见 runtime/bridge.ts）。
     // 撤销必须让这份缓存失效，否则已加载的插件还能继续用刚被收回的能力。
     let _ = app.emit("host:permission-revoked", &plugin_id);

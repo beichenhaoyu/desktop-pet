@@ -1,6 +1,9 @@
 mod commands;
 mod fsutil;
+#[cfg(test)]
+mod gate_coverage;
 mod gate;
+mod ids;
 mod services;
 mod window;
 
@@ -99,6 +102,7 @@ pub fn run() {
             window::overlay::overlay_show,
             window::overlay::overlay_hide,
             window::overlay::overlay_destroy,
+            window::overlay::overlay_reclaim,
             window::overlay::overlay_list,
             window::overlay::overlay_owner,
             commands::plugins::plugins_list,

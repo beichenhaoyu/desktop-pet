@@ -164,19 +164,13 @@ async fn init_ble(state: &BleState) -> Result<(), String> {
 /// BLE 命令一律带调用方插件 id，并逐项查授权表。
 /// JS 能力桥本来就按 manifest 校验，这一步是为了让「绕过桥直接 invoke」也拿不到别人的权限；
 /// 插件之间仍无法区分（同一个宠物窗），那要等 Web Worker 宿主。
+/// 判定收在 `crate::gate::plugin_capability`（S4/S5：全项目一把门禁，别再各写一份）。
 fn require_granted(
     perms: &tauri::State<'_, PermissionState>,
     plugin_id: &str,
     cap: &str,
 ) -> Result<(), String> {
-    if !crate::commands::plugins::is_safe_id(plugin_id) {
-        return Err("invalid plugin id".into());
-    }
-    if perms.is_granted(plugin_id, cap) {
-        Ok(())
-    } else {
-        Err(format!("未授权 {cap}：需要 manifest 声明且已同意"))
-    }
+    crate::gate::plugin_capability(perms, plugin_id, cap)
 }
 
 /// 开始扫描；发现的新设备通过 ble:device-found 事件广播

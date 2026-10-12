@@ -5,6 +5,8 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
 
+use crate::services::permission::PermissionState;
+
 /// 悬浮层的摆放方式。
 const PLACEMENT_CORNER: u8 = 0;
 const PLACEMENT_ABOVE_PET: u8 = 1;
@@ -65,7 +67,7 @@ pub fn overlay_label(plugin_id: &str) -> String {
     format!("overlay-{cleaned}")
 }
 
-fn owner_of_label(label: &str) -> Option<String> {
+pub(crate) fn owner_of_label(label: &str) -> Option<String> {
     let guard = table().lock().unwrap_or_else(|p| p.into_inner());
     guard
         .keys()
@@ -175,22 +177,55 @@ fn ensure_window(app: &AppHandle, plugin_id: &str, height: u32) -> Result<(), St
 
 /// 插件 id 会进窗口标签，先过宿主既有的 id 规则
 fn check_id(plugin_id: &str) -> Result<(), String> {
-    if crate::commands::plugins::is_safe_id(plugin_id) {
+    if crate::ids::is_safe_id(plugin_id) {
         Ok(())
     } else {
         Err("非法的插件 id".into())
     }
 }
 
+/// S3：悬浮层是插件的脸面，也得按能力放行。以前只有 JS 桥的 `gated(manifest, "overlay")`
+/// 在挡，绕过桥的插件可以凭空开一扇置顶透明窗，既不消耗配额也不留授权记录。
+/// 同 realm 的插件冒名他人 id 仍拦不住（见 gate.rs）。
+fn check_grant(perms: &PermissionState, plugin_id: &str) -> Result<(), String> {
+    check_id(plugin_id)?;
+    crate::gate::plugin_capability(perms, plugin_id, "overlay")
+}
+
+/// 收掉某插件的悬浮层（移出注册表 + 关窗）。
+/// 命令面与宿主内部回收共用这一份，差别只在调用前要过谁的门禁。
+fn reclaim(app: &AppHandle, plugin_id: &str) {
+    table().lock().unwrap_or_else(|p| p.into_inner()).remove(plugin_id);
+    if let Some(win) = app.get_webview_window(&overlay_label(plugin_id)) {
+        let _ = win.close();
+    }
+}
+
+/// 宿主内部的回收（撤销授权时调用）：那时能力已经没了，走不了命令面的门禁
+pub fn reclaim_for_permission(app: &AppHandle, plugin_id: &str) {
+    reclaim(app, plugin_id);
+}
+
+/// 谁能代表某个插件动它的悬浮层：宠物窗（运行时与插件同 realm）、设置窗（插件设置页）、
+/// 以及该插件自己那扇悬浮窗 —— 后者的归属由注册表判定，页面自报的 id 在这一路不算。
+fn caller_may_act_for(label: &str, plugin_id: &str) -> bool {
+    label == "pet" || label == "settings" || owner_of_label(label).as_deref() == Some(plugin_id)
+}
+
 /// 显示（或创建）本插件的悬浮层。placement 传 "above-pet" 时贴着宠物头顶并跟随拖动。
 #[tauri::command]
 pub async fn overlay_show(
     app: AppHandle,
+    perms: tauri::State<'_, PermissionState>,
+    window: tauri::Window,
     plugin_id: String,
     placement: Option<String>,
     height: Option<u32>,
 ) -> Result<(), String> {
-    check_id(&plugin_id)?;
+    check_grant(&perms, &plugin_id)?;
+    if !caller_may_act_for(window.label(), &plugin_id) {
+        return Err(format!("窗口 {} 不能为插件 {plugin_id} 开悬浮层", window.label()));
+    }
     // 只为确实装着的插件开窗：凭空的 id 会留下一扇没人认领、也没人能收掉的窗
     // （插件之间的越权仍拦不住，那是自报 plugin_id 的固有问题，见 gate.rs 与 R2）
     let installed = crate::commands::plugins::installed_plugin_ids(&app)
@@ -218,8 +253,16 @@ pub async fn overlay_show(
 }
 
 #[tauri::command]
-pub async fn overlay_hide(app: AppHandle, plugin_id: String) -> Result<(), String> {
-    check_id(&plugin_id)?;
+pub async fn overlay_hide(
+    app: AppHandle,
+    perms: tauri::State<'_, PermissionState>,
+    window: tauri::Window,
+    plugin_id: String,
+) -> Result<(), String> {
+    check_grant(&perms, &plugin_id)?;
+    if !caller_may_act_for(window.label(), &plugin_id) {
+        return Err(format!("窗口 {} 不能收起插件 {plugin_id} 的悬浮层", window.label()));
+    }
     if let Some(entry) = table().lock().unwrap_or_else(|p| p.into_inner()).get_mut(&plugin_id) {
         entry.wanted = false;
     }
@@ -227,14 +270,33 @@ pub async fn overlay_hide(app: AppHandle, plugin_id: String) -> Result<(), Strin
     Ok(())
 }
 
-/// 插件停用/卸载时彻底销毁它自己的悬浮层，释放资源
+/// 插件主动销毁自己那扇悬浮层，释放资源
 #[tauri::command]
-pub async fn overlay_destroy(app: AppHandle, plugin_id: String) -> Result<(), String> {
-    check_id(&plugin_id)?;
-    table().lock().unwrap_or_else(|p| p.into_inner()).remove(&plugin_id);
-    if let Some(win) = app.get_webview_window(&overlay_label(&plugin_id)) {
-        let _ = win.close();
+pub async fn overlay_destroy(
+    app: AppHandle,
+    perms: tauri::State<'_, PermissionState>,
+    window: tauri::Window,
+    plugin_id: String,
+) -> Result<(), String> {
+    check_grant(&perms, &plugin_id)?;
+    if !caller_may_act_for(window.label(), &plugin_id) {
+        return Err(format!("窗口 {} 不能销毁插件 {plugin_id} 的悬浮层", window.label()));
     }
+    reclaim(&app, &plugin_id);
+    Ok(())
+}
+
+/// 宿主的回收通道（宠物窗里的运行时在插件停用/卸载时调用）：
+/// 撤销授权会把能力收走，那时插件面的门禁已经过不去，窗却还留着 —— 等于泄露信息。
+#[tauri::command]
+pub async fn overlay_reclaim(
+    app: AppHandle,
+    window: tauri::Window,
+    plugin_id: String,
+) -> Result<(), String> {
+    crate::gate::pet(&window, "回收插件悬浮层")?;
+    check_id(&plugin_id)?;
+    reclaim(&app, &plugin_id);
     Ok(())
 }
 
@@ -287,7 +349,7 @@ pub fn start_follow_timer(app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::overlay_label;
+    use super::{caller_may_act_for, overlay_label, table, OverlayState};
 
     #[test]
     fn dots_and_hyphens_do_not_share_a_label() {
@@ -307,5 +369,22 @@ mod tests {
                 "{label} 含非法字符"
             );
         }
+    }
+
+    /// S3：动得了悬浮层的只有三类调用面 —— 宠物窗、设置窗、以及该插件自己那扇窗。
+    /// 「自己那扇」的归属来自注册表，不是来自页面自报的 id。
+    #[test]
+    fn only_host_windows_or_the_own_overlay_may_act_for_a_plugin() {
+        let id = "com.pet.hr-ble".to_string();
+        table().lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), OverlayState::default());
+        let label = overlay_label(&id);
+        assert!(caller_may_act_for("pet", &id));
+        assert!(caller_may_act_for("settings", &id));
+        assert!(caller_may_act_for(&label, &id));
+        // 别人的悬浮窗里动不了这扇（归属不匹配）
+        assert!(!caller_may_act_for(&label, "todo"));
+        // 同意框一类窗口既不是宿主窗，也不属于这个插件
+        assert!(!caller_may_act_for("consent-r1", &id));
+        table().lock().unwrap_or_else(|p| p.into_inner()).remove(&id);
     }
 }

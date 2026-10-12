@@ -22,7 +22,7 @@ pub fn pet(window: &Window, what: &str) -> Result<(), String> {
 /// 与 BLE 命令的 `require_granted` 同一口径（兜的是「绕过 JS 桥直接 invoke」）；
 /// 同 realm 的插件之间仍分不出，那条缺口要等 Web Worker 宿主。
 pub fn plugin_capability(state: &PermissionState, plugin_id: &str, capability: &str) -> Result<(), String> {
-    if !crate::commands::plugins::is_safe_id(plugin_id) {
+    if !crate::ids::is_safe_id(plugin_id) {
         return Err("invalid plugin id".into());
     }
     if state.is_granted(plugin_id, capability) {

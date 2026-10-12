@@ -106,7 +106,9 @@ try {
 
   await c.ev(`(async () => {
     const { bus } = await import('/src/runtime/event-bus.ts');
-    window.__bus = bus;
+    // 中继那侧现在按 pluginId 认 topic 归属（见 commands/bus.rs 的 S2 门禁）：
+    // 脚本模拟的是插件自己发指令，统一绑上 PID
+    window.__bus = { publish: (topic, payload) => bus.publish(topic, payload, ${JSON.stringify(PID)}) };
     window.__seen = [];
     for (const k of ['changed', 'status', 'widget']) {
       bus.subscribe(${JSON.stringify(`${PID}:`)} + k, (p) => window.__seen.push([k, p]));

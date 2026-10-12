@@ -227,7 +227,7 @@ try {
         action: 'config',
         showTitle: ${showTitle},
         showDetail: ${showDetail},
-      });
+      }, ${JSON.stringify(AGENT_ID)});
       return true;
     })()`);
     await sleep(1200);
@@ -382,7 +382,22 @@ try {
   r.group("两扇悬浮窗互不抢占：左上角波形与头顶卡片可以同时存在");
   const HR_ID = "com.pet.hr-ble";
   const HR_LABEL = overlayLabelFor(HR_ID);
-  // 直接打宿主命令：验的是「窗口按插件分开」这条宿主规则本身，不依赖蓝牙硬件
+  // 直接打宿主命令：验的是「窗口按插件分开」这条宿主规则本身，不依赖蓝牙硬件。
+  // S3 之后 overlay_* 在 Rust 侧查 overlay 授权，先走真实同意框把能力要到。
+  // permission_request 会阻塞到有人应答，而 CDP 的 evaluate 有 20 秒硬超时 ——
+  // 所以不等它的返回，弹框交给整轮在跑的 consentPump，这里只轮询授权表。
+  invoke("permission_request", {
+    pluginId: HR_ID,
+    pluginName: "心率蓝牙广播",
+    capabilities: ["overlay"],
+  }).catch(() => undefined);
+  let overlayGranted = false;
+  for (let i = 0; i < 40 && !overlayGranted; i++) {
+    const list = await settings.invoke("permission_list");
+    overlayGranted = (list.v?.[HR_ID] ?? []).includes("overlay");
+    if (!overlayGranted) await sleep(500);
+  }
+  r.check("心率插件经同意框拿到 overlay 授权", true, overlayGranted);
   await invoke("overlay_show", { pluginId: HR_ID, placement: "corner", height: 200 });
   r.check(
     "两张卡片同时可见",

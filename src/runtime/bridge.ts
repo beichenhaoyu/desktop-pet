@@ -121,7 +121,8 @@ export function buildContext(manifest: ManifestLike): PluginContext {
     bus: {
       publish: gated(manifest, "bus:publish", (topic: string, payload: unknown) => {
         assertPublishable(pid, topic);
-        return Promise.resolve(bus.publish(topic, payload));
+        // 带上 pid：宿主要按它校验 topic 前缀与 bus:publish 授权（见 commands/bus.rs）
+        return Promise.resolve(bus.publish(topic, payload, pid));
       }),
       /** 返回退订函数（先 await 才拿到）。停用插件时宿主统一回收，见 runtime/subscriptions.ts */
       subscribe: gated(manifest, "bus:subscribe", (topic: string, handler: (payload: unknown) => void) => {
@@ -173,7 +174,7 @@ export function buildContext(manifest: ManifestLike): PluginContext {
     // widget 数据下发：以 `${pluginId}:widget` topic 广播，widget.js 自行订阅
     widget: {
       update: gated(manifest, "widget", (data: unknown) =>
-        Promise.resolve(bus.publish(`${pid}:widget`, data)),
+        Promise.resolve(bus.publish(`${pid}:widget`, data, pid)),
       ),
     },
 

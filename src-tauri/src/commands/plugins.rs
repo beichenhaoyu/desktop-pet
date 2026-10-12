@@ -5,6 +5,8 @@ use std::sync::Arc;
 use serde_json::Value;
 use tauri::{Emitter, Manager};
 
+use crate::ids::is_safe_id;
+
 /// 插件目录根：dev 读仓库根 plugins/；release 读资源目录 plugins/（打包时由 bundle.resources 复制）。
 fn plugins_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     if cfg!(debug_assertions) {
@@ -17,22 +19,8 @@ fn plugins_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     }
 }
 
-/// 插件 id 规则，与前端 `validateManifest` 的 `/^[a-z0-9][a-z0-9.-]{2,63}$/` 保持一致：
-/// 首字符字母数字、其后只允许小写字母/数字/点/连字符，总长 3~64。
-/// 这条规则同时是 overlay 窗口标签净化的前提 —— id 里不可能出现 `_`，
-/// 所以 `.` → `_` 是可逆编码，`a.b` 与 `a-b` 不会被压成同一个标签。
-pub fn is_safe_id(plugin_id: &str) -> bool {
-    let bytes = plugin_id.as_bytes();
-    if !(3..=64).contains(&bytes.len()) {
-        return false;
-    }
-    let head = bytes[0];
-    let ok_head = head.is_ascii_lowercase() || head.is_ascii_digit();
-    ok_head
-        && bytes[1..]
-            .iter()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'.' | b'-'))
-}
+/// 插件 id 的规则只在 `crate::ids::is_safe_id` 有一份实现（S4）——
+/// 它同时是存储目录名、overlay 窗口标签与授权表键的来源，各处的口径必须一致。
 
 fn read_manifest(dir: &PathBuf, plugin_id: &str) -> Result<Value, String> {
     let path = dir.join(plugin_id).join("manifest.json");
@@ -261,29 +249,16 @@ pub fn spawn_plugins_watcher(app: &tauri::AppHandle) -> Result<PluginWatcher, St
 
 #[cfg(test)]
 mod tests {
-    use super::is_safe_id;
-
+    /// S4：id 规则只剩 `crate::ids::is_safe_id` 一份。这里钉住「本模块确实引用的是那一份」，
+    /// 免得日后又在这个文件里长出第二套手写检查。
+    /// 只看 `#[cfg(test)]` 之前的代码，否则断言里那些字面量会自我命中。
     #[test]
-    fn accepts_the_same_ids_as_the_frontend_rule() {
-        for id in ["todo", "zz.probe", "com.pet.hr-ble", "a1.2-3"] {
-            assert!(is_safe_id(id), "{id} 应当合法");
-        }
-    }
-
-    #[test]
-    fn rejects_what_the_frontend_rule_rejects() {
-        for id in [
-            "",           // 空
-            "ab",         // 太短（{2,63} 加首字符至少 3）
-            "Todo",       // 大写
-            "a_b",        // 下划线留给 overlay 标签做转义，不能出现在 id 里
-            "../etc",     // 路径穿越
-            "a/b",        // 分隔符
-            r"a\b",
-            "a b",        // 空格
-            "a:b",        // 窗口标签里合法，但不在 id 词表内
-        ] {
-            assert!(!is_safe_id(id), "{id} 应当被拒");
+    fn plugins_module_uses_the_single_id_validator() {
+        let full = include_str!("plugins.rs");
+        let code = full.split("#[cfg(test)]").next().unwrap_or(full);
+        assert!(code.contains("use crate::ids::is_safe_id;"), "plugins.rs 没有引用统一实现");
+        for banned in ["pub fn is_safe_id(", "fn valid_id(", "contains(\"..\")"] {
+            assert!(!code.contains(banned), "plugins.rs 里出现了第二份 id 检查: {banned}");
         }
     }
 }

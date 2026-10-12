@@ -24,10 +24,16 @@ class EventBus {
     });
   }
 
-  publish(topic: string, payload: unknown): void {
+  /**
+   * 发布：本窗口即时派发 + 经 Rust 中继广播到全部窗口。
+   * `pluginId` 是「以哪个插件的名义发布」—— 宿主侧按它校验 topic 前缀与 bus:publish
+   * 授权（见 commands/bus.rs），所以代表插件发消息的路径必须带上它；
+   * 宿主自己的消息走 inject()，不经中继。
+   */
+  publish(topic: string, payload: unknown, pluginId?: string): void {
     this.dispatch(topic, payload);
     // 中继失败只影响其他窗口，不能让它变成宿主未处理的 rejection
-    invoke("bus_publish", { topic, payload }).catch((err) => {
+    invoke("bus_publish", { topic, payload, pluginId: pluginId ?? null }).catch((err) => {
       console.error(`[bus] relay failed: ${topic}`, err);
     });
   }

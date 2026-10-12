@@ -75,6 +75,47 @@ async function revoke(pluginId) {
   if (!settings) settings = await openSettingsInvoker(PORT, c);
   return settings.invoke("permission_revoke", { pluginId });
 }
+
+/**
+ * 用真实同意框给探针拿到某项能力。
+ * S1 之后 store_* 在 Rust 侧查授权，S2/S3 之后总线与悬浮层也一样 ——
+ * 而 fixture 探针默认零权限，脚本要走的能力必须自己一项项要回来，
+ * 顺带证明「manifest 声明 + 用户同意」这条链在宿主侧确实生效。
+ */
+async function grantProbeCap(capability) {
+  const manifestPath = join(PLUGINS_DIR, PROBE_ID, "manifest.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  if (!manifest.permissions?.includes(capability)) {
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({ ...manifest, permissions: [...(manifest.permissions ?? []), capability] }, null, 2),
+    );
+    await sleep(600);
+  }
+  const checked = await invoke(c)("permission_check", { pluginId: PROBE_ID, capability });
+  if (checked.ok && checked.v === true) return true; // 已授权时 permission_request 不弹框，别空等
+  // 不等 permission_request 的返回：它会阻塞到用户作答，而 CDP 的 Runtime.evaluate 有 20 秒硬超时
+  // （见 cdp.mjs::send），弹框慢一点就会把整条断言链打断。改成应答之后轮询授权表。
+  invoke(c)("permission_request", {
+    pluginId: PROBE_ID,
+    pluginName: manifest.name ?? PROBE_ID,
+    capabilities: [capability],
+  }).catch(() => undefined);
+  try {
+    const consent = await driveConsent("allow");
+    r.check(`同意框列出了 ${capability}`, true, consent.caps.includes(capability));
+  } catch (err) {
+    console.log(`     没能操作 ${capability} 的同意框: ` + String(err?.message ?? err).split("\n")[0]);
+    return false;
+  }
+  const until = Date.now() + 20_000;
+  while (Date.now() < until) {
+    const now = await invoke(c)("permission_check", { pluginId: PROBE_ID, capability });
+    if (now.ok && now.v === true) return true;
+    await sleep(400);
+  }
+  return false;
+}
 try {
   writeFixtures(PLUGINS_DIR);
   await sleep(2500);
@@ -146,6 +187,8 @@ try {
   r.check("拿不到 handlers", false, bare.hasHandlers);
 
   r.group("正向对照：声明了能力就该放行（证明上面的拦不是无条件抛错）");
+  // S2 之后中继那侧还要看授权表，所以这条「放行」得真把 bus:publish 要到手才算端到端
+  r.check("探针经同意框拿到 bus:publish", true, await grantProbeCap("bus:publish"));
   await c.ev(MOUNT_CAPPED);
   const capped = await c.ev(`window.__probes[1]`);
   r.check("声明后发布自己 topic 放行", "THROUGH", capped?.attempts?.publish_own);
@@ -261,11 +304,29 @@ try {
   await waitUntil(c, `document.querySelectorAll(${JSON.stringify(removedSelector)}).length === 0`, 10_000);
   r.check("widget 容器随之移除", 0, await c.ev(`document.querySelectorAll(${JSON.stringify(removedSelector)}).length`));
 
+  r.group("存储门禁：能力授权收在 Rust 侧（绕过 JS 桥的直接 invoke）");
+  writeFixtures(PLUGINS_DIR);
+  await sleep(1200);
+  await revoke(PROBE_ID); // 起点确定：探针手里没有 storage
+  const denySet = await invoke_("store_set", { pluginId: PROBE_ID, key: "prefs", value: { mode: "badge" } });
+  r.check("未授权 storage 的写入被宿主拒绝", true, !denySet.ok && /未授权 storage/.test(String(denySet.e)));
+  const denyGet = await invoke_("store_get", { pluginId: PROBE_ID, key: "prefs" });
+  r.check("未授权 storage 的读取被宿主拒绝", true, !denyGet.ok && /未授权 storage/.test(String(denyGet.e)));
+  const denyDel = await invoke_("store_delete", { pluginId: PROBE_ID, key: "prefs" });
+  r.check("未授权 storage 的删除被宿主拒绝", true, !denyDel.ok && /未授权 storage/.test(String(denyDel.e)));
+  // 旧的手写检查只挡 `..` `/` `\` 与空串，带冒号的盘符 id 放得过；现在与 is_safe_id 同一口径
+  for (const [label, badId] of [["盘符式 id", "C:"], ["分隔符", "a/b"], ["过短", "ab"], ["大写", "Todo"]]) {
+    const denied = await invoke_("store_get", { pluginId: badId, key: "prefs" });
+    r.check(`${label}（${badId}）按非法 id 被拒`, true, !denied.ok && /invalid plugin id/.test(String(denied.e)));
+  }
+
   r.group("撤销授权连带清理插件存储");
-  await invoke_("store_set", { pluginId: PROBE_ID, key: "prefs", value: { mode: "badge" } });
+  r.check("声明 storage 并同意后才拿得到读写能力", true, await grantProbeCap("storage"));
+  const written = await invoke_("store_set", { pluginId: PROBE_ID, key: "prefs", value: { mode: "badge" } });
+  r.check("授权后写入成功", true, written.ok === true);
   const readBack = () =>
     c.ev(
-      `(async()=>{ const v = await window.__TAURI_INTERNALS__.invoke('store_get', { pluginId: ${JSON.stringify(PROBE_ID)}, key: 'prefs' }); return v?.mode ?? null; })()`,
+      `(async()=>{ try { const v = await window.__TAURI_INTERNALS__.invoke('store_get', { pluginId: ${JSON.stringify(PROBE_ID)}, key: 'prefs' }); return v?.mode ?? null; } catch { return "REJECTED"; } })()`,
     );
   r.check("写入可读回", "badge", await readBack());
   r.check("宿主的落盘目录已建", true, existsSync(STORE_DIR));
@@ -274,7 +335,8 @@ try {
   const petList = await invoke_("permission_list");
   r.check("宠物窗读授权表同样被拒", true, !petList.ok && /设置窗/.test(String(petList.e)));
   await revoke(PROBE_ID);
-  r.check("撤销后存储读不到旧值", null, await readBack());
+  const afterRevoke = await invoke_("store_get", { pluginId: PROBE_ID, key: "prefs" });
+  r.check("撤销后同一调用重新被宿主拒绝", true, !afterRevoke.ok && /未授权 storage/.test(String(afterRevoke.e)));
   r.check("落盘目录随之删除", false, existsSync(STORE_DIR));
 
   r.group("BLE 命令也查授权表（不再是有桥无门的后门）");
@@ -378,6 +440,8 @@ try {
   r.check("ble 与 ble-scan 各自独立计数", false, res.scanIndependent);
 
   r.group("存储损坏必须报错，不能被当成空表后覆盖");
+  // 上面那组以撤销收尾，这里要读写就重新走一次同意框（S1 之后宿主按能力放行）
+  r.check("重新拿到 storage 授权", true, await grantProbeCap("storage"));
   const STORE_FILE = join(STORE_DIR, "store.json");
   mkdirSync(STORE_DIR, { recursive: true });
   writeFileSync(STORE_FILE, "{ 这不是合法 json");
@@ -387,6 +451,79 @@ try {
   r.check("损坏状态下拒绝写入", true, !brokenWrite.ok);
   r.check("原文件未被静默改写", true, readFileSync(STORE_FILE, "utf8").includes("这不是合法"));
   rmSync(STORE_DIR, { recursive: true, force: true });
+
+  r.group("总线发布门禁（S2）：topic 归属与 bus:publish 授权收在 Rust 侧");
+  // 中继那侧原先不设限：绕过 JS 桥的插件可以往 ble:heart-rate、agent:state 这类
+  // 宿主 topic 或他人前缀灌数据，全桌面的窗口都会收到。
+  await revoke(PROBE_ID); // 起点确定：上面「正向对照」刚把 bus:publish 授出去
+  const pubNoId = await invoke_("bus_publish", { topic: `${PROBE_ID}:self`, payload: { n: 1 } });
+  r.check("不带 pluginId 的发布被拒", true, !pubNoId.ok && /需要 pluginId/.test(String(pubNoId.e)));
+  const pubOwn = await invoke_("bus_publish", { pluginId: PROBE_ID, topic: `${PROBE_ID}:self`, payload: { n: 1 } });
+  r.check("未授权 bus:publish 连自己前缀也发不出", true, !pubOwn.ok && /未授权 bus:publish/.test(String(pubOwn.e)));
+  r.check("声明并同意后拿到 bus:publish", true, await grantProbeCap("bus:publish"));
+  const pubHost = await invoke_("bus_publish", { pluginId: PROBE_ID, topic: "ble:heart-rate", payload: { bpm: 666 } });
+  r.check("有了 bus:publish 也伪造不了宿主 topic", true, !pubHost.ok && /前缀/.test(String(pubHost.e)));
+  const pubAgent = await invoke_("bus_publish", { pluginId: PROBE_ID, topic: "agent:state", payload: { state: "idle" } });
+  r.check("agent:state 同样灌不进去", true, !pubAgent.ok && /前缀/.test(String(pubAgent.e)));
+  const pubForeign = await invoke_("bus_publish", { pluginId: PROBE_ID, topic: "com.pet.hr-ble:bpm", payload: { bpm: 666 } });
+  r.check("他人前缀同样被拒", true, !pubForeign.ok && /前缀/.test(String(pubForeign.e)));
+  const pubOwnOk = await invoke_("bus_publish", { pluginId: PROBE_ID, topic: `${PROBE_ID}:self`, payload: { n: 2 } });
+  r.check("自己前缀照常放行", true, pubOwnOk.ok === true);
+  const pubEmptyTopic = await invoke_("bus_publish", { pluginId: PROBE_ID, topic: `${PROBE_ID}:`, payload: {} });
+  r.check("光秃秃的前缀不算自己的 topic", true, !pubEmptyTopic.ok && /前缀/.test(String(pubEmptyTopic.e)));
+  const pubGone = await invoke_("bus_publish", { pluginId: "zz.gone", topic: "zz.gone:self", payload: {} });
+  r.check("没装着的插件借不了名义", true, !pubGone.ok && /没有安装/.test(String(pubGone.e)));
+  const pubBadId = await invoke_("bus_publish", { pluginId: "C:", topic: "C:x", payload: {} });
+  r.check("非法 id 直接拒", true, !pubBadId.ok && /invalid plugin id/.test(String(pubBadId.e)));
+
+  r.group("悬浮层门禁（S3）：未授权 overlay 开不出置顶窗");
+  const ovBadId = await invoke_("overlay_show", { pluginId: "a/b", placement: "corner", height: 120 });
+  r.check("非法 id 被拒", true, !ovBadId.ok && /非法的插件 id/.test(String(ovBadId.e)));
+  const ovNoGrant = await invoke_("overlay_show", { pluginId: PROBE_ID, placement: "corner", height: 120 });
+  r.check("未授权 overlay 的开窗被拒", true, !ovNoGrant.ok && /未授权 overlay/.test(String(ovNoGrant.e)));
+  const hideNoGrant = await invoke_("overlay_hide", { pluginId: PROBE_ID });
+  r.check("未授权 overlay 的收起同样被拒", true, !hideNoGrant.ok && /未授权 overlay/.test(String(hideNoGrant.e)));
+  const destroyNoGrant = await invoke_("overlay_destroy", { pluginId: PROBE_ID });
+  r.check("未授权 overlay 的销毁同样被拒", true, !destroyNoGrant.ok && /未授权 overlay/.test(String(destroyNoGrant.e)));
+  // 宿主的回收通道不该插件面能用：它只认宠物窗里的运行时
+  const reclaimFromSettings = await settings.invoke("overlay_reclaim", { pluginId: PROBE_ID });
+  r.check("设置窗调宿主回收通道被窗口门禁拒绝", true, !reclaimFromSettings.ok && /宠物窗/.test(String(reclaimFromSettings.e)));
+  r.check("声明并同意后拿到 overlay", true, await grantProbeCap("overlay"));
+  const opened = await invoke_("overlay_show", { pluginId: PROBE_ID, placement: "corner", height: 120 });
+  r.check("授权后开窗命令被放行", true, opened.ok === true);
+  r.check(
+    "注册表里有了这一扇",
+    true,
+    await waitUntil(c, `(async () => (await window.__TAURI_INTERNALS__.invoke('overlay_list')).some(([id]) => id === ${JSON.stringify(PROBE_ID)}))()`, 10_000),
+  );
+  await invoke_("overlay_hide", { pluginId: PROBE_ID });
+  r.check(
+    "授权后收得掉",
+    true,
+    await waitUntil(
+      c,
+      `(async () => !(await window.__TAURI_INTERNALS__.invoke('overlay_list')).some(([id, visible]) => id === ${JSON.stringify(PROBE_ID)} && visible))()`,
+      10_000,
+    ),
+  );
+  // 撤销授权后能力没了，插件面的销毁命令会过不去 —— 宿主必须已经把窗收掉，不能留孤儿窗
+  await invoke_("overlay_show", { pluginId: PROBE_ID, placement: "corner", height: 120 });
+  await revoke(PROBE_ID);
+  r.check(
+    "撤销授权连带收掉该插件的悬浮层",
+    true,
+    await waitUntil(
+      c,
+      `(async () => !(await window.__TAURI_INTERNALS__.invoke('overlay_list')).some(([id]) => id === ${JSON.stringify(PROBE_ID)}))()`,
+      10_000,
+    ),
+  );
+  const reclaimed = await invoke_("overlay_reclaim", { pluginId: PROBE_ID });
+  r.check("宿主回收通道在宠物窗里可用（幂等）", true, reclaimed.ok === true);
+  // 上面为验证「撤销连带收窗」把探针的能力全撤了；后面的挂载/回显分组还要以它的
+  // 名义发消息，这里按同一条真实链路把 bus:publish 要回来（否则中继被拒会往 console 里灌噪音，
+  // 打断最后那条「宿主页面自身无告警」的断言）
+  r.check("恢复 bus:publish 授权", true, await grantProbeCap("bus:publish"));
 
   r.group("http 代理与按域名授权（#21）");
   // 热安装那组测试结束时删掉了 fixture，这里要自己造回来：
@@ -681,20 +818,23 @@ try {
   r.check("缺 waiting 帧时角色仍停在 idle", "idle", sm.fallbackAction);
 
   r.group("设置面板回显：宿主为 `*:widget` 保留最近一份并回灌新订阅");
+  // 中继现在认发布名义与能力（S2）：`:widget` 那条走 widget 能力
+  r.check("拿到 widget 能力后才测得了回灌", true, await grantProbeCap("widget"));
   const peek = await c.ev(`(async () => {
     const { bus } = await import('/src/runtime/event-bus.ts');
     const inv = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);
-    await bus.publish('com.zz.probe:widget', { mode: 'overlay', v: 1 });
+    const PID = ${JSON.stringify(PROBE_ID)};
+    await bus.publish(\`\${PID}:widget\`, { mode: 'overlay', v: 1 }, PID);
     await new Promise((r) => setTimeout(r, 400));
     let got = null;
-    const off = bus.subscribe('com.zz.probe:widget', (d) => { got = d; });
+    const off = bus.subscribe(\`\${PID}:widget\`, (d) => { got = d; });
     await new Promise((r) => setTimeout(r, 700));
     off();
     let cmdGot = 'no-call';
-    const off2 = bus.subscribe('com.zz.probe:cmd', (d) => { cmdGot = d; });
+    const off2 = bus.subscribe(\`\${PID}:cmd\`, (d) => { cmdGot = d; });
     await new Promise((r) => setTimeout(r, 400));
     off2();
-    const peekedCmd = await inv('bus_peek', { topic: 'com.zz.probe:cmd' });
+    const peekedCmd = await inv('bus_peek', { topic: \`\${PID}:cmd\` });
     return { got, cmdGot, peekedCmd };
   })()`);
   r.check("新订阅立刻拿到最近一份 widget 数据", "overlay", peek.got?.mode ?? null);

@@ -24,6 +24,11 @@ export function assertSubscribable(pluginId: string, topic: string, permissions:
 }
 
 /** 交给插件/widget 的总线视图：只有 publish/subscribe，拿不到 handlers 与 inject */
+type BusLike = {
+  publish(topic: string, payload: unknown, pluginId?: string): void;
+  subscribe(topic: string, handler: (payload: unknown) => void): () => void;
+};
+
 export type ScopedBus = {
   publish(topic: string, payload: unknown): void;
   subscribe(topic: string, handler: (payload: unknown) => void): () => void;
@@ -32,7 +37,7 @@ export type ScopedBus = {
 export function createScopedBus(
   pluginId: string,
   permissions: string[],
-  bus: ScopedBus,
+  bus: BusLike,
 ): ScopedBus {
   return Object.freeze({
     publish: (topic: string, payload: unknown): void => {
@@ -40,7 +45,8 @@ export function createScopedBus(
       if (!permissions.includes("bus:publish")) {
         throw new Error(`[${pluginId}] 发布需要在 manifest 声明 bus:publish`);
       }
-      bus.publish(topic, payload);
+      // 带上 pluginId：中继那侧按它校验前缀与 bus:publish 授权（见 commands/bus.rs）
+      bus.publish(topic, payload, pluginId);
     },
     subscribe: (topic: string, handler: (payload: unknown) => void): (() => void) => {
       assertSubscribable(pluginId, topic, permissions);

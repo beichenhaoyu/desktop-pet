@@ -176,7 +176,7 @@ try {
     const { bus } = await import('/src/runtime/event-bus.ts');
     return await new Promise((res) => {
       const off = bus.subscribe(${JSON.stringify(`${PID}:widget`)}, (x) => { off(); res(x); });
-      bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "sync" });
+      bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "sync" }, ${JSON.stringify(PID)});
       setTimeout(() => { off(); res(null); }, 5000);
     });
   })()`);
@@ -227,7 +227,9 @@ try {
   // 第一次出网要按域名授权：让插件真跑一次搜索，把 http + http:<host> 的同意框弹出来
   await c.ev(`(async () => {
     const { bus } = await import('/src/runtime/event-bus.ts');
-    window.__bus = bus;
+    // 宿主侧中继现在要认「以哪个插件的名义发布」（见 commands/bus.rs 的 S2 门禁），
+    // 脚本这一路模拟的就是插件自己往 cmd topic 发指令，统一绑上 PID
+    window.__bus = { publish: (topic, payload) => bus.publish(topic, payload, ${JSON.stringify(PID)}) };
     window.__seen = { quote: [], alert: [], status: [], suggest: [], panel: [] };
     for (const k of ['quote', 'alert', 'status', 'suggest', 'panel']) {
       bus.subscribe(${JSON.stringify(`${PID}:`)} + k, (p) => window.__seen[k].push(p));
@@ -295,7 +297,7 @@ try {
     const { bus } = await import('/src/runtime/event-bus.ts');
     return await new Promise((res) => {
       const off = bus.subscribe(${JSON.stringify(`${PID}:widget`)}, (d) => { off(); res(d); });
-      bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "sync" });
+      bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "sync" }, ${JSON.stringify(PID)});
       setTimeout(() => { off(); res(null); }, 8000);
     });
   })()`));
@@ -399,7 +401,7 @@ try {
     const { bus } = await import('/src/runtime/event-bus.ts');
     return await new Promise((res) => {
       const off = bus.subscribe(${JSON.stringify(`${PID}:widget`)}, (d) => { off(); res(d); });
-      bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "sync" });
+      bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "sync" }, ${JSON.stringify(PID)});
       setTimeout(() => { off(); res(null); }, 8000);
     });
   })()`);
@@ -1085,7 +1087,7 @@ try {
     const { bus } = await import('/src/runtime/event-bus.ts');
     const d = await new Promise((res) => {
       const off = bus.subscribe(${JSON.stringify(`${PID}:widget`)}, (x) => { off(); res(x); });
-      bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "sync" });
+      bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "sync" }, ${JSON.stringify(PID)});
       setTimeout(() => { off(); res(null); }, 5000);
     });
     return Object.keys(d?.quotes ?? {}).length === 0;
@@ -1181,7 +1183,7 @@ try {
     const { bus } = await import('/src/runtime/event-bus.ts');
     return await new Promise((res) => {
       const off = bus.subscribe(${JSON.stringify(`${PID}:widget`)}, (d) => { off(); res(d.recent ?? []); });
-      bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "sync" });
+      bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "sync" }, ${JSON.stringify(PID)});
       setTimeout(() => { off(); res([]); }, 8000);
     });
   })()`));
