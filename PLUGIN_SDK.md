@@ -112,6 +112,8 @@ topic 形如 `<插件 id>:<名字>`，`<插件 id>` 前缀归该插件所有；�
 
 多个文件共享 topic 常量时，抽一个 `topics.js` 让 `index.js` 与 `widget.js` 各自 `import`（插件文件由宿主按目录提供，相对 import 在开发和打包版都能解析）。别在两个文件里各写一遍字符串。
 
+标准 topic 的常量定义在 `packages/sdk/topics.js`（SDK 侧的唯一定义处，类型见 `packages/sdk/topics.d.ts`），但**插件内仍写字面串** —— 插件从磁盘加载、运行时导不到 `packages/`，两侧的一致性由离线单测 `tests/unit/unit-sdk-topics.mjs` 反向钉住，改任一边测试即红。
+
 ## 5. widget 约定
 
 ```js

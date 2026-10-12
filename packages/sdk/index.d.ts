@@ -12,6 +12,8 @@
 // 行号为 2026-10-12 落笔时的现场；行为口径另见 PLUGIN_SDK.md 与 T01 取证报告
 // （.dispatch/arch-p2/work/T01/sdk-surface.md）。
 
+import type { StandardTopic } from "./topics.js";
+
 /** petdex 九状态名。词表来源 src/pet/petdex-states.ts:9-18（PetStateId），
  * src/pet/sprites.ts:22 把它别名为 ActionName；运行期白名单 src/pet/host.ts:9（PET_ACTIONS）。 */
 export type PetAction =
@@ -61,12 +63,18 @@ export interface AgentHooksApi {
   uninstall(): Promise<unknown>;
 }
 
+/** 总线 topic 的**注释性**宽联合（K2）：标准 topic（`StandardTopic`，定义处 packages/sdk/topics.js）
+ * **或任意字符串**。刻意保留任意字符串：私有 topic（`<自己 id>:xxx`、`<自己 id>:widget`）必须继续合法 ——
+ * topic-acl 只按前缀归属判，不查标准名单。
+ * 注：`StandardTopic | string` 在 TS 里会塌缩成 string，这是有意的，别把它收紧成只允许标准 topic。 */
+export type BusTopic = StandardTopic | string;
+
 /** 宠物窗桥侧总线（bridge.ts:122、128）。与 WidgetContext.bus 不同：这里全是 async，失败 reject。 */
 export interface PluginBus {
   /** 只能发 `<自己 id>:` 前缀，且不能是通配（src/runtime/topic-acl.ts:9-14）。跨窗中继失败不 reject，只 console.error（src/runtime/event-bus.ts:36-38）。需要能力 `bus:publish` */
-  publish(topic: string, payload: unknown): Promise<void>;
+  publish(topic: BusTopic, payload: unknown): Promise<void>;
   /** 需要能力 `bus:subscribe`（不声明会在激活时被拒）。resolve 出退订函数；不手动退订则停用时由宿主回收（src/runtime/subscriptions.ts:12、plugin-runtime.ts:201） */
-  subscribe(topic: string, handler: (payload: unknown) => void): Promise<() => void>;
+  subscribe(topic: BusTopic, handler: (payload: unknown) => void): Promise<() => void>;
 }
 
 /** 宠物窗桥侧存储（bridge.ts:135-139；Rust services/store.rs，按插件 id 隔离落盘）。 */
