@@ -17,7 +17,7 @@
 //   5) 出网预算按「observed 是否等于预期源」选档：一致时每链 ≤ 1+retrySlack（撞多家判红），
 //      不一致（真换过源）才放宽 —— 不许把上限简单调大来凑绿。
 
-import { MARKET_SOURCES, SOURCE_IDS, sourceLabelOf } from "../plugins/com.pet.astock/market.js";
+import { MARKET_SOURCES, SOURCE_IDS, sourceLabelOf } from "../../../plugins/com.pet.astock/market.js";
 
 export { SOURCE_IDS, sourceLabelOf };
 

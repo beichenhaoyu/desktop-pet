@@ -1,12 +1,12 @@
 // T01 market.js 三源解析层常驻单测（东财 / 腾讯 / 新浪）。
 //
-// 运行：npm run unit:astock（或 node scripts/unit-market.mjs，与 cwd 无关）
+// 运行：npm run unit:astock（或 node tests/unit/unit-market.mjs，与 cwd 无关）
 //
 // 全程离线、不碰 DOM；只 import 磁盘上的插件源码（相对本文件的 file URL）。
 // fixture 一律按 market.js 注释里的实测口径构造（列序、段位、时间戳形态），不凭记忆猜。
 // 不在范围：fetchQuotes / fetchDepth / fetchTrend / fetchKline / fetchSuggest（要真网络）。
 
-const src = (name) => new URL(`../plugins/com.pet.astock/${name}`, import.meta.url).href;
+const src = (name) => new URL(`../../plugins/com.pet.astock/${name}`, import.meta.url).href;
 const m = await import(src("market.js"));
 
 let pass = 0;

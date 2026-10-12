@@ -1,5 +1,5 @@
 # 生成 app-icon.png（1024x1024 透明底）作为 tauri icon 命令的源图
-# 用法：powershell -NoProfile -ExecutionPolicy Bypass -File scripts/generate-app-icon.ps1
+# 用法：powershell -NoProfile -ExecutionPolicy Bypass -File tools/generate-app-icon.ps1
 Add-Type -AssemblyName System.Drawing
 
 $bmp = New-Object System.Drawing.Bitmap(1024, 1024)

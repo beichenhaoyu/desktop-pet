@@ -11,7 +11,7 @@
 // 分时/K线/五档取的是接口最近一次的数据，所以休市跑也断言得出结构，只有提醒那条要看时段。
 // 本机对东财 push2* 的通路会漂（2026-10-09 整组 RST、2026-10-12 恢复，见 AGENTS.md 那条约定）：
 // 所以「数据来自哪家源」的断言一律不许钉死某一家 —— 脚本开头做一次 preflight（逐 host 探可达性），
-// 各条断言按「本轮观测到的可用性 + 插件回显的失败明细」分支判定。判定层 = scripts/astock-source-branch.mjs
+// 各条断言按「本轮观测到的可用性 + 插件回显的失败明细」分支判定。判定层 = tests/e2e/harness/astock-source-branch.mjs
 // （纯函数；离线单测钉住全通 / 有坏源两种形态）。全通时换源、或请求数撞满多家，照旧判红。
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -26,7 +26,7 @@ import {
   reloadAndWait,
   waitForPage,
   waitUntil,
-} from "./cdp.mjs";
+} from "./harness/cdp.mjs";
 import {
   MARKET_SOURCES,
   SOURCE_IDS,
@@ -46,14 +46,14 @@ import {
   progressOf,
   sourceLabelOf,
   tencentCodeOf,
-} from "../plugins/com.pet.astock/market.js";
+} from "../../plugins/com.pet.astock/market.js";
 import {
   allHosts,
   availableFor,
   judgeKindSource,
   requestBudget,
   requestBudgetMany,
-} from "./astock-source-branch.mjs";
+} from "./harness/astock-source-branch.mjs";
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
 const PID = "com.pet.astock";
@@ -678,7 +678,7 @@ try {
   r.group("出网只有一个口子（grep 断言）");
   // 插件里所有出网都要过 index.js 的 out()（闸门、冷却、传输层重试都在那一处）；
   // 别处再冒出一个 ctx.http.request 调用点就等于绕开节流，AGENTS.md 明令禁止。
-  const pluginDir = fileURLToPath(new URL("../plugins/com.pet.astock/", import.meta.url));
+  const pluginDir = fileURLToPath(new URL("../../plugins/com.pet.astock/", import.meta.url));
   const offenders = [];
   for (const file of readdirSync(pluginDir).filter((f) => f.endsWith(".js"))) {
     const lines = readFileSync(join(pluginDir, file), "utf8").split(/\r?\n/);

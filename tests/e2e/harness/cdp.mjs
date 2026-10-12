@@ -1,5 +1,5 @@
 // 极简 WebView2 CDP 客户端与断言收集器。零依赖：Node 24 自带 fetch 与全局 WebSocket。
-// 用途见 scripts/verify-isolation.mjs 顶部说明。
+// 用途见 tests/e2e/verify-isolation.mjs 顶部说明。
 
 export async function listPages(port) {
   const res = await fetch(`http://127.0.0.1:${port}/json/list`);

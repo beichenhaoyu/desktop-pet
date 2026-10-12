@@ -8,12 +8,12 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { join, resolve, sep } from "node:path";
 import { argv, env } from "node:process";
 import { spawnSync } from "node:child_process";
-import { attach, createReport, hostInvoke, listPages, openSettingsInvoker, reloadAndWait, waitForPage, waitUntil } from "./cdp.mjs";
+import { attach, createReport, hostInvoke, listPages, openSettingsInvoker, reloadAndWait, waitForPage, waitUntil } from "./harness/cdp.mjs";
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
 const AGENT_ID = "com.pet.agent-bridge";
 const ENABLED_KEY = "host:enabled-plugins";
-const EXE = join(import.meta.dirname, "../src-tauri/target/debug/desktop-pet.exe");
+const EXE = join(import.meta.dirname, "../../src-tauri/target/debug/desktop-pet.exe");
 // 没有 APPDATA 就拼不出收件目录，断言会打在 cwd 下一个同名相对路径上 ——
 // 那种失败和「宿主真的没收到事件」长得一模一样，必须当场拒绝开跑
 if (!env.APPDATA) {
@@ -488,7 +488,7 @@ try {
   r.group("插件页：Qoder hook 接入（端到端，只碰 temp 样例）");
   // A9a：入口在 agent 桥自己的设置页（settings 区 widget）。写盘类断言一律只碰
   // PET_AGENT_CONFIG_FILES 指到的 temp/a9a 样例；不满足就整组跳过并说清原因。
-  const TEMP_ROOT = resolve(import.meta.dirname, "../temp");
+  const TEMP_ROOT = resolve(import.meta.dirname, "../../temp");
   const A9A_DIR = join(TEMP_ROOT, "a9a");
   const cfgA = join(A9A_DIR, "cfg-a.json");
   const cfgB = join(A9A_DIR, "cfg-b.json");

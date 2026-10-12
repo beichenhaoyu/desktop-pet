@@ -7,12 +7,12 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { argv, env } from "node:process";
 
-import { attach, createReport, hostInvoke, reloadAndWait, waitUntil } from "./cdp.mjs";
-import { PROBE_ID, removeFixtures, writeFixtures } from "./fixtures.mjs";
+import { attach, createReport, hostInvoke, reloadAndWait, waitUntil } from "./harness/cdp.mjs";
+import { PROBE_ID, removeFixtures, writeFixtures } from "./harness/fixtures.mjs";
 
 const skipBuild = argv.includes("--skip-build");
 const PORT = Number(env.CDP_PORT ?? 9224);
-const EXE = resolve(import.meta.dirname, "../src-tauri/target/release/desktop-pet.exe");
+const EXE = resolve(import.meta.dirname, "../../src-tauri/target/release/desktop-pet.exe");
 const PLUGINS_DIR = join(dirname(EXE), "plugins");
 const r = createReport("CSP 与插件加载（release）");
 

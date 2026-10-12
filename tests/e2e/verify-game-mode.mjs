@@ -6,7 +6,7 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { argv, env } from "node:process";
-import { attach, createReport, hostInvoke, reloadAndWait, waitForPage, waitUntil } from "./cdp.mjs";
+import { attach, createReport, hostInvoke, reloadAndWait, waitForPage, waitUntil } from "./harness/cdp.mjs";
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
 const GAME_KEY = "host:game-mode";

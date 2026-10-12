@@ -1,6 +1,6 @@
 // T02 判定层常驻单测：throttle.js / rules.js / charts.js 里的纯函数与判定逻辑。
 //
-// 运行：npm run unit:astock（或 node scripts/unit-aux.mjs，与 cwd 无关）
+// 运行：npm run unit:astock（或 node tests/unit/unit-aux.mjs，与 cwd 无关）
 //
 // 约束：离线、无 DOM、不启动任何窗口；只 import 磁盘上的插件源码（相对本文件的 file URL）。
 // 冷却阶梯 / 退避上限这类结论一律引用被导入模块的导出常量（COOLDOWN_STEPS_MS / IDLE_MAX_SEC /
@@ -9,7 +9,7 @@
 // 不在本卡范围：charts.js 的 drawTrend / drawKline / prepareCanvas —— 它们要真实画布上下文，
 // 由 verify:astock 用像素计数覆盖；本卡不造假画布（那只会产出恒真断言）。
 
-const src = (name) => new URL(`../plugins/com.pet.astock/${name}`, import.meta.url).href;
+const src = (name) => new URL(`../../plugins/com.pet.astock/${name}`, import.meta.url).href;
 const T = await import(src("throttle.js"));
 const R = await import(src("rules.js"));
 const C = await import(src("charts.js"));
@@ -551,7 +551,7 @@ check("COLORS 涨/跌/平盘都是颜色字符串", [C.COLORS.up, C.COLORS.down,
 // 「今天网络正好是这样」不再影响结论，由这里离线钉住。判定层本身不许联网（纯函数）。
 group = "sourceBranch";
 {
-  const B = await import(new URL("./astock-source-branch.mjs", import.meta.url).href);
+  const B = await import(new URL("../e2e/harness/astock-source-branch.mjs", import.meta.url).href);
   const H = {
     px: "push2.eastmoney.com",
     pxh: "push2his.eastmoney.com",

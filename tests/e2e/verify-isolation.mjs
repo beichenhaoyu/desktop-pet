@@ -4,11 +4,11 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { argv, env } from "node:process";
-import { attach, createReport, hostInvoke, openSettingsInvoker, reloadAndWait, waitForPage, waitUntil } from "./cdp.mjs";
-import { NET_ID, PROBE_ID, SPOOF_DIR, removeFixtures, writeFixtures } from "./fixtures.mjs";
+import { attach, createReport, hostInvoke, openSettingsInvoker, reloadAndWait, waitForPage, waitUntil } from "./harness/cdp.mjs";
+import { NET_ID, PROBE_ID, SPOOF_DIR, removeFixtures, writeFixtures } from "./harness/fixtures.mjs";
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
-const PLUGINS_DIR = resolve(import.meta.dirname, "../plugins");
+const PLUGINS_DIR = resolve(import.meta.dirname, "../../plugins");
 // 没有 APPDATA 时 join('', ...) 会把存储路径指到 cwd 下的相对路径，
 // 「文件不在」会被读成「隔离没生效」—— 这类失败必须当场拒绝开跑
 if (!env.APPDATA) {
@@ -1020,7 +1020,7 @@ try {
     // 「钩子能力探针」：mount 本身不发起任何调用，只把 ctx 形状与手动调用函数挂到 window，
     // 免得早先的挂载/开关用例被同意框打断。
     r.group("agent:hooks 受控能力（settings 区专属）");
-    const TEMP_ROOT = resolve(import.meta.dirname, "../temp");
+    const TEMP_ROOT = resolve(import.meta.dirname, "../../temp");
     const hookDir = join(PLUGINS_DIR, PROBE_ID);
     const hookManifest = (permits) =>
       JSON.stringify({

@@ -1,4 +1,4 @@
-// 带 WebView2 远程调试端口启动 dev，供 scripts/verify-isolation.mjs 连接。
+// 带 WebView2 远程调试端口启动 dev，供 tests/e2e/verify-isolation.mjs 连接。
 import { spawn } from "node:child_process";
 import { argv, env, platform } from "node:process";
 

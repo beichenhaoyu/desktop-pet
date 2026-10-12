@@ -3,7 +3,7 @@
 //   终端 1: npm run dev:debug      终端 2: npm run verify:skin
 // 会真的走网络（petdex.dev 公开目录 + assets.petdex.dev 图集），并临时装一个第二形象后删掉。
 import { argv, env } from "node:process";
-import { attach, createReport, hostInvoke, waitForPage, waitUntil } from "./cdp.mjs";
+import { attach, createReport, hostInvoke, waitForPage, waitUntil } from "./harness/cdp.mjs";
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
 const isPetPage = (t) => /localhost:1420\/(index\.html)?$/.test(t.url);

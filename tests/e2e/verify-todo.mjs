@@ -11,7 +11,7 @@ import {
   reloadAndWait,
   waitForPage,
   waitUntil,
-} from "./cdp.mjs";
+} from "./harness/cdp.mjs";
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
 const PID = "todo";

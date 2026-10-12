@@ -9,13 +9,13 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { argv, env } from "node:process";
-import { attach, createReport, listPages, openSettingsInvoker, reloadAndWait, waitForPage } from "./cdp.mjs";
+import { attach, createReport, listPages, openSettingsInvoker, reloadAndWait, waitForPage } from "./harness/cdp.mjs";
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
 // 探针插件：只为拿到一个有 http 能力的「已安装插件」身份（permission_request 按磁盘 manifest 判定
 // 声明与否，未安装的 id 连同意框都弹不出来）。它全程不被启用，也不碰插件业务逻辑。
 const PROBE_ID = "zz.httpcharset";
-const PLUGINS_DIR = resolve(import.meta.dirname, "../plugins");
+const PLUGINS_DIR = resolve(import.meta.dirname, "../../plugins");
 const PROBE_DIR = join(PLUGINS_DIR, PROBE_ID);
 const TENCENT = "https://qt.gtimg.cn/q=sh600000";
 const SINA = "https://hq.sinajs.cn/list=sh600000";
