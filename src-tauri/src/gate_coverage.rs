@@ -181,6 +181,8 @@ mod tests {
                 let has_window_gate = body.contains("gate::settings")
                     || body.contains("gate::pet")
                     || body.contains("is_safe_id")
+                    // 授权表自己的查询口（permission_check 走它）
+                    || body.contains("check_capability")
                     || body.contains("declared_capabilities");
                 assert!(
                     has_window_gate,

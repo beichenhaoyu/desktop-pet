@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -46,13 +46,8 @@ impl PermissionState {
     pub fn init(&self, app: &AppHandle) -> Result<(), String> {
         let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
         let file = dir.join("authorizations.json");
-        if let Ok(s) = fs::read_to_string(&file) {
-            if let Ok(map) = serde_json::from_str::<HashMap<String, Vec<String>>>(&s) {
-                *self.granted.lock().unwrap_or_else(|p| p.into_inner()) = map;
-            } else {
-                // 授权表读坏了不能就地覆盖：留着原文件，本次按空表运行并打日志
-                log::error!("authorizations.json 解析失败，本次启动按空授权表运行: {file:?}");
-            }
+        if let Some(map) = restore_from(&file) {
+            *self.granted.lock().unwrap_or_else(|p| p.into_inner()) = map;
         }
         *self.file.lock().unwrap_or_else(|p| p.into_inner()) = Some(file);
         Ok(())
@@ -171,6 +166,39 @@ impl PermissionState {
 // 这里以前另有一份 `valid_id`（只挡 `..` `/` `\`），比 overlay/store 那两份都松 ——
 // 三份各写各的正是一个 id 能穿过某道门、又被另一道挡住的来源。
 
+/// 从落盘的授权表恢复。返回 None 表示「没有文件」或「文件读坏了」——
+/// 两种情况本次启动都按空表运行，且绝不覆盖原文件（半截的 authorizations.json 要是
+/// 被当成空表写回去，用户给过的所有授权就没了）。
+fn restore_from(file: &Path) -> Option<HashMap<String, Vec<String>>> {
+    let raw = fs::read_to_string(file).ok()?;
+    match serde_json::from_str::<HashMap<String, Vec<String>>>(&raw) {
+        Ok(map) => Some(map),
+        Err(e) => {
+            log::error!("authorizations.json 解析失败，本次启动按空授权表运行: {file:?}: {e}");
+            None
+        }
+    }
+}
+
+/// 授权表查询的唯一口径：非法 id 一律视为未授权（挡住冒名与路径式 id）。
+pub fn check_capability(state: &PermissionState, plugin_id: &str, capability: &str) -> bool {
+    is_safe_id(plugin_id) && state.is_granted(plugin_id, capability)
+}
+
+/// 请求里 manifest 没声明的那些能力。唯一放宽是 http：`http:<host>` 视为被 `http` 覆盖。
+/// 其余一律精确匹配 —— 别改成前缀匹配，否则声明一个 `ble` 就等于给了 `ble:connect`。
+fn undeclared_caps(declared: &[String], requested: &[String]) -> Vec<String> {
+    requested
+        .iter()
+        .filter(|c| {
+            !declared
+                .iter()
+                .any(|d| d == *c || (d == "http" && c.starts_with("http:")))
+        })
+        .cloned()
+        .collect()
+}
+
 /// 插件目录变动后回收孤儿授权。
 /// 读不到目录时什么都不做 —— 宁可留着过期授权，也不要在一次临时 IO 失败上把用户给过的权限抹掉。
 pub fn prune_orphan_grants(app: &AppHandle) {
@@ -195,7 +223,7 @@ pub fn permission_check(
     plugin_id: String,
     capability: String,
 ) -> bool {
-    is_safe_id(&plugin_id) && state.is_granted(&plugin_id, &capability)
+    check_capability(&state, &plugin_id, &capability)
 }
 
 /// 请求授权：只受理 manifest 已声明的能力；已全部授权则立即放行；
@@ -214,15 +242,7 @@ pub async fn permission_request(
     // 磁盘 manifest 是声明能力的唯一事实来源：未声明的能力直接拒绝，不弹框。
     // 例外：http 能力按「插件 × 域名」逐个授权，故 http:<host> 视为被 http 覆盖
     let declared = crate::commands::plugins::declared_capabilities(&app, &plugin_id)?;
-    let undeclared: Vec<&str> = capabilities
-        .iter()
-        .filter(|c| {
-            !declared
-                .iter()
-                .any(|d| d == *c || (d == "http" && c.starts_with("http:")))
-        })
-        .map(String::as_str)
-        .collect();
+    let undeclared = undeclared_caps(&declared, &capabilities);
     if !undeclared.is_empty() {
         return Err(format!(
             "{} 未在 manifest 声明这些能力: {}",
@@ -395,3 +415,7 @@ pub fn permission_revoke(
     let _ = app.emit("host:permission-revoked", &plugin_id);
     Ok(revoked)
 }
+
+#[cfg(test)]
+#[path = "permission.tests.rs"]
+mod tests;
