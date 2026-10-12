@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "dev:debug": "node scripts/dev-debug.mjs",
+    "unit:astock": "node scripts/unit-market.mjs && node scripts/unit-aux.mjs",
     "verify": "node scripts/verify-isolation.mjs",
     "verify:agent": "node scripts/verify-agent-bridge.mjs",
     "verify:game": "node scripts/verify-game-mode.mjs",
