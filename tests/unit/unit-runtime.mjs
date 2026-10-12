@@ -1,0 +1,388 @@
+// Q3 前端运行时离线单测：状态机、topic ACL、总线、插件 URL、manifest 校验、资源回收。
+//
+// 运行：npm run unit:runtime（node --test + tests/unit/ts-loader.mjs，把 src 下的 .ts
+// 直接转译进 node；@tauri-apps/api/* 换成 tests/unit/tauri-stub.mjs）
+//
+// 与浏览器里那批 verify 断言的分工：这里只测**纯逻辑**（不需要窗口、不需要真协议），
+// 好处是零 GUI、秒级、能在 CI 的门禁里跑；像素、CSP、真实 IPC 仍归 verify:*。
+// 求值时机与迁移前的常驻单测一致：交互在本文件顶层按源码顺序跑完，eq 只在事后比快照。
+import { check, deep, eq, group, throws } from "./harness.mjs";
+import { calls as tauriCalls, resetStub, setReply } from "./tauri-stub.mjs";
+
+const smod = await import("../../src/pet/state-machine.ts");
+const acl = await import("../../src/runtime/topic-acl.ts");
+const { bus } = await import("../../src/runtime/event-bus.ts");
+const { pluginFileUrl, pluginFileVersion } = await import("../../src/runtime/plugin-url.ts");
+const { validateManifest } = await import("../../src/runtime/plugin-runtime.ts");
+const resources = await import("../../src/runtime/resources.ts");
+const subs = await import("../../src/runtime/subscriptions.ts");
+
+const { PetStateMachine } = smod;
+
+// 状态机在 idle 到点时按 REVIEW_CHANCE 随机切「思考」小动作 —— 离线单测要的是确定性，
+// 所以把这个掷骰子钉死成「不随机切」（verify 那批浏览器断言里同样避开了这条随机路径）。
+Math.random = () => 0.99;
+
+/** 造一批假帧：状态机只用长度与索引，不碰画布 */
+const frames = (n) =>
+  Array.from({ length: n }, (_, i) => ({
+    source: {},
+    sx: i * 192,
+    sy: 0,
+    sw: 192,
+    sh: 208,
+    nx: 0,
+    ny: 0,
+    nw: 1,
+    nh: 1,
+  }));
+
+const fullSet = () => ({
+  idle: frames(4),
+  "running-right": frames(4),
+  "running-left": frames(4),
+  waving: frames(4),
+  jumping: frames(4),
+  failed: frames(4),
+  running: frames(4),
+  review: frames(4),
+  waiting: frames(4),
+});
+
+/** 跑掉 label 之外全部状态的帧表（用于验证缺 waiting 帧的兜底） */
+const setWithout = (...missing) => {
+  const set = fullSet();
+  for (const key of missing) delete set[key];
+  return set;
+};
+
+const noThrow = (label, fn) => {
+  let err = null;
+  try {
+    fn();
+  } catch (e) {
+    err = e;
+  }
+  check(label, err === null, err ? `意外抛错: ${err.message}` : "");
+  return err;
+};
+
+/* ============================ 状态机：优先级与排队 ============================ */
+group("状态机优先级");
+
+{
+  const sm = new PetStateMachine(fullSet());
+  eq("新建时停在 idle", sm.action, "idle");
+  sm.request("jumping");
+  eq("手势类优先级更高，立即打断 idle", sm.action, "jumping");
+  eq("打断时不留排队", sm.queuedCount, 0);
+  sm.request("review");
+  eq("低优先级请求只排队，不换姿势", sm.action, "jumping");
+  eq("低优先级进了队列", sm.queuedCount, 1);
+  sm.request("review");
+  eq("同一状态不重复排队", sm.queuedCount, 1);
+}
+
+{
+  const sm = new PetStateMachine(fullSet());
+  sm.request("running");
+  eq("running 是当前状态", sm.action, "running");
+  sm.request("running");
+  eq("重复请求可持续状态不排队", sm.queuedCount, 0);
+  sm.update(44);
+  eq("45 秒续期上限内仍停在 running", sm.action, "running");
+  sm.update(2);
+  eq("安静超过 RENEW_HOLD 回落 idle", sm.action, "idle");
+}
+
+{
+  // 队列上限：从 running(3) 依次排入 review(2)、左右跑(1)、idle(0) 共 4 条 → 丢最旧的
+  const sm = new PetStateMachine(fullSet());
+  sm.request("running");
+  for (const a of ["review", "running-left", "running-right", "idle"]) sm.request(a);
+  eq("队列封顶 3 条", sm.queuedCount, 3);
+  eq("丢的是最旧那条（review）", sm.action, "running");
+  // 排空：每次 dwell 到点出一个
+  const seen = [];
+  for (let i = 0; i < 80 && seen.length < 3; i++) {
+    const before = sm.action;
+    sm.update(80);
+    if (sm.action !== before) seen.push(sm.action);
+  }
+  deep("排队状态按先进先出被逐个排空", seen.slice(0, 2), ["running-left", "running-right"]);
+}
+
+{
+  const sm = new PetStateMachine(fullSet());
+  let sleeps = 0;
+  sm.onSleep = () => sleeps++;
+  sm.request("waiting");
+  eq("waiting 可以被打断进入", sm.action, "waiting");
+  sm.update(200);
+  eq("waiting 的 dwell 是 1e9，不被计时打断", sm.action, "waiting");
+  eq("waiting 期间不重复触发挂机回调", sleeps, 0);
+  eq("摸头把 waiting 唤醒成 waving", sm.poke("head"), "waving");
+  eq("唤醒后当前姿势是 waving", sm.action, "waving");
+}
+
+{
+  const sm = new PetStateMachine(fullSet());
+  eq("戳肚子是 jumping", sm.poke("belly"), "jumping");
+  const before = sm.shakeUntil;
+  eq("摸头是 waving", sm.poke("head"), "waving");
+  sm.poke("tail");
+  eq("拉尾巴切 failed", sm.action, "failed");
+  check("拉尾巴设了抖动截止", sm.shakeUntil !== before, `shakeUntil=${sm.shakeUntil}`);
+}
+
+{
+  const sm = new PetStateMachine(fullSet());
+  let sleeps = 0;
+  sm.onSleep = () => sleeps++;
+  for (let i = 0; i < 20; i++) sm.update(10);
+  eq("三分钟无交互进 waiting", sm.action, "waiting");
+  eq("进 waiting 时只回调一次", sleeps, 1);
+  sm.update(300);
+  eq("停在 waiting 后不再重复回调", sleeps, 1);
+}
+
+{
+  // 兜底皮肤只有 idle 帧：挂机检测整条不成立，否则会每帧回落 idle + 每帧重放台词
+  const sm = new PetStateMachine(setWithout("waiting"));
+  let sleeps = 0;
+  sm.onSleep = () => sleeps++;
+  for (let i = 0; i < 20; i++) sm.update(10);
+  eq("缺 waiting 帧时角色仍停在 idle", sm.action, "idle");
+  eq("缺 waiting 帧时不反复触发挂机回调", sleeps, 0);
+}
+
+{
+  const sm = new PetStateMachine(fullSet());
+  sm.request("no-such-action");
+  eq("未注册的状态请求被忽略", sm.action, "idle");
+  sm.request("review");
+  eq("先切到 review", sm.action, "review");
+  const frameBefore = sm.frame;
+  sm.setSprites(setWithout());
+  eq("换一批帧后保持当前状态", sm.action, "review");
+  check("setSprites 之后仍能取到帧", !!sm.frame, "frame 为空");
+  check("换帧后帧对象是新的", sm.frame !== frameBefore, "还是旧帧");
+}
+
+/* ============================ topic 归属 ACL ============================ */
+group("topic-acl");
+
+{
+  noThrow("发布自己前缀放行", () => acl.assertPublishable("todo", "todo:changed"));
+  throws("发布他人前缀被拒", () => acl.assertPublishable("todo", "com.pet.astock:cmd"), "前缀");
+  throws("发布宿主 topic 被拒", () => acl.assertPublishable("todo", "ble:heart-rate"), "前缀");
+  throws("通配发布被拒", () => acl.assertPublishable("todo", "todo:*"), "前缀");
+  noThrow("订阅自己前缀不需要授权", () => acl.assertSubscribable("todo", "todo:widget", []));
+  noThrow("订阅自己前缀的通配也可以", () => acl.assertSubscribable("todo", "todo:*", []));
+  noThrow("声明 bus:subscribe 后能订宿主 topic", () =>
+    acl.assertSubscribable("todo", "agent:state", ["bus:subscribe"]),
+  );
+  throws(
+    "未声明就订他人 topic 被拒",
+    () => acl.assertSubscribable("todo", "agent:state", []),
+    "bus:subscribe",
+  );
+  throws("通配订阅不许越过自己命名空间", () => acl.assertSubscribable("todo", "*", ["bus:subscribe"]), "通配");
+  throws(
+    "带前缀的通配同样越界",
+    () => acl.assertSubscribable("todo", "com.pet.*", ["bus:subscribe"]),
+    "通配",
+  );
+}
+
+{
+  const sent = [];
+  const fake = {
+    publish: (topic, payload, pluginId) => sent.push({ topic, payload, pluginId }),
+    subscribe: () => () => {},
+  };
+  const scoped = acl.createScopedBus("todo", ["bus:publish", "bus:subscribe"], fake);
+  deep("受限视图只暴露 publish/subscribe", Object.keys(scoped).sort(), ["publish", "subscribe"]);
+  scoped.publish("todo:cmd", { action: "sync" });
+  deep("发布把插件身份带到中继那一层", sent[0], {
+    topic: "todo:cmd",
+    payload: { action: "sync" },
+    pluginId: "todo",
+  });
+  throws("未声明 bus:publish 时本地就拦下", () => {
+    const bare = acl.createScopedBus("todo", [], fake);
+    bare.publish("todo:cmd", {});
+  }, "bus:publish");
+  throws("受限视图里没有 inject", () => scoped.inject("agent:state", {}), "inject");
+}
+
+/* ============================ 事件总线 ============================ */
+group("event-bus");
+
+resetStub();
+
+{
+  const got = [];
+  const off = bus.subscribe("todo:changed", (p) => got.push(p));
+  bus.inject("todo:changed", { n: 1 });
+  eq("inject 本地即时派发", got.length, 1);
+  off();
+  bus.inject("todo:changed", { n: 2 });
+  eq("退订后不再收", got.length, 1);
+
+  const wild = [];
+  const offWild = bus.subscribe("todo:*", (p) => wild.push(p));
+  bus.inject("todo:widget", { v: 1 });
+  bus.inject("com.pet.astock:cmd", {});
+  eq("前缀通配命中自己的 topic", wild.length, 1);
+  offWild();
+}
+
+{
+  // 通配订阅 :widget 会向宿主取最近一份（回灌），这条靠 stub 的 invoke 记录来证明
+  resetStub();
+  setReply("bus_peek", { mode: "badge" });
+  const replayed = [];
+  const off = bus.subscribe("zz.probe:widget", (p) => replayed.push(p));
+  check("订阅 widget topic 会问宿主取回灌", true, tauriCalls.some((c) => c.cmd === "bus_peek"));
+  off();
+  deep("bus_peek 只带 topic 一个参数", tauriCalls.find((c) => c.cmd === "bus_peek")?.args, {
+    topic: "zz.probe:widget",
+  });
+}
+
+{
+  resetStub();
+  bus.publish("todo:changed", { n: 3 }, "todo");
+  const relay = tauriCalls.find((c) => c.cmd === "bus_publish");
+  check("publish 走一趟中继", !!relay, `calls=${JSON.stringify(tauriCalls)}`);
+  deep("中继参数带上 topic/payload/pluginId", relay?.args, {
+    topic: "todo:changed",
+    payload: { n: 3 },
+    pluginId: "todo",
+  });
+  bus.publish("todo:status", { text: "x" });
+  eq("宿主自己的发布不带插件身份（由宿主判为 null）", tauriCalls.at(-1)?.args.pluginId, null);
+}
+
+{
+  // 自递归必须在深度上限处截断，否则通配订阅者会把栈打爆
+  const errors = [];
+  const realError = console.error;
+  console.error = (...a) => errors.push(String(a.join(" ")));
+  let fired = 0;
+  const off = bus.subscribe("zz.probe:rec:*", () => {
+    fired++;
+    bus.inject("zz.probe:rec:x", {});
+  });
+  bus.inject("zz.probe:rec:x", {});
+  off();
+  console.error = realError;
+  check("递归被截断在有限层", fired > 1 && fired <= 12, `实际 ${fired} 层`);
+  check("截断时有明确告警", errors.some((e) => e.includes("派发递归")), JSON.stringify(errors));
+
+  let after = 0;
+  const off2 = bus.subscribe("zz.probe:after", () => after++);
+  bus.inject("zz.probe:after", {});
+  off2();
+  eq("截断后总线仍可正常派发", after, 1);
+}
+
+/* ============================ 插件文件 URL ============================ */
+group("plugin-url");
+
+{
+  eq(
+    "不带版本串",
+    pluginFileUrl("com.pet.astock", "index.js"),
+    "http://petplugin.localhost/com.pet.astock/index.js",
+  );
+  eq(
+    "mtime 拼成查询串做 cache-busting",
+    pluginFileUrl("todo", "widget.js", 1720000000000),
+    "http://petplugin.localhost/todo/widget.js?v=1720000000000",
+  );
+  eq("版本串为空串时退回不带参数", pluginFileUrl("todo", "index.js", ""), "http://petplugin.localhost/todo/index.js");
+  eq("undefined 版本同样不带参数", pluginFileUrl("todo", "index.js", undefined), "http://petplugin.localhost/todo/index.js");
+  throws("缺入口路径直接抛", () => pluginFileUrl("todo", undefined), "缺少入口文件路径");
+  eq("id 里的点号不被编码掉", pluginFileUrl("a.b", "x.js").includes("a.b"), true);
+}
+
+{
+  resetStub();
+  setReply("plugin_file_version", 12345);
+  const ok = await pluginFileVersion("todo", "index.js");
+  eq("mtime 以字符串给出", ok, "12345");
+  const asked = tauriCalls.find((c) => c.cmd === "plugin_file_version");
+  deep("参数名与 Rust 侧一致", asked?.args, { pluginId: "todo", rel: "index.js" });
+  setReply("plugin_file_version", () => Promise.reject(new Error("文件正被替换")));
+  const fallback = await pluginFileVersion("todo", "index.js");
+  eq("取不到 mtime 时返回空串而不是拒绝加载", fallback, "");
+}
+
+/* ============================ manifest 校验 ============================ */
+group("validateManifest");
+
+{
+  const good = { id: "com.pet.astock", name: "A股盯盘", version: "0.1.0", entry: "index.js" };
+  eq("合法 manifest 通过", validateManifest(good), null);
+  eq("带 widget 也合法", validateManifest({ ...good, widget: "widget.js" }), null);
+  check("id 词表与 Rust 侧 ids.rs 一致（下划线被拒）", !!validateManifest({ ...good, id: "a_b" }), "没拦住 a_b");
+  check("大写 id 被拒", !!validateManifest({ ...good, id: "Todo" }), "没拦住大写");
+  check("过短 id 被拒", !!validateManifest({ ...good, id: "ab" }), "没拦住 ab");
+  check("路径式 id 被拒", !!validateManifest({ ...good, id: "../etc" }), "没拦住 ../etc");
+  eq("数字开头的 id 合法（与前端正则一致）", validateManifest({ ...good, id: "1.2-3" }), null);
+  eq(
+    "65 字符的 id 超长被拒",
+    validateManifest({ ...good, id: `a${"b".repeat(64)}` }) !== null,
+    true,
+  );
+  check("缺 name 被拒", validateManifest({ ...good, name: "" }).includes("name"), true);
+  check("缺 version 被拒", validateManifest({ ...good, version: "" }).includes("version"), true);
+  check("entry 带斜杠被拒", validateManifest({ ...good, entry: "a/index.js" }).includes("entry"), true);
+  check("widget 不是 .js 被拒", validateManifest({ ...good, widget: "widget.mjs" }).includes("widget"), true);
+  check("permissions 不是数组被拒", validateManifest({ ...good, permissions: "http" }).includes("permissions"), true);
+  check("整个 manifest 不是对象被拒", String(validateManifest(null)).includes("不是对象"), true);
+}
+
+/* ============================ 共享资源与订阅回收 ============================ */
+group("资源回收");
+
+{
+  resources.claim("ble", "a");
+  resources.claim("ble", "b");
+  eq("非持有者 release 不算数", resources.release("ble", "zz"), false);
+  eq("仍有人持有时不释放", resources.release("ble", "a"), false);
+  eq("最后一个持有者退出才释放", resources.release("ble", "b"), true);
+  resources.claim("ble-scan", "c");
+  eq("ble 与 ble-scan 各自独立计数", resources.release("ble", "c"), false);
+  deep("releaseAll 回每类资源的释放情况", resources.releaseAll("c"), {
+    ble: false,
+    "ble-scan": true,
+  });
+}
+
+{
+  let ran = 0;
+  const handle = subs.register("zz.probe", () => ran++);
+  subs.register("zz.probe", () => ran++);
+  eq("登记数可见", subs.pendingCount("zz.probe"), 2);
+  handle();
+  eq("插件提前自行退订会即时执行", ran, 1);
+  eq("提前退订后登记数减一", subs.pendingCount("zz.probe"), 1);
+  handle();
+  eq("同一个句柄重复调用不再执行第二次", ran, 1);
+  eq("宿主回收剩下的登记", subs.disposeAll("zz.probe"), 1);
+  eq("回收后没有残留", subs.pendingCount("zz.probe"), 0);
+  eq("重复回收是 0", subs.disposeAll("zz.probe"), 0);
+
+  const errors = [];
+  const realError = console.error;
+  console.error = (...a) => errors.push(String(a.join(" ")));
+  subs.register("zz.probe", () => {
+    throw new Error("插件自己的清理炸了");
+  });
+  eq("清理函数抛错时不计入回收成功数", subs.disposeAll("zz.probe"), 0);
+  console.error = realError;
+  check("抛错的回收有告警留下", errors.some((e) => e.includes("回收 zz.probe")), JSON.stringify(errors));
+}

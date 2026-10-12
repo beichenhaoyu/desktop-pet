@@ -134,7 +134,6 @@ eq("isTransportError({status:429, message:'fetch failed'}) = false（带状态�
 }
 
 // nextIntervalSec：退避按 2 的幂、封顶 IDLE_MAX_SEC、不低于盘中值
-// biome-ignore lint/complexity/noUselessLoneBlockStatements: 这块只是给这一组样例做作用域隔离
 {
   eq("noProgress=0 回到盘中值", T.nextIntervalSec({ tradingSec: 20, idleSec: 30, noProgress: 0 }), 20);
   eq("noProgress 缺省也回到盘中值", T.nextIntervalSec({ tradingSec: 20, idleSec: 30 }), 20);

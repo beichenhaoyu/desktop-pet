@@ -43,7 +43,9 @@
         // 修复被 biome 标为 unsafe：`!set || !set.delete(x)` 与 `!set?.delete(x)`
         // 在「set 存在但 delete 返回 false」上依赖的是同一个 falsy 判定，改写不改义，
         // 但这类等价性要靠人核对而不是让 lint 自动落笔
-        "useOptionalChain": "off"
+        "useOptionalChain": "off",
+        // 离线单测用裸块给每组样例做作用域隔离（迁移前就这么写，433 条断言都靠它互不串味）
+        "noUselessLoneBlockStatements": "off"
       }
     }
   }

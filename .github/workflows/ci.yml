@@ -59,8 +59,8 @@ jobs:
       - name: 前端 lint（Biome）
         run: npm run lint
 
-      - name: 离线常驻单测（astock 解析层 + 判定层）
-        run: npm run unit:astock
+      - name: 离线常驻单测（astock 解析层 + 判定层 + 前端运行时）
+        run: npm run unit
 
       - name: Rust 格式检查
         working-directory: src-tauri
