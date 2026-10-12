@@ -7,16 +7,13 @@ import { PET_ACTIONS, petController, type ActionName } from "../pet/host";
 import { claim, release } from "./resources";
 import { register } from "./subscriptions";
 import { assertPublishable, assertSubscribable } from "./topic-acl";
+import type { HttpResponse, PluginContext } from "../../packages/sdk";
 
 function requireController() {
   const controller = petController();
   if (!controller) throw new Error("宠物本体尚未初始化完成");
   return controller;
 }
-
-// 插件为普通 JS（第三方交付物），上下文保持宽松类型
-// biome-ignore lint/suspicious/noExplicitAny: PluginContext 的形状由 manifest 动态决定，SDK 侧的类型面见 packages/sdk（K1）
-export type PluginContext = any;
 
 interface ManifestLike {
   id: string;
@@ -134,8 +131,8 @@ export function buildContext(manifest: ManifestLike): PluginContext {
 
     storage: {
       get: gated(manifest, "storage", (key: string) => storage.get(key) as Promise<unknown>),
-      set: gated(manifest, "storage", (key: string, value: unknown) => storage.set(key, value)),
-      delete: gated(manifest, "storage", (key: string) => storage.delete(key)),
+      set: gated(manifest, "storage", (key: string, value: unknown) => storage.set(key, value) as Promise<void>),
+      delete: gated(manifest, "storage", (key: string) => storage.delete(key) as Promise<void>),
     },
 
     ble: {
@@ -167,7 +164,7 @@ export function buildContext(manifest: ManifestLike): PluginContext {
         if (release("ble", pid)) await invoke("ble_disconnect", { pluginId: pid });
       }),
       connectedDevice: gated(manifest, "ble:connect", () =>
-        invoke("ble_connected_device", { pluginId: pid }),
+        invoke("ble_connected_device", { pluginId: pid }) as Promise<string | null>,
       ),
     },
 
@@ -211,7 +208,7 @@ export function buildContext(manifest: ManifestLike): PluginContext {
         if (!(await ensurePermissions(manifest, ["http", `http:${host}`]))) {
           throw new Error(`[${pid}] 域名授权被拒绝: ${host}`);
         }
-        return invoke("http_request", {
+        return invoke<HttpResponse>("http_request", {
           pluginId: pid,
           url,
           method: options.method ?? null,
@@ -223,7 +220,7 @@ export function buildContext(manifest: ManifestLike): PluginContext {
 
     notify: {
       show: gated(manifest, "notify", (title: string, body: string) =>
-        invoke("notify_show", { pluginId: pid, title, body }),
+        invoke("notify_show", { pluginId: pid, title, body }) as Promise<void>,
       ),
     },
 

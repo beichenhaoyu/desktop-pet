@@ -5,8 +5,9 @@
 // 拆分子模块（示例插件把 topic 常量抽进 topics.js 就是这个用法）。
 import { bus } from "./event-bus";
 import { pluginFileUrl, pluginFileVersion } from "./plugin-url";
-import { createScopedBus, type ScopedBus } from "./topic-acl";
+import { createScopedBus } from "./topic-acl";
 import { createAgentHooksApi } from "./bridge";
+import type { WidgetContext, WidgetRegion } from "../../packages/sdk";
 
 export interface WidgetManifest {
   id: string;
@@ -15,13 +16,10 @@ export interface WidgetManifest {
   permissions?: string[];
 }
 
-/** settings 区 widget 才能拿到的受控宿主通道（见 ADR-0001，别扩大注入面） */
-type HostBridge = { agentHooks: ReturnType<typeof createAgentHooksApi> };
-
 export interface WidgetExports {
   mount: (
     root: ShadowRoot,
-    ctx: { pluginId: string; region: string; bus: ScopedBus; host?: HostBridge },
+    ctx: WidgetContext,
   ) => void | Promise<void>;
   unmount?: (root: ShadowRoot) => void | Promise<void>;
 }
@@ -45,7 +43,7 @@ class WidgetHost {
   /** 把插件 widget 挂载到指定区域；容器缺省按 id 约定 widget-<region> 查找 */
   async mount(
     manifest: WidgetManifest,
-    region: string,
+    region: WidgetRegion,
     container?: HTMLElement,
   ): Promise<void> {
     const key = `${manifest.id}#${region}`;
@@ -66,7 +64,7 @@ class WidgetHost {
   private async doMount(
     manifest: WidgetManifest,
     widgetPath: string,
-    region: string,
+    region: WidgetRegion,
     root: HTMLElement,
     startedAt: number,
   ): Promise<void> {
@@ -119,7 +117,7 @@ class WidgetHost {
     }
   }
 
-  has(pluginId: string, region?: string): boolean {
+  has(pluginId: string, region?: WidgetRegion): boolean {
     const list = this.mounted.get(pluginId);
     if (!list) return false;
     if (!region) return list.length > 0;

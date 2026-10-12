@@ -93,7 +93,7 @@ export async function activate(ctx) {
     method: "GET",
     headers: [["authorization", "Bearer ..."]],
   });
-  // res: { status, contentType, body, truncated }，body 上限 1 MiB
+  // res: { status, content_type, body, truncated }，body 上限 1 MiB
   // body 按响应 Content-Type 的 charset 解码，目前支持 UTF-8 与 GBK/GB18030，其余仍按 UTF-8 lossy
 
   ctx.notify.show("同步完成", "本次 1.2k tokens");
