@@ -253,6 +253,7 @@ MVP 范围：<这一轮只做什么>
 | A股插件 | `npm run verify:astock` | **154**（A11 后是源无关断言：PM 与执行者在**两种不同网络形态**下各实测 0 红。套件开头的 preflight 行会告诉你当轮是哪一种形态） |
 | `plugins/com.pet.astock` 的纯函数（三源解析 / 节流 / 提醒判定 / 五档数据 / 源判定层） | `npm run unit:astock`（常驻单测，零 GUI、零联网、秒级） | market **247** / aux **186**（含 A11 的 `sourceBranch` 组 36 条；Q2 起跑在 `node --test`，读 `ℹ tests 433 / fail 0` 与 `ASSERTIONS` 分组计数） |
 | `src/` 运行时纯逻辑（状态机、topic ACL、总线、插件 URL、manifest 校验、资源回收） | `npm run unit:runtime`（离线，靠 `tests/unit/ts-loader.mjs` 转译 .ts） | runtime **94**（Q3；`npm run unit` 合计 **527**） |
+| 插件纯函数（`plugins/todo/todo-txt.js`；hr-ble 的 BPM 解析在 Rust，归 cargo test） | `npm run unit:plugins` | plugins **53**（Q4；`npm run unit` 合计 **580**） |
 | 任何新增脚本 / 协议源 / CSP / 打包相关 | `npm run verify:release` | 12 |
 | Cargo 依赖变动 | `cargo tree -p tauri` 必须仍是 **2.12.0**，且 `npm run verify:release` | — |
 
