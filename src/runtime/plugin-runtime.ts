@@ -1,5 +1,5 @@
 // 插件运行时：manifest 扫描校验 → 动态 import → activate/deactivate 生命周期。
-// 单插件异常被隔离，不影响宿主；启停状态持久化在 localStorage（同源全窗口共享）。
+// 单插件异常被隔离，不影响宿主；启停清单存在宿主磁盘上（见 services/enabled.rs）。
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { bus } from "./event-bus";
@@ -19,19 +19,67 @@ export interface PluginManifest {
   description?: string;
 }
 
-const ENABLED_KEY = "host:enabled-plugins";
+/**
+ * 启停清单：事实来源在宿主（`services/enabled.rs`，原子写的一份 JSON 文件）。
+ *
+ * 原先它存在 WebView 的 localStorage 里 —— 清一次 WebView 缓存，用户给的启停就全没了，
+ * 而这份清单决定「哪些插件会被激活」，属于跨会话状态（C1）。
+ * 每个窗口各自持一份只读缓存：`loadEnabled()` 在开窗时取一次，取值仍是同步的
+ * （reconcile 与 activate 的判定点都在热路径上，不该为它多等一次 IPC）。
+ */
+const LEGACY_ENABLED_KEY = "host:enabled-plugins";
+let enabledCache: string[] = [];
 
-export function getEnabled(): string[] {
+/** 宿主还没写过（新安装，或老用户尚未迁移）时读到的那一份旧清单 */
+function readLegacyEnabled(): string[] {
   try {
-    const raw = JSON.parse(localStorage.getItem(ENABLED_KEY) ?? "[]");
+    const raw = JSON.parse(localStorage.getItem(LEGACY_ENABLED_KEY) ?? "[]");
     return Array.isArray(raw) ? raw.filter((x) => typeof x === "string") : [];
   } catch {
     return [];
   }
 }
 
-export function setEnabledIds(ids: string[]): void {
-  localStorage.setItem(ENABLED_KEY, JSON.stringify(ids));
+export function getEnabled(): string[] {
+  return enabledCache;
+}
+
+/**
+ * 取宿主那份清单；还没有就先做一次迁移再落定。
+ * 迁移命令只在「文件不存在」时写入，其余情况原样回读，所以多个窗口同时开也不会互相覆盖。
+ * 以宿主回读的那份为准（非法 id 与重复项在宿主侧被滤掉），不自己猜过滤结果。
+ */
+export async function loadEnabled(): Promise<string[]> {
+  const stored = await invoke<string[] | null>("plugin_enabled_list");
+  if (stored) {
+    enabledCache = stored;
+    return enabledCache;
+  }
+  const legacy = readLegacyEnabled();
+  try {
+    enabledCache = await invoke<string[]>("plugin_enabled_migrate", { ids: legacy });
+  } catch {
+    // 老宿主没这条命令、或本窗不是宠物窗：至少按旧键那份继续跑，别把用户挡在门外
+    enabledCache = legacy;
+  }
+  return enabledCache;
+}
+
+/** 写启停清单（只认设置窗，宿主会拒），并同步本窗缓存 —— 调用方需要 await 它 */
+export async function setEnabledIds(ids: string[]): Promise<void> {
+  const stored = await invoke<string[]>("plugin_enabled_set", { ids });
+  enabledCache = stored;
+}
+
+/**
+ * 每个窗口启动时挂一次：清单被任何窗口（包括直接打宿主命令的回归脚本）改过时，
+ * 本窗那份缓存要跟着刷新。少了这一步，设置页会拿着旧名单判定「这个插件没启用」，
+ * 于是插件页不挂 widget —— 表现成「明明开了开关，页面却是空的」。
+ */
+export async function watchEnabled(): Promise<void> {
+  await listen<string[]>("host:enabled-changed", (e) => {
+    if (Array.isArray(e.payload)) enabledCache = e.payload;
+  });
 }
 
 export function validateManifest(m: PluginManifest): string | null {
@@ -122,8 +170,11 @@ async function doActivate(manifest: PluginManifest): Promise<void> {
         return;
       }
     }
-    // 弹框期间开关可能已经被关掉：那就别把一个「已被停用」的插件装起来
-    if (!getEnabled().includes(manifest.id)) return;
+    // 弹框期间开关可能已经被关掉：那就别把一个「已被停用」的插件装起来。
+    // 这里必须向宿主重取，而不是读本窗那份缓存 —— 缓存只保证「最终会被广播追平」，
+    // 而直接调用 activatePlugin 的路子（回归脚本、watcher 之外的任何一处）可能刚由
+    // 别的窗口写过清单，读旧缓存会把一个确实启用的插件判成停用。
+    if (!(await loadEnabled()).includes(manifest.id)) return;
 
     const bust = await pluginFileVersion(manifest.id, manifest.entry);
     const url = pluginFileUrl(manifest.id, manifest.entry, bust);
@@ -166,7 +217,8 @@ async function doDeactivate(pluginId: string): Promise<void> {
 
 /** 按持久化的启用清单同步实际运行状态 */
 export async function reconcile(manifests: PluginManifest[]): Promise<void> {
-  const enabled = new Set(getEnabled());
+  // 每次都向宿主取一遍：清单的事实来源在宿主，本窗那份缓存可能已经被别的窗口写过
+  const enabled = new Set(await loadEnabled());
   // 目录被移走的插件必须真正下线：它已经不在 manifests 里，下面的循环管不到它
   const installed = new Set(manifests.map((m) => m.id));
   for (const id of [...active.keys()]) {
@@ -183,6 +235,10 @@ export async function reconcile(manifests: PluginManifest[]): Promise<void> {
 
 /** 宠物窗（主上下文）启动入口 */
 export async function initRuntime(): Promise<void> {
+  // 先挂监听再取清单：反过来的话中间那次变更会被丢掉
+  await watchEnabled();
+  // 启停清单要先取到：reconcile 与 activate 都读那份同步缓存，取空了会把用户启用的插件全当停用
+  await loadEnabled();
   await bus.init();
   // 宿主 Rust 原生事件注入总线，插件经标准 topic 订阅
   await listen("ble:device-found", (e) => bus.inject("ble:device-found", e.payload));
@@ -195,6 +251,9 @@ export async function initRuntime(): Promise<void> {
   // 设置窗切换插件开关 → 本窗运行时执行启停
   await listen<{ id: string; enabled: boolean }>("host:plugin-toggled", async (e) => {
     const { id, enabled } = e.payload;
+    // 清单的事实来源在宿主：本窗那份缓存要跟着刷新，否则下一次 reconcile
+    // 会拿旧名单把刚被停用的插件又激活回来
+    await loadEnabled();
     const manifests = await invoke<PluginManifest[]>("plugins_list");
     const manifest = manifests.find((m) => m.id === id);
     if (!manifest) return;

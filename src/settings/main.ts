@@ -3,8 +3,10 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { bus } from "../runtime/event-bus";
 import {
   getEnabled,
+  loadEnabled,
   setEnabledIds,
   validateManifest,
+  watchEnabled,
   type PluginManifest,
 } from "../runtime/plugin-runtime";
 import { widgetHost } from "../runtime/widget-host";
@@ -59,7 +61,7 @@ function renderNav(): void {
 
   const count = $<HTMLSpanElement>("nav-plugin-count");
   if (count) {
-    // 只数「既装着又启用」的：启用清单是 localStorage 里的历史值，插件被移走后还留着
+    // 只数「既装着又启用」的：启用清单里可能留着已被移走的插件 id（宿主不做垃圾回收）
     count.textContent = `${manifests.filter((m) => on.has(m.id)).length}/${manifests.length}`;
   }
 }
@@ -263,7 +265,9 @@ function toggleListener(): void {
     const ids = new Set(getEnabled());
     if (on) ids.add(manifest.id);
     else ids.delete(manifest.id);
-    setEnabledIds([...ids]);
+    // 先落盘再广播：宠物窗收到 host:plugin-toggled 后会向宿主重取清单，
+    // 顺序反了它取到的还是旧的那份，表现成「开关点不动」
+    await setEnabledIds([...ids]);
     const label = $<HTMLSpanElement>("plugin-toggle-label");
     if (label) label.textContent = on ? "已启用" : "已停用";
     renderNav();
@@ -521,6 +525,10 @@ async function renderGameMode(): Promise<void> {
 /* ---------- 启动 ---------- */
 
 async function main(): Promise<void> {
+  // 启停清单的事实来源在宿主：先挂上变更监听，再取本窗那份缓存 ——
+  // 侧栏那个点与「插件页挂不挂 widget」都读它，别窗写过也要跟得上
+  await watchEnabled();
+  await loadEnabled();
   await bus.init();
   wireNav();
   toggleListener();
