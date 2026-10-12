@@ -38,3 +38,8 @@ release-package/
 # 外部 AI 助手在本机留下的东西，不纳入版本控制（用户 2026-10-10 定）
 .workbuddy/
 .zcodeignore
+
+# 派单流水线的执行工作区：卡片回传的原始输出与临时副本。
+# 结论都整理进 .dispatch/<功能>/results/，工作区里只留被 results 引用的证据文件（显式 -f 添加）。
+# 以前这里存过 scripts/unit-market.mjs / unit-aux.mjs 的副本，脚本改了副本没人跟 —— S6 清掉。
+.dispatch/**/work/
