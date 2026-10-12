@@ -1,4 +1,4 @@
-use super::state::{event_detail, prompt_title};
+use super::state::{bounded_str, event_detail, prompt_title};
 use super::watcher::complete_line_prefix;
 use serde_json::{json, Value};
 
@@ -104,4 +104,40 @@ fn session_end_drops_that_session_only() {
     assert_eq!(title, "二");
     state.apply("session-end", "s2", "", None);
     assert_eq!(state.aggregate(), "idle");
+}
+
+#[test]
+fn prompt_title_truncates_to_48_chars_not_bytes() {
+    // 上限 48 抄自 state.rs::prompt_title 的 `take(48)`；输入长度明显超过它，
+    // 且全是三字节汉字：按字节切会把一个汉字拦腰截断（&s[..48] 直接 panic，
+    // 按字节 take 则得到 16 个字），这两种退化都必须被这条断言杀掉。
+    let long = "汉".repeat(60);
+    let title = prompt_title(&json!({ "prompt": long })).expect("非空输入必须给出标题");
+    assert_eq!(title.chars().count(), 48);
+    assert_eq!(title, "汉".repeat(48));
+    // 上限恰好等于输入长度的边界：不截、不越界
+    let exact = "界".repeat(48);
+    assert_eq!(
+        prompt_title(&json!({ "prompt": exact })).as_deref(),
+        Some(exact.as_str())
+    );
+}
+
+#[test]
+fn event_detail_truncates_to_120_chars_not_bytes() {
+    // 上限 120 抄自 state.rs::event_detail 的 `take(120)`；命令是汉字，
+    // 被截断的是 chars 而不是 bytes。
+    let long = "命".repeat(150);
+    let detail = event_detail(&json!({ "tool_input": { "command": long } }));
+    assert_eq!(detail.chars().count(), 120);
+    assert_eq!(detail, "命".repeat(120));
+}
+
+#[test]
+fn bounded_str_keeps_exactly_max_chars() {
+    // bounded_str 的现场调用点（watcher.rs）传入的上限是 96 与 64；这里用 96。
+    let long = "超".repeat(100);
+    let got = bounded_str(&json!({ "session_id": long }), "session_id", 96);
+    assert_eq!(got.chars().count(), 96);
+    assert_eq!(got, "超".repeat(96));
 }
