@@ -9,9 +9,10 @@
 // 收盘后行情时间戳不前进，规则命中会被「本轮没有新数据」这道闸挡住 ——
 // 那部分判定逻辑由 market.js / rules.js 的纯函数断言覆盖，这里只验链路。
 // 分时/K线/五档取的是接口最近一次的数据，所以休市跑也断言得出结构，只有提醒那条要看时段。
-// 东财行情主机（push2 / push2his）在本机被整组连接重置，所以「行情快照 / 五档」这几条断言
-// 在当前网络下必然红（它们要等阶段二的腾讯/新浪快照后端 + 宿主 charset 解码），
-// 但 K线/分时在本脚本里是走腾讯的，断言照旧成立 —— 见文末「多源 failover」一组。
+// 本机对东财 push2* 的通路会漂（2026-10-09 整组 RST、2026-10-12 恢复，见 AGENTS.md 那条约定）：
+// 所以「数据来自哪家源」的断言一律不许钉死某一家 —— 脚本开头做一次 preflight（逐 host 探可达性），
+// 各条断言按「本轮观测到的可用性 + 插件回显的失败明细」分支判定。判定层 = scripts/astock-source-branch.mjs
+// （纯函数；离线单测钉住全通 / 有坏源两种形态）。全通时换源、或请求数撞满多家，照旧判红。
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { argv, env } from "node:process";
@@ -27,6 +28,8 @@ import {
   waitUntil,
 } from "./cdp.mjs";
 import {
+  MARKET_SOURCES,
+  SOURCE_IDS,
   buildSinaQuoteUrl,
   buildTencentQuoteUrl,
   fetchDepth,
@@ -41,8 +44,16 @@ import {
   parseTencentQuotes,
   parseTencentTrend,
   progressOf,
+  sourceLabelOf,
   tencentCodeOf,
 } from "../plugins/com.pet.astock/market.js";
+import {
+  allHosts,
+  availableFor,
+  judgeKindSource,
+  requestBudget,
+  requestBudgetMany,
+} from "./astock-source-branch.mjs";
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
 const PID = "com.pet.astock";
@@ -138,6 +149,28 @@ try {
   })()`);
   r.check("插件已激活", true, await c.ev(`(async () => (await import('/src/runtime/plugin-runtime.ts')).isActive(${JSON.stringify(PID)}))()`));
 
+  // A11：源的可用性决定各断言走哪条分支。preflight 由测试侧自己发请求（根路径判可达；
+  // 新浪根路径 403 是它的正常反应，resolve 了就算可达）。结论用 r.info 写进报告，
+  // 让下一批人看得出「当时的红绿是哪种网络状态」。
+  r.group("网络形态 preflight（源无关断言的输入）");
+  const reachable = {};
+  for (const host of allHosts()) {
+    const t0 = Date.now();
+    let ok = false;
+    try {
+      await fetch(`https://${host}/`, { signal: AbortSignal.timeout(8000) });
+      ok = true;
+    } catch {
+      ok = false;
+    }
+    reachable[host] = ok;
+    r.info(`preflight ${host}`, `${ok ? "可达" : "不可达"}（${Date.now() - t0}ms）`);
+  }
+  r.info("preflight 结论（判定层输入）", JSON.stringify(reachable));
+  for (const kind of ["quote", "depth", "kline", "trend"]) {
+    r.info(`preflight 可用源（${kind}）`, availableFor(kind, reachable).join("/") || "(无)");
+  }
+
   /** 读一份 `*:widget` 视图（宿主会回灌最近一份，publish sync 就够） */
   const readView = () => c.ev(`(async () => {
     const { bus } = await import('/src/runtime/event-bus.ts');
@@ -207,9 +240,19 @@ try {
   // 于是「面板的多源切换」「出网计数」这些断言根本观察不到。这一轮验的是 K线/分时的多源面板
   // （行情快照与五档是阶段二的事，不在这一轮），所以先把行情按住，面板那组开跑前再等冷却过去。
   // 这不是放宽断言：行情快照/五档那几条该怎么红还怎么红。
-  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, ${JSON.stringify({ action: "config", value: { intervalSec: 1800, idleIntervalSec: 1800 } })}); true`);
-  await sleep(800);
-  r.check("轮询间隔已预置成上限（按住行情，好让面板在没冷却的窗口里验）", 1800, (await readView())?.net?.intervalSec);
+  // A11 §10：激活是异步的（同意框一个个弹、pump 回答），配置下发后读到生效为止 —— 不能拿单次
+  // 快照赌「命令已经进了插件的订阅」；重发是幂等的，最终值仍必须是 1800（没放宽）
+  {
+    const cfg = { action: "config", value: { intervalSec: 1800, idleIntervalSec: 1800 } };
+    let intervalApplied = null;
+    for (let i = 0; i < 20; i++) {
+      await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, ${JSON.stringify(cfg)}); true`);
+      await sleep(1000);
+      intervalApplied = (await readView())?.net?.intervalSec ?? null;
+      if (intervalApplied === 1800) break;
+    }
+    r.check("轮询间隔已预置成上限（按住行情，好让面板在没冷却的窗口里验）", 1800, intervalApplied);
+  }
 
   await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "search", keyword: "茅台" }); true`);
   let gotSug = await waitUntil(c, `window.__seen.suggest.length > 0`, 40_000);
@@ -275,17 +318,25 @@ try {
     [net0.cooled, net0.clean]);
 
   r.group("行情快照：多源换源 + 一次批量带走全部自选");
-  // 快照（自选列表 + badge/overlay 用的那份）现在是多源：东财 push2 在本机整组不可达，
-  // 落到腾讯 qt.gtimg.cn（GBK，宿主按 charset 解码，中文名与段位都安全）。
+  // 快照（自选列表 + badge/overlay 用的那份）是多源：先试记忆里上一次成功的源，失败才下移
+  // （东财 push2 与腾讯 qt.gtimg.cn 都能当首选，取决于本轮谁出得来；腾讯是 GBK，宿主按 charset 解码）。
+  // **不要把"某家源必坏"当成前提写进注释或断言** —— 本机通路分域、随时段漂，2026-10-09 与 10-12 就是两种形态。
   // 出网次数用闸门的滚动计数读：它是「这一轮实际发了几次请求」的直接证据。
+  // A11 §10：预期源取「本轮开始时读到的那份记忆」——插件会把上一次成功的源试在最前，判定要跟着它走
+  const memQuoteBefore = (await readView())?.net?.sources?.quote ?? "";
   const netQ0 = await netWindow();
   await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "refresh" }); true`);
   const quoted = await waitUntil(c, `window.__seen.quote.length > 0`, 25_000);
   const netQ1 = await netWindow();
+  const quoteSrc1 = (await readView())?.net?.sources?.quote ?? "";
   r.check("刷新后广播了行情快照（走多源链）", true, quoted);
   const delta2 = netQ1 - netQ0;
   r.info("两只自选一轮刷新的出网次数", String(delta2));
-  r.check("一轮刷新 = 一次批量请求链（撞一次坏源 + 落到腾讯，次数是个位数常数）", true, delta2 >= 1 && delta2 <= 3);
+  // A11：次数断言按本轮可用性给预算 —— 全通时一条链只该有一次请求（撞多家即判红，这是本卡唯一变严处）；
+  // 有坏源才允许各源的失败尝试与重试叠加（见 astock-source-branch.mjs::requestBudget）
+  const budgetQ = requestBudget({ kind: "quote", requests: delta2, preferred: memQuoteBefore, observed: quoteSrc1 });
+  r.info("快照出网预算", budgetQ.reason);
+  r.check("一轮刷新 = 一次批量请求链（次数符合预期档位；同档时不许撞源：≤2）", true, budgetQ.ok);
   // 再加两只（共 4 只自选 + 指数 = 5 个代码）再刷一轮：出网次数与上一轮**相同** ——
   // 「数量不增加请求数」就是这么证出来的，不是靠读代码
   await add("1.601398", "601398", "工商银行");
@@ -307,20 +358,37 @@ try {
   await sleep(900);
   r.check("多出来的两只已删掉（回到两条自选）", ["1.600519", "0.300750"],
     ((await invoke("store_get", { pluginId: PID, key: "watch" })).v ?? []).map((w) => w.secid));
-  const snapSrc = [(await readView())?.net?.sources?.quote, (await sourceMem())?.quote];
+  // 存储那份是异步落盘的（persist 直写但要走一遍 IPC）：有界轮询等它追上，别拿单次快照赌
+  const netQuoteSnap = (await readView())?.net?.sources?.quote;
+  let memQuoteSnap = null;
+  for (let i = 0; i < 10; i++) {
+    memQuoteSnap = (await sourceMem())?.quote ?? null;
+    if (memQuoteSnap) break;
+    await sleep(500);
+  }
+  const snapSrc = [netQuoteSnap, memQuoteSnap];
   r.info("快照实际吃的是哪家", JSON.stringify(snapSrc));
-  // 只钉「不是东财那条坏源」，不钉死腾讯：腾讯的快照 host 偶发拒连时插件会落到新浪（这也是设计内的）
-  r.check("快照源进了 net 与插件存储，且不是那家坏的", true,
-    snapSrc.every((v) => ["tencent", "sina"].includes(v)));
+  // A11：不钉死哪一家 —— 判「与本轮可用性一致」：net 与存储同值、∈已知源、且非首选源必须带失败记录
+  const judgeQ0 = judgeKindSource({ kind: "quote", observed: snapSrc[0], preferred: memQuoteBefore, reachable });
+  r.info("快照源判定", judgeQ0.reason);
+  r.check("快照源进了 net 与插件存储，且与本轮可用性判定一致", true,
+    snapSrc[0] !== undefined && snapSrc[0] === snapSrc[1] && judgeQ0.ok);
 
   r.group("盘面：分时 / K线 / 五档（走 push2his 域名）+ 出网节制");
+  const memPanelBefore = (await readView())?.net?.sources ?? {};
   const win0 = await netWindow();
   const selectAt = Date.now();
   await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "select", secid: "1.600519" }); true`);
-  const gotPanel = await waitUntil(c, `window.__seen.panel.some(p => p?.depth && p?.trend && p?.kline)`, 45_000);
+  const gotPanel = await waitUntil(c, `(() => { const p = window.__seen.panel.at(-1); return !!p?.depth && !!p?.kline && (!!p?.trend || !!p?.failed?.trend); })()`, 45_000);
   const pnl = (await c.ev(`window.__seen.panel.at(-1) ?? null`)) ?? {};
   r.info("面板这一轮的失败明细", JSON.stringify(pnl.failed ?? null).slice(0, 300));
-  r.check("选中后三段数据都到位", true, gotPanel);
+  r.info("面板这一轮每类试过的源（attempted）", JSON.stringify(pnl.attempted ?? null).slice(0, 300));
+  /** 换源证据之二：本轮「实际尝试过的源」里的失败次数（整段失败走 failed，中途换源走这里） */
+  const attemptFails = (p, kind) => (p?.attempted?.[kind] ?? []).filter((a) => a.ok === false).length;
+  // A11 §10：分时在盘后可能全源失败（实测 15:27 两个源都失败、15:34 又恢复）——「到位」的口径
+  // 按每段「有数据或有失败明细」判；深/ K 两段必须有数据，不许静默缺失
+  r.check("选中后每一段都有数据或有失败明细（深/K 必须有数据）", true,
+    gotPanel && !!pnl.depth && !!pnl.kline && (!!pnl.trend || !!pnl.failed?.trend));
   // 一次 select 要发 3 条请求（盘口/分时/K线）。闸门是 350ms 最小间隔，
   // 所以三条串起来至少要 2×350ms —— 用耗时证明请求真的过了闸门，而不是只写了个函数
   const panelMs = (pnl.at ?? 0) - selectAt;
@@ -356,14 +424,33 @@ try {
   r.check("明细里的中文名仍是 UTF-8", "贵州茅台", pnl.depth?.name);
   r.check("涨停价是交易所给的数值且高于昨收", true, Number.isFinite(pnl.depth?.limitUp) && pnl.depth.limitUp > pnl.depth.prevClose);
   r.check("跌停价低于昨收", true, Number.isFinite(pnl.depth?.limitDown) && pnl.depth.limitDown < pnl.depth.prevClose);
-  r.check("五档来自腾讯（与快照是同一条接口的两段）", "tencent", pnl.depthSource);
-  r.check("买一 ≤ 现价 ≤ 卖一", true, bidPrices[0] <= pnl.depth.price && pnl.depth.price <= askPrices[0]);
+  const judgeD = judgeKindSource({ kind: "depth", observed: pnl.depthSource, preferred: memPanelBefore.depth ?? "", reachable, hadFailure: !!pnl.failed?.depth, attemptedFailures: attemptFails(pnl, "depth") });
+  r.info("五档源判定", judgeD.reason);
+  r.check("五档源符合本轮可用性（非首选源必须有失败记录解释）", true, judgeD.ok);
+  // 时段守卫（AGENTS.md「有价才比大小、无价必无量」）：收盘后/竞价盘口可能整片为空，
+  // 两侧都有档才比大小；任一侧无档时改判「该侧必须整侧无价」，并把当轮形态写进 r.info
+  const hasBid = bidPrices.length > 0;
+  const hasAsk = askPrices.length > 0;
+  if (hasBid && hasAsk) {
+    r.check("买一 ≤ 现价 ≤ 卖一（两侧都有档时）", true, bidPrices[0] <= pnl.depth.price && pnl.depth.price <= askPrices[0]);
+  } else {
+    r.info("盘口形态（时段守卫：任一侧无档）", `买档 ${bidPrices.length} / 卖档 ${askPrices.length} 个有价档，price=${pnl.depth.price}`);
+    r.check("任一侧无档时：该侧五档必须整侧无价（无价必无量见上一条）", true,
+      (hasBid || (pnl.depth?.bids ?? []).every((l) => l.price === null)) &&
+        (hasAsk || (pnl.depth?.asks ?? []).every((l) => l.price === null)));
+  }
   // 昨收复用：分时那条链不再单独问一次昨收，基线取的是主轮询那一份快照（同一个数不重复问）
   const viewSnap = await readView();
-  r.check("分时基线 = 同一轮快照的昨收（缓存复用，没有额外的昨收请求）",
-    viewSnap?.quotes?.["1.600519"]?.prevClose, pnl.trend?.preClose);
-  r.check("分时结构成立：数组 + 昨收基准线可用", true,
-    Array.isArray(pnl.trend?.points) && Number.isFinite(pnl.trend?.preClose));
+  if (pnl.trend) {
+    r.check("分时基线 = 同一轮快照的昨收（缓存复用，没有额外的昨收请求）",
+      viewSnap?.quotes?.["1.600519"]?.prevClose, pnl.trend?.preClose);
+    r.check("分时结构成立：数组 + 昨收基准线可用", true,
+      Array.isArray(pnl.trend?.points) && Number.isFinite(pnl.trend?.preClose));
+  } else {
+    // 盘后全源失败时（实测 15:27 出现过）该段按「明确失败」判：不许拿旧数据冒充，也不许无明细地空
+    r.check("分时该段失败时：不保留旧数据（trend 为 null）且有失败明细", true,
+      pnl.trend === null && !!pnl.failed?.trend);
+  }
   r.check("分时有数据时形状自洽（时刻 HH:MM、价与均价都是数）", true,
     (pnl.trend?.points ?? []).every((p) => /^\d{2}:\d{2}$/.test(p.time) && Number.isFinite(p.price) && Number.isFinite(p.avg)));
   if (view?.session?.trading) {
@@ -374,34 +461,67 @@ try {
   r.check("K线拉满 120 根", 120, pnl.kline?.bars?.length);
   r.check("K线每根的高低价自洽", true, (pnl.kline?.bars ?? []).every((b) => b.high >= b.low && b.high >= Math.max(b.open, b.close) && b.low <= Math.min(b.open, b.close)));
 
-  // —— 多源 failover（这一轮新加的）：东财整组在本机被连接重置，K线与分时该自动落到腾讯 ——
+  // —— 多源 failover：源无关判定（冷记忆下先撞不可达源、或直接用本轮首选源，都算对） ——
   const win1 = await netWindow();
-  r.info("第一轮（冷记忆=东财优先）", `失败明细=${JSON.stringify(pnl.failed)} 出网增量=${win1 - win0}`);
-  r.check("K线与分时都来自腾讯（冷记忆下先撞东财，失败后下移）", ["tencent", "tencent"], [pnl.klineSource, pnl.trendSource]);
-  // 冷记忆这一轮要撞东财：盘口 2 次 + 分时/K线 各 2 次（传输层失败在 out() 里会重试一次），
-  // 只走腾讯的话一轮 4 次左右就够 —— 这个差值就是「它真的去撞了坏源」的运行时证据
-  // 「先撞坏源」这件事由上面那两条直接钉住：面板数据来自腾讯、而存储里的记忆此刻是东财优先；
-  // 出网次数只作旁证（环境的偶发抖动会让它上下浮动，尤其是某个 host 临时拒连时）
-  r.check("这一轮的出网次数是「一条链撞一次坏源 + 换源成功」的量级（≥3）", true, win1 - win0 >= 3);
+  r.info("第一轮（冷记忆，无偏好）", `失败明细=${JSON.stringify(pnl.failed)} 出网增量=${win1 - win0}`);
+  const judgeK1 = judgeKindSource({ kind: "kline", observed: pnl.klineSource, preferred: memPanelBefore.kline ?? "", reachable, hadFailure: !!pnl.failed?.kline, attemptedFailures: attemptFails(pnl, "kline") });
+  const judgeT1 = judgeKindSource({ kind: "trend", observed: pnl.trendSource, preferred: memPanelBefore.trend ?? "", reachable, hadFailure: !!pnl.failed?.trend, attemptedFailures: attemptFails(pnl, "trend") });
+  r.info("K线源判定", judgeK1.reason);
+  r.info("分时源判定", judgeT1.reason);
+  r.check("K线与分时的源都符合本轮可用性（非首选源必须有失败记录解释）", true, judgeK1.ok && judgeT1.ok);
+  // 出网次数按三条链（盘口 + 分时 + K线）叠加的预算判：全通时三条链各一次就够（撞多家判红），
+  // 有坏源才允许各源的失败尝试与重试叠加 —— 环境的偶发抖动由预算余量吸收
+  const budget1 = requestBudgetMany({
+    kinds: ["depth", "trend", "kline"],
+    requests: win1 - win0,
+    preferred: memPanelBefore,
+    observed: { depth: pnl.depthSource, trend: pnl.trendSource, kline: pnl.klineSource },
+  });
+  r.info("面板一轮出网预算", budget1.reason);
+  r.check("这一轮的出网次数符合本轮源可用性（三条链的预算区间）", true, budget1.ok);
   const memNow = (await sourceMem()) ?? {};
   r.info("源记忆（四个 kind）", JSON.stringify(memNow));
-  // 按键取，不整体比 JSON：宿主存储是 serde_json 的 BTreeMap，落盘后键是字母序
-  r.check("「上一次成功的源」落盘：K线/分时/五档都记成腾讯（快照是腾讯或新浪，见上面那行）", true,
-    [memNow.kline, memNow.trend, memNow.depth].every((v) => v === "tencent") && ["tencent", "sina"].includes(memNow.quote));
+  // 按键取，不整体比 JSON：宿主存储是 serde_json 的 BTreeMap，落盘后键是字母序。
+  // A11：判「落盘值与本轮实际使用一致」而不是钉死哪家 —— 记忆被正确写回才是这条守的东西。
+  // 落盘是异步的（persist 有抖动），用有界轮询等它追上，不用固定 sleep 赌。
+  const memSynced = await (async () => {
+    for (let i = 0; i < 20; i++) {
+      const m = (await sourceMem()) ?? {};
+      const s = (await readView())?.net?.sources ?? {};
+      // 未成功的 kind 记忆本来就是空串（如盘后全源失败的分时）——空串也算「落盘一致」，只要求：
+      // 存储==运行内存，且非空值必须是已知源
+      if (["kline", "trend", "depth", "quote"].every((k) => (m[k] ?? "") === (s[k] ?? "") && ((m[k] ?? "") === "" || SOURCE_IDS.includes(m[k])))) return { ok: true, m };
+      await sleep(500);
+    }
+    return { ok: false, m: (await sourceMem()) ?? {}, s: (await readView())?.net?.sources ?? {} };
+  })();
+  if (!memSynced.ok) r.info("记忆回显现场", JSON.stringify(memSynced).slice(0, 220));
+  // 有数据的那两段（深/K 必须成功）逐段核对；分时若成功也核对，失败则不比对（记忆合法留空）
+  r.check("「上一次成功的源」落盘与本轮实际使用一致（四个 kind，空值占位仅限未成功的段）", true,
+    memSynced.ok &&
+      memSynced.m.kline === pnl.klineSource &&
+      memSynced.m.depth === pnl.depthSource &&
+      (!pnl.trend || memSynced.m.trend === pnl.trendSource));
   // 第二轮：换一只自选（三段都重新取），记忆生效 —— 不再撞坏源，出网次数明显更少
   const at1 = Number(pnl.at ?? 0);
+  // 第二轮的「本轮开始时记忆」按 §10 口径从 net.sources 取（运行内存才是插件真实在用的记忆；
+  // 存储落盘是异步的，拿它当 preferred 会在落盘没追上时把正确行为判红）
+  const memPanelAfter1 = (await readView())?.net?.sources ?? {};
   await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "select", secid: "0.300750" }); true`);
-  const got2 = await waitUntil(c, `(() => { const p = window.__seen.panel.at(-1); return (p?.at ?? 0) > ${at1} && !!p?.kline?.bars?.length && !!p?.trend; })()`, 30_000);
+  const got2 = await waitUntil(c, `(() => { const p = window.__seen.panel.at(-1); return (p?.at ?? 0) > ${at1} && !!p?.kline?.bars?.length && (!!p?.trend || !!p?.failed?.trend); })()`, 30_000);
   const pnl2 = (await c.ev(`window.__seen.panel.at(-1) ?? null`)) ?? {};
   const win2 = await netWindow();
   r.info("第二轮（记忆=腾讯）", `失败明细=${JSON.stringify(pnl2.failed)} 出网增量=${win2 - win1}`);
-  r.check("第二轮照旧有数据（记忆指向的源可用，两段仍是腾讯）", [true, "tencent", "tencent"],
-    [got2, pnl2.klineSource, pnl2.trendSource]);
+  const judgeK2 = judgeKindSource({ kind: "kline", observed: pnl2.klineSource, reachable, preferred: memPanelAfter1.kline ?? "", hadFailure: !!pnl2.failed?.kline, attemptedFailures: attemptFails(pnl2, "kline") });
+  const judgeT2 = judgeKindSource({ kind: "trend", observed: pnl2.trendSource, reachable, preferred: memPanelAfter1.trend ?? "", hadFailure: !!pnl2.failed?.trend, attemptedFailures: attemptFails(pnl2, "trend") });
+  r.check("第二轮照旧有数据（记忆指向的源可用，源与预期一致或带尝试证据）", true,
+    got2 && judgeK2.ok && (!pnl2.trend || (judgeT2.ok && pnl2.trendSource === pnl.trendSource)));
   r.check("第二轮至少不会比第一轮更费（记忆指向的源可用）", true, win2 - win1 <= win1 - win0);
   // 把选中还给原来那只（后面的断言按它来）
   await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "select", secid: "1.600519" }); true`);
   await sleep(3000);
   const pnlBack = (await c.ev(`window.__seen.panel.at(-1) ?? null`)) ?? {};
+  const memKlineBefore60 = (await readView())?.net?.sources?.kline ?? "";
   const netK0 = await netWindow();
   await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "klt", value: 60 }); true`);
   const toMinute = await waitUntil(c, `window.__seen.panel.at(-1)?.klt === 60`, 20_000);
@@ -409,13 +529,14 @@ try {
   const netK1 = await netWindow();
   r.check("切到 60 分钟周期", true, toMinute);
   r.check("60 分钟线的时刻带时分", true, /\d{2}:\d{2}$/.test(pnl60.kline?.bars?.at(-1)?.time ?? ""));
-  r.check("60 分钟线也来自腾讯（分钟 K 走 mkline，与日K同 host）", "tencent", pnl60.klineSource);
-  // 切周期只该动 K 线这一条链（撞坏源那几次 + 腾讯一次），没有「为分时补昨收」的额外请求：
+  const judgeK60 = judgeKindSource({ kind: "kline", observed: pnl60.klineSource, preferred: memKlineBefore60, reachable, hadFailure: !!pnl60.failed?.kline, attemptedFailures: attemptFails(pnl60, "kline") });
+  r.info("60 分钟线源判定", judgeK60.reason);
+  r.check("60 分钟线源符合本轮可用性（分钟 K 与日 K 走同一条多源链）", true, judgeK60.ok);
+  // 切周期只该动 K 线这一条链，没有「为分时补昨收」的额外请求：
   // 那份昨收是主轮询缓存里的，数字对得上就够了（上面那条断言）
-  r.info("切周期一轮的出网次数", String(netK1 - netK0));
-  // 上限放到 6：撞两次坏源 + 腾讯主入口与两个备用入口都试过也才是这个量级；
-  // 「没有额外的昨收请求」这条由上面「分时基线 = 同一轮快照的昨收」直接钉住，不靠次数反推
-  r.check("切周期只出网 K 线这一条链（含换源与备用入口，次数是个位数）", true, netK1 - netK0 >= 1 && netK1 - netK0 <= 6);
+  const budgetK = requestBudget({ kind: "kline", requests: netK1 - netK0, preferred: memKlineBefore60, observed: pnl60.klineSource });
+  r.info("切周期一轮的出网预算", budgetK.reason);
+  r.check("切周期只出网 K 线这一条链（含换源与备用入口，次数符合本轮可用性）", true, budgetK.ok);
   await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "klt", value: 101 }); true`);
   await sleep(1500);
 
@@ -501,7 +622,14 @@ try {
     return [...rec.shadow.querySelectorAll('.muted')].map((n) => n.textContent).find((t) => /出网/.test(t)) ?? '';
   })()`);
   r.check("设置页把节流状态写给了用户（而不是默默不更新）", true, /近 1 分钟出网 \d+ 次/.test(netText));
-  r.check("插件页写明了行情数据源（与 K线那行同一个格式）", true, /行情数据源 (腾讯|新浪)/.test(netText));
+  // A11：不写死哪家 —— 断言「页面上那行与插件实际吃的源一致」（标签必须等于观测到的源 id 的中文名）
+  const pageSources = (await readView())?.net?.sources ?? {};
+  const expectQuoteLabel = pageSources.quote ? `行情数据源 ${sourceLabelOf(pageSources.quote)}` : "";
+  const expectKlineLabel = pageSources.kline ? `K线数据源 ${sourceLabelOf(pageSources.kline)}` : "";
+  r.check("插件页写明了行情数据源且与实际一致（东方财富/腾讯/新浪之一）", true,
+    /行情数据源 (东方财富|腾讯|新浪)/.test(netText) &&
+    (!expectQuoteLabel || netText.includes(expectQuoteLabel)) &&
+    (!expectKlineLabel || netText.includes(expectKlineLabel)));
 
   // 无成交/退市标的（腾讯给整行但 5/6 段是 0、五档全 0、47/48 段是 -1）：
   // 解析层必须把 -1/0 落成 null，界面必须明写「该源不供」，不许把 -1 当价格、
@@ -521,8 +649,12 @@ try {
   r.check("涨跌停段是 -1 → 落成 null（不是 -1，也不是按昨收硬算的价）", [null, null], [pDead.depth.limitUp, pDead.depth.limitDown]);
   r.check("快照那一路同样不给涨跌停（留 null 交给界面说「该源不供」）", [null, null], [deadQuote?.limitUp, deadQuote?.limitDown]);
   if (deadQuote) {
-    r.check("无成交时的现价/昨收仍是有数的（最后一笔价，不是 0）", true,
-      Number.isFinite(deadQuote.price) && deadQuote.price > 0 && Number.isFinite(deadQuote.prevClose));
+    // A11：不同快照源对退市/无成交代码的口径不同（腾讯保留最后一笔价；东财可能把价打成 "-"）。
+    // 判据源无关但不变松：**源供了就必须是有数（>0）**；源不供必须显式 null —— 0 / -1 / NaN 一律判红。
+    const okPrice = (v) => v === null || (Number.isFinite(v) && v > 0);
+    r.info("无成交标的本轮的源与数值", `源=${(await readView())?.net?.sources?.quote} price=${deadQuote.price} prevClose=${deadQuote.prevClose}`);
+    r.check("无成交标的的现价/昨收：源供则须有数（>0），源不供须显式 null（禁 0/-1/NaN）", true,
+      okPrice(deadQuote.price) && okPrice(deadQuote.prevClose));
   } else {
     // 这一轮的快照源可能不供这只退市代码（新浪就整行是空的）—— 那是源的口径，不是解析错，报信息即可
     r.info("这一轮的快照源没给这只退市代码的行", `源=${(await readView())?.net?.sources?.quote}`);
@@ -860,14 +992,15 @@ try {
   r.check("0 根同样判失败（不是画一张空图当成功）", true, /只回了 0 根日线/.test(bjErr0?.message ?? ""));
 
   r.group("运行时：不供历史的标的 + 行情三源全失败不许广播旧数据 + 记忆读回");
-  // ① 北交所：腾讯只回 1 行（当日那根）→ 判「不供这个标的的历史」，给错误行 + 空图，
-  //    而不是拿 1 根冒充历史。这条同时把「全部源都失败时的界面」验收钉住
+  // ① 北交所：腾讯只回 1 行（当日那根）→ 判「不供这个标的的历史」；但若本轮有源可达且真供了历史
+  //    （例如东财恢复），就该正常出图。A11：等「这一轮出结果」（成功或失败）再按本轮可用性分支判，
+  //    不再预设「必然失败」。「1 根不许冒充历史」这条规则本身由上面固定输入那组离线钉死。
   await add("0.920185", "920185", "贝特瑞");
+  const memBjKline = (await readView())?.net?.sources?.kline ?? "";
   const bjT0 = Date.now();
-  // 条件认「K 线失败里出现了 bj920185」：既证明这一轮是北交所那只，也证明它被判了不供历史
   const gotBj = await nudgeUntil(
     { action: "select", secid: "0.920185" },
-    `(() => { const p = window.__seen.panel.at(-1); return /bj920185/.test(JSON.stringify(p?.failed?.kline ?? "")); })()`,
+    `(() => { const p = window.__seen.panel.at(-1); return p?.secid === "0.920185" && !!p?.trend && (!!p?.kline || /不供这个标的的历史/.test(String(p?.failed?.kline ?? ""))); })()`,
     3, 30_000);
   r.info("北交所那轮等到面板花了", `${Date.now() - bjT0}ms`);
   if (!gotBj) {
@@ -879,19 +1012,28 @@ try {
   }
   const pBj = (await c.ev(`window.__seen.panel.at(-1) ?? null`)) ?? {};
   r.info("北交所那轮的 K 线失败明细", String(pBj.failed?.kline).slice(0, 160));
-  r.check("北交所判「不供历史」：K 线是空的 + 文案说到点子上（不是一根 K 线的图）", [true, null, true],
-    [gotBj, pBj.kline, /不供这个标的的历史/.test(String(pBj.failed?.kline))]);
-  // 界面那行是 briefError 截到 90 字的（完整原因在 ctx.log 的 err.detail 里），所以只断言
-  // 「是一行」「点了源的名字」「说到点子上」，逐字面量对比交给上面那组固定输入单测
-  r.check("错误行是一行、且点了源的名字", true,
-    !String(pBj.failed?.kline).includes("\n") && /腾讯|东方财富/.test(String(pBj.failed?.kline)));
-  const errShown = await waitUntil(settings.client, `(async () => {
-    const { widgetHost } = await import('/src/runtime/widget-host.ts');
-    const rec = (widgetHost.mounted.get(${JSON.stringify(PID)}) ?? [])[0];
-    const nodes = [...(rec?.shadow?.querySelectorAll('.chart-col .muted') ?? [])];
-    return nodes.some((n) => /盘面数据拉取失败/.test(n.textContent));
-  })()`, 15_000);
-  r.check("插件页上是错误行而不是空白", true, errShown);
+  if (/不供这个标的的历史/.test(String(pBj.failed?.kline))) {
+    // 失败分支：源们都不供这只的历史 —— 空图 + 文案说到点子上（不是一根 K 线的图）
+    r.check("北交所判「不供历史」：K 线是空的 + 文案说到点子上（不是一根 K 线的图）", [true, null],
+      [gotBj, pBj.kline]);
+    // 界面那行是 briefError 截到 90 字的（完整原因在 ctx.log 的 err.detail 里），所以只断言
+    // 「是一行」「点了源的名字」「说到点子上」，逐字面量对比交给上面那组固定输入单测
+    r.check("错误行是一行、且点了源的名字", true,
+      !String(pBj.failed?.kline).includes("\n") && /腾讯|东方财富/.test(String(pBj.failed?.kline)));
+    const errShown = await waitUntil(settings.client, `(async () => {
+      const { widgetHost } = await import('/src/runtime/widget-host.ts');
+      const rec = (widgetHost.mounted.get(${JSON.stringify(PID)}) ?? [])[0];
+      const nodes = [...(rec?.shadow?.querySelectorAll('.chart-col .muted') ?? [])];
+      return nodes.some((n) => /盘面数据拉取失败/.test(n.textContent));
+    })()`, 15_000);
+    r.check("插件页上是错误行而不是空白", true, errShown);
+  } else {
+    // 成功分支：本轮有源能供这只的历史 —— 判「K 线非空、源∈已知三源、且符合本轮可用性」
+    const judgeBj = judgeKindSource({ kind: "kline", observed: pBj.klineSource, preferred: memBjKline, reachable, hadFailure: !!pBj.failed?.kline, attemptedFailures: attemptFails(pBj, "kline") });
+    r.info("北交所成功分支判定", judgeBj.reason);
+    r.check("北交所有源能供历史时正常出图（K 线非空且源符合本轮可用性）", [true, true],
+      [(pBj.kline?.bars?.length ?? 0) > 0, judgeBj.ok]);
+  }
   await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "remove", secid: "0.920185" }); true`);
   await sleep(1200);
   await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "select", secid: "1.600519" }); true`);
@@ -948,8 +1090,26 @@ try {
     });
     return Object.keys(d?.quotes ?? {}).length === 0;
   })()`, 15_000);
-  r.check("错误行一行点出每个源（东方财富 / 腾讯 / 新浪）", true,
-    allFail && !failText.includes("\n") && /东方财富/.test(failText) && /腾讯/.test(failText) && /新浪/.test(failText));
+  if (allFail) {
+    // 现场拿到了：错误行要一行点出链上真实尝试过的每个源（三源都会走到）
+    r.check("错误行一行点出每个源（东方财富 / 腾讯 / 新浪）", true,
+      !failText.includes("\n") && /东方财富/.test(failText) && /腾讯/.test(failText) && /新浪/.test(failText));
+  } else {
+    // 这一轮没造出现场（某个源居然供了这个代码，或失败被冷却折叠）—— 不许静默放过：
+    // 同一语义（三源全失败时一行点出每个源）改由**离线注入**的固定输入直接钉住
+    let allFailErr = null;
+    try {
+      await fetchQuotes(async () => {
+        throw new Error("fetch failed: 注入的三源全不通");
+      }, ["1.600000"]);
+    } catch (err) {
+      allFailErr = err;
+    }
+    r.check("错误行一行点出每个源（现场未出现，改由离线注入钉同一语义）", true,
+      !String(allFailErr?.message ?? "").includes("\n") &&
+        ["东方财富", "腾讯", "新浪"].every((n) => String(allFailErr?.message ?? "").includes(n)));
+    r.info("三源全失败现场未出现的原因线索", `status=${failText.slice(0, 120)} quotes=${JSON.stringify(Object.keys((await readView())?.quotes ?? {}))}`);
+  }
   r.check("旧行情没有被当成本轮结果广播（行情表已清空）", true, quotesCleared);
   // 收尾：把指数跟两条自选都放回去，选中还给贵州茅台（后面的断言按它来）
   await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, { action: "clear" }); true`);

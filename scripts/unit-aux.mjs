@@ -17,7 +17,7 @@ const M = await import(src("market.js"));
 
 let pass = 0;
 let fail = 0;
-const attempts = { throttle: 0, rules: 0, charts: 0 };
+const attempts = { throttle: 0, rules: 0, charts: 0, sourceBranch: 0 };
 let group = "throttle";
 
 function check(name, cond, detail = "") {
@@ -546,9 +546,96 @@ check(
 );
 check("COLORS 涨/跌/平盘都是颜色字符串", [C.COLORS.up, C.COLORS.down, C.COLORS.flat].every((c) => typeof c === "string"));
 
+/* ==================== sourceBranch（A11：源无关判定的离线钉） ==================== */
+// 两种网络形态（全通 / 东财坏 / 只有新浪）下，判定层必须各自给出可解释的 PASS/FAIL ——
+// 「今天网络正好是这样」不再影响结论，由这里离线钉住。判定层本身不许联网（纯函数）。
+group = "sourceBranch";
+{
+  const B = await import(new URL("./astock-source-branch.mjs", import.meta.url).href);
+  const H = {
+    px: "push2.eastmoney.com",
+    pxh: "push2his.eastmoney.com",
+    qt: "qt.gtimg.cn",
+    proxy: "proxy.finance.qq.com",
+    web: "web.ifzq.gtimg.cn",
+    ifzq: "ifzq.gtimg.cn",
+    sina: "hq.sinajs.cn",
+  };
+  const ALL_UP = { [H.px]: true, [H.pxh]: true, [H.qt]: true, [H.proxy]: true, [H.web]: true, [H.ifzq]: true, [H.sina]: true };
+  const EAST_DOWN = { ...ALL_UP, [H.px]: false, [H.pxh]: false }; // 老环境：东财整组不可达
+  const SINA_ONLY = { ...ALL_UP, [H.px]: false, [H.pxh]: false, [H.qt]: false, [H.proxy]: false, [H.web]: false, [H.ifzq]: false };
+
+  const verdict = (name, args, expectOk, reasonPart) => {
+    const v = B.judgeKindSource(args);
+    check(name, v.ok === expectOk && (!reasonPart || v.reason.includes(reasonPart)), `ok=${v.ok} ${v.reason}`);
+  };
+  const budgetOk = (name, args, expectOk, reasonPart) => {
+    const v = B.requestBudget(args);
+    check(name, v.ok === expectOk && (!reasonPart || v.reason.includes(reasonPart)), `ok=${v.ok} ${v.reason}`);
+  };
+
+  // —— host 表来自注册表（改源注册表这里自动跟） ——
+  const hosts = B.allHosts().sort();
+  check("allHosts 覆盖注册表全部入口（7 个）", hosts.length === 7 && Object.values(H).every((h) => hosts.includes(h)), hosts.join(","));
+
+  // —— 可用源集合 ——
+  deep("全通：快照三源都可用", B.availableFor("quote", ALL_UP), ["eastmoney", "tencent", "sina"]);
+  deep("全通：K线两源都可用", B.availableFor("kline", ALL_UP), ["eastmoney", "tencent"]);
+  deep("东财坏：快照退到腾讯/新浪", B.availableFor("quote", EAST_DOWN), ["tencent", "sina"]);
+  deep("东财坏：K线只剩腾讯", B.availableFor("kline", EAST_DOWN), ["tencent"]);
+  deep("只有新浪：快照只剩新浪", B.availableFor("quote", SINA_ONLY), ["sina"]);
+  deep("只有新浪：K线没有可用源（新浪不供 K 线）", B.availableFor("kline", SINA_ONLY), []);
+  deep("只有新浪：五档没有可用源（新浪不供五档）", B.availableFor("depth", SINA_ONLY), []);
+
+  // —— 预期源：有记忆用记忆；没有才是注册表首位。**不看 preflight**（根通≠接口通，2026-10-12 现场） ——
+  eq("预期源：无记忆取注册表首位", B.firstExpected("kline"), "eastmoney");
+  eq("预期源：有记忆就用记忆", B.firstExpected("kline", "tencent"), "tencent");
+  eq("预期源：记忆直通、preflight 全灭也照样是记忆", B.firstExpected("kline", "tencent"), "tencent");
+
+  // —— judgeKindSource：预期 = 记忆/注册表首位；换源必须带失败证据（§10 修订口径） ——
+  verdict("无记忆：用注册表首位 → PASS", { kind: "kline", observed: "eastmoney", reachable: ALL_UP }, true, "无记忆时取注册表首位");
+  verdict("无记忆：无失败却用次位 → 判红", { kind: "kline", observed: "tencent", reachable: ALL_UP }, false, "没有任何失败证据");
+  verdict("无记忆：次位但有失败记录解释 → PASS", { kind: "kline", observed: "tencent", reachable: ALL_UP, hadFailure: true }, true, "失败过");
+  // §10 放行条件①的两条现场形态（PM 那轮就是记忆=tencent、observed=tencent）
+  verdict("记忆=tencent 且 observed=tencent → PASS（先试上次成功的源）", { kind: "kline", observed: "tencent", preferred: "tencent", reachable: ALL_UP }, true, "先试上次成功的源");
+  verdict("记忆=tencent 且 observed=eastmoney 且无失败证据 → 判红", { kind: "kline", observed: "eastmoney", preferred: "tencent", reachable: ALL_UP }, false, "没有任何失败证据");
+  verdict("记忆=tencent 且 observed=eastmoney 且有失败记录 → PASS（记忆源失败过，回落）", { kind: "kline", observed: "eastmoney", preferred: "tencent", reachable: ALL_UP, hadFailure: true }, true, "失败过");
+  // 「整条链全失败」不上回显，但「预期源先失败、换源成功」由 pnl.attempted 记录（插件只增不改的回显字段）
+  verdict("无记忆：次位且有『尝试记录』证据 → PASS（东财 API 失败过，正是本轮现场）", { kind: "kline", observed: "tencent", reachable: ALL_UP, attemptedFailures: 1 }, true, "失败过");
+  verdict("尝试记录为空且无整段失败 → 仍判红（不因新证据字段恒真）", { kind: "kline", observed: "tencent", reachable: ALL_UP, attemptedFailures: 0 }, false, "没有任何失败证据");
+  verdict("记忆=tencent 且 preflight 判它不可达、observed 仍是腾讯 → PASS（preflight 不当真值）", { kind: "quote", observed: "tencent", preferred: "tencent", reachable: EAST_DOWN }, true, "先试上次成功的源");
+  verdict("该段没数据但失败明细在 → 正确降级 PASS", { kind: "kline", observed: null, hadFailure: true, reachable: ALL_UP }, true, "正确降级");
+  verdict("该段没数据且没有失败明细 → 判红", { kind: "kline", observed: null, reachable: ALL_UP }, false, "没有数据、也没有失败明细");
+  verdict("该段没数据 + 全不可达 → 正确降级 PASS", { kind: "kline", observed: null, reachable: SINA_ONLY }, true, "正确降级");
+  verdict("未知源一律判红", { kind: "kline", observed: "weird", reachable: ALL_UP }, false, "不在已知源表");
+
+  // —— requestBudget：同档时不许撞源（本卡唯一变严处的离线镜像）；真换过源才放宽 ——
+  budgetOk("同档（记忆=observed）：1 次 → 在预算内", { kind: "quote", requests: 1, preferred: "tencent", observed: "tencent" }, true);
+  budgetOk("同档：2 次（传输层重试余量）→ 仍在预算内", { kind: "quote", requests: 2, preferred: "tencent", observed: "tencent" }, true);
+  budgetOk("同档：3 次 → 判红（撞多家）", { kind: "quote", requests: 3, preferred: "tencent", observed: "tencent" }, false, "撞多家即判红");
+  budgetOk("无记忆同档（observed=注册表首位）：2 次 → 在预算内", { kind: "quote", requests: 2, observed: "eastmoney" }, true);
+  budgetOk("无记忆同档：3 次 → 判红", { kind: "quote", requests: 3, observed: "eastmoney" }, false, "撞多家即判红");
+  budgetOk("换过源（无记忆、observed≠首位）：quote 3 次 → 放宽档内", { kind: "quote", requests: 3, observed: "tencent" }, true);
+  budgetOk("换过源：quote 7 次（3 源 → 上限 6）→ 判红", { kind: "quote", requests: 7, observed: "tencent" }, false);
+  budgetOk("换过源：kline 3 次（2 源 → 上限 4）→ 放宽档内", { kind: "kline", requests: 3, observed: "tencent" }, true);
+  budgetOk("换过源：kline 5 次 → 判红", { kind: "kline", requests: 5, observed: "tencent" }, false);
+
+  {
+    const PRE_SAME = { depth: "tencent", trend: "tencent", kline: "tencent" };
+    const OBS_SAME = { depth: "tencent", trend: "tencent", kline: "tencent" };
+    const m1 = B.requestBudgetMany({ kinds: ["depth", "trend", "kline"], requests: 3, preferred: PRE_SAME, observed: OBS_SAME });
+    check("面板三条链都命中记忆：3 次 → 在预算内、且是紧档", m1.ok === true && m1.allSameTier === true, m1.reason);
+    const m2 = B.requestBudgetMany({ kinds: ["depth", "trend", "kline"], requests: 7, preferred: PRE_SAME, observed: OBS_SAME });
+    check("面板三条链都命中记忆：7 次 → 判红", m2.ok === false, m2.reason);
+    const m3 = B.requestBudgetMany({ kinds: ["depth", "trend", "kline"], requests: 9, preferred: {}, observed: { depth: "tencent", trend: "tencent", kline: "tencent" } });
+    check("面板无记忆、实际换过源：9 次 → 放宽档内（PM 现场形态）", m3.ok === true && m3.allSameTier === false, m3.reason);
+  }
+}
+
 /* ============================ 汇总 ============================ */
 console.log(`[throttle] ${attempts.throttle}`);
 console.log(`[rules] ${attempts.rules}`);
 console.log(`[charts] ${attempts.charts}`);
+console.log(`[sourceBranch] ${attempts.sourceBranch}`);
 console.log(`RESULT pass=${pass} fail=${fail}`);
 process.exitCode = fail === 0 ? 0 : 1;

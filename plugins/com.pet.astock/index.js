@@ -286,6 +286,27 @@ async function loadPanel({ withDepth = true, withTrend = true, withKline = true 
   }
   const failed = {};
 
+  // 每一类数据「这一轮试过的源」：只做记录（host + 成败），不改取数顺序、out() 与节流 ——
+  // 「整条链失败」有 failed 兜底，但「先撞预期源失败、再换源成功」的中途失败不上任何回显字段，
+  // 回归的判定层靠这份记录把「有理由的跨源」和「无理由跨源」分开（见 scripts/astock-source-branch.mjs）。
+  const attempted = {};
+  const traced = (kind) => {
+    const rec = [];
+    attempted[kind] = rec;
+    return async (url, opts) => {
+      const entry = { host: new URL(url).hostname, ok: null };
+      rec.push(entry);
+      try {
+        const resp = await request(url, opts);
+        entry.ok = true;
+        return resp;
+      } catch (err) {
+        entry.ok = false;
+        throw err;
+      }
+    };
+  };
+
   /** 一段取数：成功写进 next，失败只记自己那一段（一段坏不连坐另外两段） */
   const grab = async (kind, run) => {
     try {
@@ -297,7 +318,7 @@ async function loadPanel({ withDepth = true, withTrend = true, withKline = true 
   };
   const grabDepth = () =>
     grab("depth", async () => {
-      const { data, source, host } = await fetchDepth(request, selected, { preferred: sourcePrefs.depth });
+      const { data, source, host } = await fetchDepth(traced("depth"), selected, { preferred: sourcePrefs.depth });
       next.depth = data;
       next.depthAt = Date.now();
       next.depthSource = source;
@@ -305,7 +326,7 @@ async function loadPanel({ withDepth = true, withTrend = true, withKline = true 
     });
   const grabTrend = () =>
     grab("trend", async () => {
-      const { data, source, host } = await fetchTrend(request, selected, { preferred: sourcePrefs.trend });
+      const { data, source, host } = await fetchTrend(traced("trend"), selected, { preferred: sourcePrefs.trend });
       // 昨收优先取**主轮询那一份快照**（缓存复用）：同一个数不重复问，
       // 而且分时基线跟着列表里的昨收走，不会出现「列表一个昨收、图上一个昨收」。
       // 快照这一轮没成功（或这只不在自选里）时才退回分时响应自带的那个。
@@ -317,7 +338,7 @@ async function loadPanel({ withDepth = true, withTrend = true, withKline = true 
     });
   const grabKline = () =>
     grab("kline", async () => {
-      const { data, source, host } = await fetchKline(request, selected, klt, { preferred: sourcePrefs.kline });
+      const { data, source, host } = await fetchKline(traced("kline"), selected, klt, { preferred: sourcePrefs.kline });
       next.kline = data;
       next.klineAt = Date.now();
       next.klineKlt = klt;
@@ -350,6 +371,8 @@ async function loadPanel({ withDepth = true, withTrend = true, withKline = true 
       next.klineAt = 0;
     }
     next.failed = failed;
+    /** 只增不改的归因字段：每类数据本轮试过的源（host + 成败），取数/判定逻辑不受它影响 */
+    next.attempted = attempted;
     next.error = Object.entries(failed)
       .map(([kind, why]) => `${KIND_NAMES[kind]}：${why}`)
       .join("；");
