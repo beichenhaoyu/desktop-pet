@@ -42,7 +42,7 @@ MVP 范围：<这一轮只做什么>
 
 **两处调度纠正（2026-10-10 规划方复核）**：
 
-1. **B4 不能与 B2 并行**。两卡都要改 `src-tauri/src/commands/agent.rs`、`src-tauri/src/lib.rs`、`scripts/verify-agent-bridge.mjs`，同一工作树里并行改同一批文件必然互相覆盖；且 B4 的验收本身以「B2 迁移后的断言基线」为准。已把 B4 的 Blocked by 改成 B2。
+1. **B4 不能与 B2 并行**。两卡都要改 `src-tauri/src/commands/agent.rs`、`src-tauri/src/lib.rs`、`tests/e2e/verify-agent-bridge.mjs`，同一工作树里并行改同一批文件必然互相覆盖；且 B4 的验收本身以「B2 迁移后的断言基线」为准。已把 B4 的 Blocked by 改成 B2。
 2. **B3 的 60 字上限与气泡几何矛盾，必须先由 T04 定行数**。实测：气泡 `max-width` 就是立绘宽 266px，扣掉左右各 12px 内边距后内容宽 242px，12px 字号下约 **20 个汉字一行**；常驻行若给 60 字就是 **3 行 = 73.6px**，而头顶到窗口上沿只有 **47px**（`--pet-bubble-bottom` 让气泡底边落在 y=55）—— 顶边会到 -18.8px，**必然被裁**，而 B3 自己的验收第 153 行就要求"没有溢出宠物窗上沿"。若常驻行与台词还要同时可见，余量更不够。所以 B3 的字数上限与"两行是否共存"要等 T04 的取证结论一并定，不先写执行卡。
    **已解（2026-10-12）**：T04 回传后定为「常驻行 1 行 + 与台词共享一个槽」，60 字作废、改为 20 字输入上限 + 渲染态几何判据，
    同屏两层被几何否掉（要它就得加高窗口，那是另一个决定）。数字、被否掉的三条路与理由记在
@@ -96,7 +96,7 @@ MVP 范围：<这一轮只做什么>
   - `src/runtime/bridge.ts`、`src/runtime/widget-host.ts`、`src/runtime/topic-acl.ts`
   - `src/settings/main.ts`、`settings.html`
   - `PLUGIN_SDK.md`（§3 能力表加一行）、`AGENTS.md`（改那条约定的含义）
-  - `scripts/verify-isolation.mjs`、`scripts/verify-agent-bridge.mjs`（只做断言迁移，不做功能改动）
+  - `tests/e2e/verify-isolation.mjs`、`tests/e2e/verify-agent-bridge.mjs`（只做断言迁移，不做功能改动）
   - **不得**动 `plugins/com.pet.agent-bridge/`（归 A9）、`src/main.ts` 与 `src/pet/`（归 B3）、`services/agent.rs` 的收件与归一化、
     `tauri.conf.json`、CSP。
 - **方案约束（已定，别再选）**：
@@ -144,7 +144,7 @@ MVP 范围：<这一轮只做什么>
   `src/runtime/bridge.ts:160-174`（能力校验、压换行、截 200 字）、`src/pet/host.ts`、`src/pet/dialogue.ts:6-24`、
   `src/pet/click-through.ts:107-117`、`src-tauri/src/window/pet.rs:39-51`（`set_pet_hidden`）、`src/pet/game-mode.ts:33-44`。
 - **边界**：`src/main.ts`、`src/pet/host.ts`、`src/pet/dialogue.ts`、`src/styles.css`、`src/runtime/bridge.ts`、
-  `PLUGIN_SDK.md`、`scripts/verify-isolation.mjs`、`scripts/verify-agent-bridge.mjs`（只配合迁移断言，不改插件）。
+  `PLUGIN_SDK.md`、`tests/e2e/verify-isolation.mjs`、`tests/e2e/verify-agent-bridge.mjs`（只配合迁移断言，不改插件）。
   **不得**动 `plugins/`、`src-tauri/`（本卡预期零 Rust 改动）、`tauri.conf.json`、CSP、overlay 机制、状态机优先级队列。
 - **方案约束（已定）**：
   1. 新增显式能力 **`pet:status`**，不复用 `say()` 的第二参数 —— "自动收起"是 `say` 的语义核心，
@@ -198,7 +198,7 @@ MVP 范围：<这一轮只做什么>
   `src-tauri/src/services/agent.rs:34-47`（`HOOK_PHASES` 的 `(事件名, phase)` 形状）、
   `commands/agent.rs:27-40`（`snapshot`）、`../CONTEXT.md` 的「Agent 联动」与「生命周期」。
 - **边界**：`src-tauri/src/services/agent_hooks.rs`、`services/agent.rs`（**只**许动事件名/适配器表，不许动 watcher 与归一化）、
-  `commands/agent.rs`、`src-tauri/src/lib.rs`（命令注册）、`scripts/verify-agent-bridge.mjs`、
+  `commands/agent.rs`、`src-tauri/src/lib.rs`（命令注册）、`tests/e2e/verify-agent-bridge.mjs`、
   `PLUGIN_SDK.md`（若把选择器暴露给插件）、`AGENTS.md` 的 Agent 接入约定（改文案不改语义）。
   **不得**动 `src/`（B3 地盘）、`plugins/`（A9 地盘）、`services/http.rs`、CSP。
 - **方案约束（已定）**：
@@ -259,7 +259,7 @@ MVP 范围：<这一轮只做什么>
 期望/实际；**「已核不成立」一节必须写**，附证据，别让下一批助手重复提同一件。
 额外两条本体域专用：
 
-1. **断言只许变严不许变松**。评审时 diff `scripts/verify-*.mjs`，被删的断言行要逐条在新代码里找到对应的新标签，
+1. **断言只许变严不许变松**。评审时 diff `tests/e2e/verify-*.mjs`，被删的断言行要逐条在新代码里找到对应的新标签，
    找不到就是放宽回归 —— 直接打回。
 2. **`cargo test` / verify 输出取尾部汇总和退出码**，不要凭片段宣布全绿。
 

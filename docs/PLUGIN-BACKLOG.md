@@ -10,7 +10,7 @@
 ```
 任务：<插件 id> —— <一句话目标>
 必读：docs/PLUGIN-HANDBOOK.md、PLUGIN_SDK.md（§3 能力、§5 widget）、参考实现 plugins/todo 或 plugins/com.pet.astock
-边界：只准新增 plugins/<id>/ 与 scripts/verify-<id>.mjs + package.json 一条脚本；
+边界：只准新增 plugins/<id>/ 与 tests/e2e/verify-<id>.mjs + package.json 一条脚本；
       不得改 src/、src-tauri/、tauri.conf.json、CSP、其他插件目录。需要宿主新能力就停下来提出来。
 能力声明：<列出 permissions，并说明每项用在哪>
 数据源：<接口/本地文件/事件；有 HTTP 必须先实测一次并把响应样例贴出来，字段口径写进注释>
@@ -171,7 +171,7 @@ MVP 范围：<这一轮只做什么>
 - **必读**：`D:\test\desktop-pet\docs\PLUGIN-HANDBOOK.md`、`PLUGIN_SDK.md` §3 能力表、
   参考实现 `plugins/com.pet.astock/market.js`（纯函数分层、`parseKlineLine` 的列序注释）与 `throttle.js`（节制范式）。
 - **边界**：只准改 `plugins/com.pet.astock/` 内的 `market.js`、`index.js`、`rules.js`、`widget.js` 与
-  `scripts/verify-astock.mjs`。**不得**改 `src/`、`src-tauri/`、`tauri.conf.json`、其他插件目录。
+  `tests/e2e/verify-astock.mjs`。**不得**改 `src/`、`src-tauri/`、`tauri.conf.json`、其他插件目录。
   出网**必须继续走 `index.js:111` 的 `out()`**，不许任何一处直接调 `ctx.http.request`（AGENTS.md 明令，评审会 grep）。
   需要宿主新能力就停下来提出来 —— 本页 §2.1 B1 就是为这件事开的，别自己绕，更别用「按下标硬取」绕开编码问题。
 - **能力声明**：沿用现有 manifest 的 `http`（域名授权按 `http:<host>` 逐域名走，新增
@@ -217,7 +217,7 @@ MVP 范围：<这一轮只做什么>
   [PLUGIN-HANDBOOK.md](PLUGIN-HANDBOOK.md)、[../PLUGIN_SDK.md](../PLUGIN_SDK.md) §3、
   [adr/0001](adr/0001-agent-hooks-capability-in-plugin-page.md) / [adr/0002](adr/0002-single-agent-linkage-uninstall-then-install.md) /
   [adr/0003](adr/0003-session-visibility-on-pet-bubble.md)、参考实现 `plugins/com.pet.astock/`（纯函数分层 + 串行链的写法）。
-- **边界**：只准动 `plugins/com.pet.agent-bridge/`（四个文件）与 `scripts/verify-agent-bridge.mjs`。
+- **边界**：只准动 `plugins/com.pet.agent-bridge/`（四个文件）与 `tests/e2e/verify-agent-bridge.mjs`。
   **不得**动 `src/`、`src-tauri/`、`tauri.conf.json`、CSP、其他插件目录、`PLUGIN_SDK.md`。
   需要宿主再让一步 —— 停下来提出来，不要绕（尤其不要 `import { invoke }` 直连宿主命令，那是 REVIEW §1 的 P0）。
 - **manifest 变更**：新增 `agent:hooks`、`pet:status`；**删除 `overlay`**（会话卡去掉后它不再持有任何悬浮窗）；
@@ -275,7 +275,7 @@ MVP 范围：<这一轮只做什么>
   - `D:\test\desktop-pet\src-tauri\Cargo.toml`、`D:\test\desktop-pet\src-tauri\Cargo.lock`
   - `D:\test\desktop-pet\src\runtime\bridge.ts`
   - `D:\test\desktop-pet\PLUGIN_SDK.md`
-  - `D:\test\desktop-pet\scripts\verify.mjs`（或新加 `scripts/verify-http.mjs` + package.json 一条脚本）
+  - `D:\test\desktop-pet\scripts\verify.mjs`（或新加 `tests/e2e/verify-http.mjs` + package.json 一条脚本）
   不得改 `tauri.conf.json`、CSP、`plugins/` 下任何文件、其他 Rust service 模块。
 - **为什么必须动本体**：`http.rs:176` 现在是 `body: String::from_utf8_lossy(&buf).into_owned()`。
   乱码在这一步产生，插件侧拿到已经是坏字符串，**没有纯插件解法**（`resp.body` 是 string，字节早就丢了；
@@ -352,7 +352,7 @@ MVP 范围：<这一轮只做什么>
 复验由规划方独立跑，不是转述提交说明：`cargo test --lib` 70 passed；`npm run verify:http` 21 passed；
 `npm run verify` 147 passed；`npm run verify:release` 12 passed；`npm run verify:astock` **89 passed / 14 failed**。
 边界：两个提交相加只动 `src-tauri/{Cargo.toml,Cargo.lock,services/http.rs}`、`PLUGIN_SDK.md`、`package.json`
-一条脚本、`scripts/verify-http.mjs`、`plugins/com.pet.astock/{index,market,widget}.js`、`scripts/verify-astock.mjs`；
+一条脚本、`tests/e2e/verify-http.mjs`、`plugins/com.pet.astock/{index,market,widget}.js`、`tests/e2e/verify-astock.mjs`；
 `manifest.json` 与 `src/` 零改动、`bridge.ts` 未动（比卡片要求更保守）、`cargo tree -p tauri` 仍 2.12.0。
 `verify-astock.mjs` 断言 69 → 105，**被删除的断言行 0 条**（卡片禁止放宽回归，这条守住了）。
 
@@ -399,7 +399,7 @@ P2（记账，不阻断）
 复验同样由规划方独立跑：`npm run verify:astock` **154 passed / 0 failed**（exit 0，输出落盘后取尾部确认，
 不是凭片段宣布）；`npm run verify` **147 passed / 0 failed**。上一轮移交的 14 条红全部转绿，
 总量从 105 条涨到 156 条 `check(` 调用（唯一标签 101 → 152）。
-边界：只动 `plugins/com.pet.astock/{index,market,widget}.js` 与 `scripts/verify-astock.mjs`，
+边界：只动 `plugins/com.pet.astock/{index,market,widget}.js` 与 `tests/e2e/verify-astock.mjs`，
 `manifest.json` 与 `src/`、`src-tauri/` 零改动，`throttle.js` 一字未动；出网点仍只有 `index.js:136`（`out()` 内部）一处。
 
 P0 / P1：**无**。

@@ -35,8 +35,8 @@ npm run verify         # 终端 2：宿主回归（147 条）
 2. `plugins/<id>/index.js`：主逻辑。**分层**：纯函数（解析、判定、格式化）和副作用（网络、存储、定时器）分开，
    纯函数要能被 `import` 直接断言。参照 `plugins/com.pet.astock/market.js` + `rules.js` + `throttle.js`。
 3. `plugins/<id>/widget.js`（有界面才要）：badge / overlay / settings 三个区共用一份文件。
-4. `scripts/verify-<id>.mjs` + `package.json` 里一条 `verify:<id>`：**真机端到端断言**，不是单元测试。
-   照 `scripts/verify-astock.mjs` 的结构写（`attach` / `hostInvoke` / `waitUntil` / `createReport` 来自 `scripts/cdp.mjs`）。
+4. `tests/e2e/verify-<id>.mjs` + `package.json` 里一条 `verify:<id>`：**真机端到端断言**，不是单元测试。
+   照 `tests/e2e/verify-astock.mjs` 的结构写（`attach` / `hostInvoke` / `waitUntil` / `createReport` 来自 `tests/e2e/harness/cdp.mjs`）。
    跑完必须自己收尾：撤销授权（连带清存储）、把插件下线、恢复 `host:enabled-plugins` 原值。
 5. 文档：如果新增了能力或改了约定，同步 `../PLUGIN_SDK.md` 的能力表与本目录的约定条目。
 6. 提交：`git add` 只加自己动过的路径（**不要用 `git add -A`**，工作区里有别人的东西），

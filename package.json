@@ -8,16 +8,16 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "dev:debug": "node scripts/dev-debug.mjs",
-    "unit:astock": "node scripts/unit-market.mjs && node scripts/unit-aux.mjs",
-    "verify": "node scripts/verify-isolation.mjs",
-    "verify:agent": "node scripts/verify-agent-bridge.mjs",
-    "verify:game": "node scripts/verify-game-mode.mjs",
-    "verify:skin": "node scripts/verify-skins.mjs",
-    "verify:todo": "node scripts/verify-todo.mjs",
-    "verify:release": "node scripts/verify-release.mjs",
-    "verify:astock": "node scripts/verify-astock.mjs",
-    "verify:http": "node scripts/verify-http.mjs"
+    "dev:debug": "node tools/dev-debug.mjs",
+    "unit:astock": "node tests/unit/unit-market.mjs && node tests/unit/unit-aux.mjs",
+    "verify": "node tests/e2e/verify-isolation.mjs",
+    "verify:agent": "node tests/e2e/verify-agent-bridge.mjs",
+    "verify:game": "node tests/e2e/verify-game-mode.mjs",
+    "verify:skin": "node tests/e2e/verify-skins.mjs",
+    "verify:todo": "node tests/e2e/verify-todo.mjs",
+    "verify:release": "node tests/e2e/verify-release.mjs",
+    "verify:astock": "node tests/e2e/verify-astock.mjs",
+    "verify:http": "node tests/e2e/verify-http.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.0"

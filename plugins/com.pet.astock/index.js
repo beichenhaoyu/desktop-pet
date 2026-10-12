@@ -288,7 +288,7 @@ async function loadPanel({ withDepth = true, withTrend = true, withKline = true 
 
   // 每一类数据「这一轮试过的源」：只做记录（host + 成败），不改取数顺序、out() 与节流 ——
   // 「整条链失败」有 failed 兜底，但「先撞预期源失败、再换源成功」的中途失败不上任何回显字段，
-  // 回归的判定层靠这份记录把「有理由的跨源」和「无理由跨源」分开（见 scripts/astock-source-branch.mjs）。
+  // 回归的判定层靠这份记录把「有理由的跨源」和「无理由跨源」分开（见 tests/e2e/harness/astock-source-branch.mjs）。
   const attempted = {};
   const traced = (kind) => {
     const rec = [];
