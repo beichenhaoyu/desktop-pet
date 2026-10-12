@@ -11,7 +11,8 @@
     "widget",
     "overlay",
     "pet:react",
-    "pet:say"
+    "pet:say",
+    "agent:hooks"
   ],
-  "description": "把编码 Agent 的会话状态映射成 petdex 九状态、台词与桌面状态卡。事件来自设置窗安装的 Qoder hook；会话标题与命令摘要默认不显示。"
+  "description": "把编码 Agent 的会话状态映射成 petdex 九状态、台词与桌面状态卡。Qoder hook 的安装/卸载在本插件的设置页（能力 agent:hooks，首次使用需同意）；会话标题与命令摘要默认不显示。"
 }

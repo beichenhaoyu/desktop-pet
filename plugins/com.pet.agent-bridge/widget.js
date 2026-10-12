@@ -1,7 +1,7 @@
 // 状态卡渲染器。区域约定与心率插件一致：
 //   badge   = 宠物旁的一行小字
 //   overlay = 桌面左上角的大卡（主视图）
-//   settings= 设置窗里的隐私开关
+//   settings= 设置窗里的隐私开关 + Qoder hook 接入（ctx.host 只注入给这个区）
 // 所有数据来自 `${PID}:widget` topic；敏感字段在 index.js 就已按开关剥掉，
 // 这里拿不到就不可能显示，不存在「渲染后再藏起来」的漏洞。
 import { TOPIC_CMD, TOPIC_WIDGET } from "./topics.js";
@@ -166,5 +166,103 @@ function mountSettings(root, ctx, cleanups) {
     title.checked = d.showTitle === true;
     detail.checked = d.showDetail === true;
   });
+
+  // Qoder hook 的装/卸入口（B2 把宿主那张卡片删掉后，这里就是唯一入口）
+  mountHookPanel(root, ctx);
 }
 
+
+/* ---------- 设置面板：Qoder hook 接入（settings 区专属能力 agent:hooks，见 ADR-0001） ---------- */
+function mountHookPanel(root, ctx) {
+  const api = ctx.host && ctx.host.agentHooks;
+  const style = document.createElement("style");
+  style.textContent = `
+    .hk-box { margin-top:12px; padding-top:10px; border-top:1px dashed rgba(71,84,103,.3);
+      font-size:12px; color:#475467; display:grid; gap:6px; }
+    .hk-box .hk-hd { font-weight:600; color:#344054; }
+    .hk-box .hk-actions { display:flex; gap:6px; }
+    .hk-box button { font:inherit; padding:2px 10px; }
+    .hk-box .hk-status { white-space:pre-wrap; word-break:break-all; }
+    .hk-box .hk-status.warn { color:#b54708; }
+  `;
+  const box = document.createElement("div");
+  box.className = "hk-box";
+  const hd = document.createElement("div");
+  hd.className = "hk-hd";
+  hd.textContent = "Qoder hook 接入";
+  const st = document.createElement("div");
+  st.className = "hk-status";
+  st.dataset.state = "loading";
+  st.textContent = "正在读取状态…";
+  const actions = document.createElement("div");
+  actions.className = "hk-actions";
+  box.append(hd, st, actions);
+  root.append(style, box);
+
+  if (!api) {
+    st.dataset.state = "error";
+    st.textContent = "当前环境没有 hook 能力通道（应只在设置页出现）。";
+    return;
+  }
+
+  // 渲染只有一个口径：宿主的 status() 快照。外部值（路径/exe/error）一律 textContent，不拼 HTML
+  const render = (info) => {
+    const files = Array.isArray(info?.files) ? info.files : [];
+    const lines = [];
+    if (files.length === 0) {
+      st.dataset.state = "absent";
+      lines.push("未安装：没找到 Qoder 的配置目录（~/.qoder 或 ~/.qoder-cn）。");
+    } else if (info.installed === true) {
+      st.dataset.state = "installed";
+      lines.push(`已安装：每个文件 ${info.expectedPerFile} 个事件，共 ${info.managed} 条。`);
+    } else if (Number(info.managed) > 0) {
+      st.dataset.state = "repair";
+      lines.push(`需要修复（条数不对）：当前共 ${info.managed} 条，应为 ${files.length * info.expectedPerFile} 条。`);
+    } else {
+      st.dataset.state = "absent";
+      lines.push("未安装。");
+    }
+    for (const f of files) lines.push(`· ${f.path} — ${f.error ? `失败：${f.error}` : `${f.managed} 条`}`);
+    if (info.exe) lines.push(`hook 命令指向 ${info.exe}`);
+    st.textContent = lines.join("\n");
+    st.classList.toggle("warn", st.dataset.state === "repair");
+  };
+
+  const refresh = async () => {
+    try {
+      render(await api.status());
+    } catch (err) {
+      st.dataset.state = "error";
+      st.textContent = `读取状态失败：${err instanceof Error ? err.message : String(err)}`;
+    }
+  };
+  const run = async (label, fn) => {
+    st.dataset.state = "loading";
+    st.textContent = `${label}中…`;
+    try {
+      await fn();
+      // install/uninstall 的返回是逐文件报告、没有 exe/expectedPerFile：统一再拉一次 status 重渲染
+      // （仍是宿主的返回值，不缓存自己算的数）
+      await refresh();
+    } catch (err) {
+      st.dataset.state = "error";
+      st.textContent = `${label}失败：${err instanceof Error ? err.message : String(err)}`;
+    }
+  };
+  const button = (text, cls, fn) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = cls;
+    b.textContent = text;
+    b.addEventListener("click", () => void fn());
+    return b;
+  };
+  actions.append(
+    button("安装", "hk-install", () => run("安装", () => api.install())),
+    button("卸载", "hk-uninstall", () => run("卸载", () => api.uninstall())),
+    button("刷新", "hk-refresh", () => refresh()),
+  );
+
+  // 挂载即拉回显：不先渲染模板默认值、也不缓存自己算的数（PLUGIN_SDK §5 第 3 条）
+  void refresh();
+}

@@ -49,7 +49,7 @@ Tauri 2 + TypeScript/Vite 实现的桌面宠物框架：宠物本体只提供窗
 - `com.pet.agent-bridge`：把编码 Agent 的会话状态转成宠物动作与台词。事件由 Qoder hook 采集（宿主自己收，不依赖第三方）；hook 的配置入口走插件自己的设置页（能力 `agent:hooks`，见 [ADR-0001](docs/adr/0001-agent-hooks-capability-in-plugin-page.md)）
 - `todo`：待办清单。字段照 todo.txt 约定（`(A)` 优先级、`due:` 到期、`@项目`、`+上下文`），徽标显示剩余条数、桌面卡片可勾选、到点弹系统通知并让宠物有反应，变化时广播标准 topic `todo:changed`。数据只存插件自己的隔离存储 —— **整个插件零本体改动**
 
-**Agent 事件接入**：安装/卸载 Qoder hook 是插件可申请的能力 `agent:hooks`，入口在 agent 桥插件自己的设置页（宿主设置窗那张「Agent 事件接入」卡片已删除，见 [ADR-0001](docs/adr/0001-agent-hooks-capability-in-plugin-page.md)）。宿主 exe 自身兼任 hook 接收器（`--pet-hook <phase>` 分支，只落一个文件就退出），收件目录由 watcher 读增量并归一化成会话状态；安装只增删自己标记的条目，不动其他 hook，首次改动会留 `.pre-pet-backup` 备份。**当前状态**：插件页的装/卸入口正在由 agent 桥承接（任务卡 A9a），它落地之前已装好的 hook 照常工作，但界面上暂时不能重装或卸载。
+**Agent 事件接入**：安装/卸载 Qoder hook 是插件可申请的能力 `agent:hooks`，入口在 agent 桥插件自己的设置页（宿主设置窗那张「Agent 事件接入」卡片已删除，见 [ADR-0001](docs/adr/0001-agent-hooks-capability-in-plugin-page.md)）。宿主 exe 自身兼任 hook 接收器（`--pet-hook <phase>` 分支，只落一个文件就退出），收件目录由 watcher 读增量并归一化成会话状态；安装只增删自己标记的条目，不动其他 hook，首次改动会留 `.pre-pet-backup` 备份。
 
 **尚未完成**：`llm-token-usage` 示例插件；同 realm 插件直接 `import { invoke }` 绕过 JS 桥仍需 Web Worker 宿主才能收口。
 

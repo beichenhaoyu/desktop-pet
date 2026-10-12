@@ -4,8 +4,8 @@
 //   1) hook 分支 —— 真的用 exe 跑一次 `--pet-hook <phase>`，验证 stdin 落成一行 JSONL；
 //   2) 采集→归一化→宠物 —— 往收件目录追加事件，断言宠物动作、台词、总线 topic 与去重。
 // 不依赖 petdex，也不需要 Qoder 真跑起来：事件是按其 hook 形状直接造的。
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve, sep } from "node:path";
 import { argv, env } from "node:process";
 import { spawnSync } from "node:child_process";
 import { attach, createReport, hostInvoke, listPages, openSettingsInvoker, reloadAndWait, waitForPage, waitUntil } from "./cdp.mjs";
@@ -469,6 +469,155 @@ try {
   const hostStatus = await settings.invoke("agent_hooks_status");
   r.check("宿主路径（设置窗、不带 pluginId）照旧可用", true, hostStatus.ok === true);
   r.check("宿主 status 回显含配置文件列表", true, Array.isArray(hostStatus.v?.files));
+
+  r.group("插件页：Qoder hook 接入（端到端，只碰 temp 样例）");
+  // A9a：入口在 agent 桥自己的设置页（settings 区 widget）。写盘类断言一律只碰
+  // PET_AGENT_CONFIG_FILES 指到的 temp/a9a 样例；不满足就整组跳过并说清原因。
+  const TEMP_ROOT = resolve(import.meta.dirname, "../temp");
+  const A9A_DIR = join(TEMP_ROOT, "a9a");
+  const cfgA = join(A9A_DIR, "cfg-a.json");
+  const cfgB = join(A9A_DIR, "cfg-b.json");
+  mkdirSync(A9A_DIR, { recursive: true });
+  const foreignOnly = (tag) =>
+    JSON.stringify(
+      {
+        theme: "dark",
+        note: `keep-${tag}`,
+        hooks: { PreToolUse: [{ hooks: [{ type: "command", command: `other-tool-${tag} --notify`, timeout: 5 }] }] },
+      },
+      null,
+      2,
+    );
+  writeFileSync(cfgA, foreignOnly("a"));
+  writeFileSync(cfgB, foreignOnly("b"));
+
+  if (!settings) settings = await openSettingsInvoker(PORT, c);
+  const st0 = await settings.invoke("agent_hooks_status");
+  const files0 = Array.isArray(st0.v?.files) ? st0.v.files : [];
+  const underTemp = files0.length > 0 && files0.every((f) => resolve(String(f.path)).startsWith(TEMP_ROOT + sep));
+  r.info("hook 配置落点", files0.map((f) => f.path).join(" ； ") || "(空)");
+  r.check("目标文件都在 temp/ 下（写盘断言只碰样例，不碰真实用户配置）", true, underTemp);
+  if (!underTemp) {
+    r.info("跳过写盘断言", "hook 配置未指向 temp/a9a（启动时未设 PET_AGENT_CONFIG_FILES）；本组不写任何文件");
+  } else {
+    // 「他人条目未变」复用 verify-isolation.mjs「逐字段未变（键序由宿主归一）」的同一口径：
+    // 按键排序的规范串比较（宿主 serde_json 整文件重写会归一键序，那是既有行为、不是改动）。
+    const canon = (value) => {
+      if (Array.isArray(value)) return value.map(canon);
+      if (value && typeof value === "object") {
+        const out = {};
+        for (const k of Object.keys(value).sort()) out[k] = canon(value[k]);
+        return out;
+      }
+      return value;
+    };
+    const foreignOf = (path) => {
+      const v = JSON.parse(readFileSync(path, "utf8"));
+      const out = [];
+      for (const [event, groups] of Object.entries(v.hooks ?? {})) {
+        for (const g of groups ?? []) {
+          for (const h of g.hooks ?? []) {
+            if (!String(h.command ?? "").includes("--pet-hook")) out.push([event, canon(h)]);
+          }
+        }
+      }
+      return JSON.stringify(out);
+    };
+    // closed Shadow DOM 里的元素从外面查不到：按 verify-astock 的既有做法，从 widgetHost.mounted
+    // 取挂载记录、用它捕获的 shadow 引用操作（都在页面内求值，走真实点击路径）。
+    const recExpr = `((await import('/src/runtime/widget-host.ts')).widgetHost.mounted.get(${JSON.stringify(AGENT_ID)}) ?? []).find((r) => r.host.dataset.region === "settings")`;
+    const stateExpr = (want) =>
+      `(async () => { const rec = ${recExpr}; return !!rec && rec.shadow.querySelector('.hk-status')?.dataset.state === ${JSON.stringify(want)}; })()`;
+    const clickShadow = async (selector, label) => {
+      const ok = await waitUntil(
+        settings.client,
+        `(async () => { const rec = ${recExpr}; return !!rec?.shadow?.querySelector(${JSON.stringify(selector)}); })()`,
+        15_000,
+      );
+      r.check(label, true, ok);
+      if (ok) {
+        await settings.client.ev(`(async () => {
+          const rec = ${recExpr};
+          rec.shadow.querySelector(${JSON.stringify(selector)}).click();
+          return true;
+        })()`);
+      }
+      return ok;
+    };
+    const statusText = () =>
+      settings.client.ev(`(async () => { const rec = ${recExpr}; return rec ? rec.shadow.querySelector('.hk-status')?.textContent ?? '' : ''; })()`);
+
+    // 打开 agent 桥的插件页（套件前面已把它加进启用清单；没加上就补一次开关，与用户点开关同一条路径）
+    await settings.client.ev(`document.querySelector('#nav-plugins .nav-item[data-view=${JSON.stringify(AGENT_ID)}]')?.click(); true`);
+    if (!(await settings.client.ev(`document.getElementById('plugin-toggle')?.checked === true`))) {
+      await settings.client.ev(`(() => { const t = document.getElementById('plugin-toggle'); t.checked = true; t.dispatchEvent(new Event('change')); return true; })()`);
+    }
+    const panelReady = await waitUntil(
+      settings.client,
+      `(async () => { const rec = ${recExpr}; return !!rec?.shadow?.querySelector('.hk-status'); })()`,
+      20_000,
+    );
+    r.check("插件页挂出「Qoder hook 接入」块", true, panelReady);
+
+    // ① 未装：样例里只有别人的 hook，managed=0
+    const absent = await waitUntil(settings.client, stateExpr("absent"), 20_000);
+    r.check("未装状态文案：挂载即回显「未安装」", true, absent && String(await statusText()).includes("未安装"));
+
+    // ② 需要修复：cfg-a 塞两条自家陈旧条目（managed=2 ≠ 2×12）
+    const stale = JSON.stringify(
+      {
+        theme: "dark",
+        hooks: {
+          Stop: [{ hooks: [
+            { type: "command", command: `"D:\\old\\desktop-pet.exe" --pet-hook stop`, timeout: 2 },
+            { type: "command", command: `"D:\\old\\desktop-pet.exe" --pet-hook pre`, timeout: 2 },
+            { type: "command", command: "keep.sh", timeout: 3 },
+          ] }],
+        },
+      },
+      null,
+      2,
+    );
+    writeFileSync(cfgA, stale);
+    const expectForeign = `${foreignOf(cfgA)}|${foreignOf(cfgB)}`;
+    await clickShadow(".hk-refresh", "「刷新」按钮存在且可点");
+    const repair = await waitUntil(settings.client, stateExpr("repair"), 15_000);
+    const repairText = String(await statusText());
+    r.check("需要修复状态：条数不对时不被显示成「已安装」", true, repair && repairText.includes("需要修复") && !repairText.includes("已安装"));
+
+    // ③ 点安装 → 已装；每个样例文件恰好 expectedPerFile 条；回显与随后一次 status() 一致
+    const clickedInstall = await clickShadow(".hk-install", "「安装」按钮存在且可点");
+    const installed = clickedInstall && (await waitUntil(settings.client, stateExpr("installed"), 20_000));
+    r.check("点安装后回显为已安装", true, installed);
+    const stAfterInstall = (await settings.invoke("agent_hooks_status")).v;
+    r.check(
+      "安装后宿主 status：installed 为真且总数 = 文件数×expectedPerFile",
+      true,
+      stAfterInstall?.installed === true && stAfterInstall.managed === stAfterInstall.files.length * stAfterInstall.expectedPerFile,
+    );
+    for (const f of stAfterInstall?.files ?? []) {
+      r.check("安装后样例文件恰好 expectedPerFile 条", stAfterInstall.expectedPerFile, readFileSync(f.path, "utf8").split("--pet-hook").length - 1);
+    }
+    r.check("安装不改别人条目（复用按键排序规范串口径）", expectForeign, `${foreignOf(cfgA)}|${foreignOf(cfgB)}`);
+    const shownInstall = String(await statusText());
+    r.check("回显条数与随后一次 status() 一致", true, shownInstall.includes(`共 ${stAfterInstall.managed} 条`));
+
+    // ④ 点卸载 → 归零；别人条目仍未变
+    const clickedUninstall = await clickShadow(".hk-uninstall", "「卸载」按钮存在且可点");
+    const absent2 = clickedUninstall && (await waitUntil(settings.client, stateExpr("absent"), 20_000));
+    r.check("点卸载后回显为未安装", true, absent2);
+    for (const p of [cfgA, cfgB]) {
+      r.check("卸载后 --pet-hook 条目归零", 0, readFileSync(p, "utf8").split("--pet-hook").length - 1);
+    }
+    r.check("卸载不动别人条目（与 verify-isolation 同口径：按键排序规范串）", expectForeign, `${foreignOf(cfgA)}|${foreignOf(cfgB)}`);
+
+    // ⑤ agent:hooks 的授权经过同意框（声明后由激活 / 首次调用触发，pump 已应答并记录）
+    r.check(
+      "agent:hooks 的授权弹过同意框",
+      true,
+      grantedCaps.some((caps) => caps.some((x) => String(x).includes("agent:hooks"))),
+    );
+  }
 
   r.group("收尾前的完整性");
   r.check("测试期间宠物窗未被重载", token, await c.ev(`window.__verifyToken ?? null`));
