@@ -36,7 +36,11 @@ pub fn set_click_through(window: tauri::Window, enabled: bool) {
 /// 这件事放在宿主而不是各插件自己处理，是因为只有宿主知道全貌 ——
 /// 各藏各的会出现「宠物消失了，心率波形图还孤零零浮在全屏游戏上」。
 #[tauri::command]
-pub async fn set_pet_hidden(window: tauri::Window, app: AppHandle, hidden: bool) -> Result<(), String> {
+pub async fn set_pet_hidden(
+    window: tauri::Window,
+    app: AppHandle,
+    hidden: bool,
+) -> Result<(), String> {
     // 只有宠物窗自己能隐身：绕过 JS 桥直接 invoke 的插件不该能把宠物和它的 UI 一起藏掉
     crate::gate::pet(&window, "触发隐身")?;
     if let Some(pet) = app.get_webview_window("pet") {

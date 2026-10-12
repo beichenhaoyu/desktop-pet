@@ -36,12 +36,12 @@ mod tests {
     #[test]
     fn rejects_what_the_frontend_rule_rejects() {
         for id in [
-            "",           // 空
-            "ab",         // 太短（{2,63} 加首字符至少 3）
-            "Todo",       // 大写
-            "a_b",        // 下划线留给 overlay 标签做转义，不能出现在 id 里
-            "../etc",     // 路径穿越
-            "a/b",        // 分隔符
+            "",       // 空
+            "ab",     // 太短（{2,63} 加首字符至少 3）
+            "Todo",   // 大写
+            "a_b",    // 下划线留给 overlay 标签做转义，不能出现在 id 里
+            "../etc", // 路径穿越
+            "a/b",    // 分隔符
             r"a\b",
             "a b",        // 空格
             "a:b",        // 窗口标签里合法，但不在 id 词表内
@@ -66,7 +66,9 @@ mod tests {
                     if !(3..=64).contains(&chars.len()) {
                         return false;
                     }
-                    chars[1..].iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-'))
+                    chars[1..].iter().all(|c| {
+                        c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-')
+                    })
                 }
             }
         };

@@ -34,7 +34,9 @@ fn plugin_lock(plugin_id: &str) -> Arc<Mutex<()>> {
 
 impl StoreState {
     pub fn new() -> Self {
-        Self { root: Mutex::new(None) }
+        Self {
+            root: Mutex::new(None),
+        }
     }
 
     pub fn init(&self, app: &AppHandle) -> Result<(), String> {
@@ -48,7 +50,8 @@ impl StoreState {
             return Err("invalid plugin id".into());
         }
         self.root
-            .lock().unwrap_or_else(|p| p.into_inner())
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .clone()
             .ok_or_else(|| "store not initialized".to_string())
             .map(|root| root.join(plugin_id).join("store.json"))
@@ -90,7 +93,11 @@ impl StoreState {
 /// JS 桥按 manifest 逐项 gated（`ctx.storage`），但绕过桥直接 `invoke('store_get')`
 /// 的插件以前不受任何约束 —— 与 BLE / http 同类问题，收在 Rust 侧（见 gate.rs）。
 /// 同 realm 的插件冒名他人 id 仍拦不住，那条要等 Web Worker 宿主。
-fn resolve(perms: &PermissionState, store: &StoreState, plugin_id: &str) -> Result<PathBuf, String> {
+fn resolve(
+    perms: &PermissionState,
+    store: &StoreState,
+    plugin_id: &str,
+) -> Result<PathBuf, String> {
     crate::gate::plugin_capability(perms, plugin_id, CAPABILITY)?;
     store.plugin_file(plugin_id)
 }
@@ -175,7 +182,10 @@ mod tests {
         let perms = PermissionState::new();
         for id in ["C:", "../evil", "a/b", r"a\b", "", "ab", "a b", "Todo/../x"] {
             let err = resolve(&perms, &store, id).unwrap_err();
-            assert_eq!("invalid plugin id", err, "{id} 应按非法 id 被拒，实际: {err}");
+            assert_eq!(
+                "invalid plugin id", err,
+                "{id} 应按非法 id 被拒，实际: {err}"
+            );
         }
         // 就算授权表里真有这么一条也不会放行：id 合法性排在授权之前
         perms.grant("C:", &["storage".to_string()]);

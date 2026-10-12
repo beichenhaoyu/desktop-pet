@@ -12,10 +12,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("创建目录失败 {parent:?}: {e}"))?;
     }
-    let base = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("file");
+    let base = path.file_name().and_then(|s| s.to_str()).unwrap_or("file");
     let tmp = path.with_file_name(format!("{base}.{}.tmp", std::process::id()));
     if let Err(e) = fs::write(&tmp, bytes) {
         return Err(format!("写入临时文件失败: {e}"));

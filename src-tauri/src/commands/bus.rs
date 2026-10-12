@@ -25,8 +25,13 @@ pub fn bus_publish(
     let label = window.label().to_string();
     // 悬浮窗的归属只认宿主注册表：那条 label 是开窗时宿主自己定的，页面伪造不了，
     // 所以这一路不接受客户端自报的 plugin_id
-    let owner = crate::window::overlay::owner_of_label(&label)
-        .or_else(|| if relaying_from(&label) { plugin_id } else { None });
+    let owner = crate::window::overlay::owner_of_label(&label).or_else(|| {
+        if relaying_from(&label) {
+            plugin_id
+        } else {
+            None
+        }
+    });
     let installed: HashSet<String> = crate::commands::plugins::installed_plugin_ids(&app)
         .map(|ids| ids.into_iter().collect())
         .unwrap_or_default();
@@ -71,13 +76,18 @@ fn check_publish(
         return Err(format!("插件 {id} 没有安装，不能发布它的 topic"));
     }
     if !topic.starts_with(&format!("{id}:")) || topic == format!("{id}:") {
-        return Err(format!("只能发布 \"{id}:\" 前缀的 topic，收到的是 \"{topic}\""));
+        return Err(format!(
+            "只能发布 \"{id}:\" 前缀的 topic，收到的是 \"{topic}\""
+        ));
     }
     // `<id>:widget` 是插件给自己界面看的展示数据，桥那边 gated 在 widget 能力上，
     // 所以两条能力任一成立即放行（其余 topic 只认 bus:publish）
-    let allowed = is_granted(id, "bus:publish") || (topic == format!("{id}:widget") && is_granted(id, "widget"));
+    let allowed = is_granted(id, "bus:publish")
+        || (topic == format!("{id}:widget") && is_granted(id, "widget"));
     if !allowed {
-        return Err(format!("未授权 bus:publish：{id} 需要 manifest 声明且已同意"));
+        return Err(format!(
+            "未授权 bus:publish：{id} 需要 manifest 声明且已同意"
+        ));
     }
     Ok(())
 }
@@ -87,13 +97,15 @@ fn is_widget_topic(topic: &str) -> bool {
     topic.ends_with(":widget")
 }
 
-static RETAINED: OnceLock<Mutex<(HashMap<String, serde_json::Value>, VecDeque<String>)>> =
-    OnceLock::new();
+/// 最近一份 `*:widget` 数据 + 写入顺序（用来按上限挤掉最旧的 topic）
+type Retained = Mutex<(HashMap<String, serde_json::Value>, VecDeque<String>)>;
+
+static RETAINED: OnceLock<Retained> = OnceLock::new();
 
 /// 只留最近这些 topic，防止某个插件刷屏把内存变成无界缓冲
 const MAX_RETAINED: usize = 32;
 
-fn retained() -> &'static Mutex<(HashMap<String, serde_json::Value>, VecDeque<String>)> {
+fn retained() -> &'static Retained {
     RETAINED.get_or_init(|| Mutex::new((HashMap::new(), VecDeque::new())))
 }
 
@@ -123,7 +135,12 @@ pub fn bus_peek(window: tauri::Window, topic: String) -> Option<serde_json::Valu
     if !hosts_widgets || !is_widget_topic(&topic) {
         return None;
     }
-    retained().lock().unwrap_or_else(|p| p.into_inner()).0.get(&topic).cloned()
+    retained()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .0
+        .get(&topic)
+        .cloned()
 }
 
 #[cfg(test)]
@@ -151,9 +168,7 @@ mod tests {
         assert!(check_publish("pet", Some("todo"), "todo:changed", &installed(), &g).is_ok());
         // 设置页与悬浮窗同理（悬浮窗的归属由调用方按注册表解析好）
         assert!(check_publish("settings", Some("todo"), "todo:cmd", &installed(), &g).is_ok());
-        assert!(
-            check_publish("overlay-todo", Some("todo"), "todo:cmd", &installed(), &g).is_ok(),
-        );
+        assert!(check_publish("overlay-todo", Some("todo"), "todo:cmd", &installed(), &g).is_ok(),);
     }
 
     /// 这是 S2 的正身：绕过 JS 桥直接 invoke 也灌不进别人的、更灌不进宿主的 topic
@@ -198,7 +213,9 @@ mod tests {
         // 非法 id 先于授权被拒
         assert!(check_publish("pet", Some("C:"), "C:x", &installed(), &g).is_err());
         // 同意框与其它窗口不在发布名单里
-        assert!(check_publish("consent-r1", Some("todo"), "todo:changed", &installed(), &g).is_err());
+        assert!(
+            check_publish("consent-r1", Some("todo"), "todo:changed", &installed(), &g).is_err()
+        );
         assert!(check_publish("main", Some("todo"), "todo:changed", &installed(), &g).is_err());
     }
 
@@ -215,7 +232,10 @@ mod tests {
         remember("t:widget", &serde_json::json!({ "v": 2 }));
         let guard = retained().lock().unwrap_or_else(|p| p.into_inner());
         assert_eq!(guard.0.get("t:widget").unwrap()["v"], 2);
-        assert_eq!(guard.1.iter().filter(|k| k.as_str() == "t:widget").count(), 1);
+        assert_eq!(
+            guard.1.iter().filter(|k| k.as_str() == "t:widget").count(),
+            1
+        );
     }
 
     #[test]
@@ -226,6 +246,8 @@ mod tests {
         let guard = retained().lock().unwrap_or_else(|p| p.into_inner());
         assert!(guard.0.len() <= MAX_RETAINED, "实际留下 {}", guard.0.len());
         assert!(!guard.0.contains_key("cap0:widget"), "最早的应当被挤掉");
-        assert!(guard.0.contains_key(&format!("cap{}:widget", MAX_RETAINED + 9)));
+        assert!(guard
+            .0
+            .contains_key(&format!("cap{}:widget", MAX_RETAINED + 9)));
     }
 }

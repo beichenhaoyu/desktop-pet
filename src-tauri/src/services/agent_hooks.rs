@@ -12,7 +12,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 /// 自家条目的识别标记。它同时是 hook 分支的 CLI 参数，两边共用这一个常量
 pub const HOOK_MARKER: &str = "--pet-hook";
@@ -36,7 +36,9 @@ pub fn strip_managed(config: &mut Value) -> usize {
     let mut emptied: Vec<String> = Vec::new();
 
     for (event, entries) in hooks.iter_mut() {
-        let Some(entries) = entries.as_array_mut() else { continue };
+        let Some(entries) = entries.as_array_mut() else {
+            continue;
+        };
         let mut kept_groups: Vec<Value> = Vec::with_capacity(entries.len());
         for entry in entries.drain(..) {
             let mut entry = entry;
@@ -74,8 +76,12 @@ pub fn append_managed(config: &mut Value, command_for: impl Fn(&str) -> String) 
     };
     let mut added = 0;
     for (event, phase) in super::agent::HOOK_PHASES {
-        let entry = hooks.entry((*event).to_string()).or_insert_with(|| json!([]));
-        let Some(list) = entry.as_array_mut() else { continue };
+        let entry = hooks
+            .entry((*event).to_string())
+            .or_insert_with(|| json!([]));
+        let Some(list) = entry.as_array_mut() else {
+            continue;
+        };
         list.push(json!({
             "hooks": [{
                 "type": "command",
@@ -115,11 +121,17 @@ fn parse_object(raw: &str) -> Result<Value, String> {
 }
 
 /// 纯函数版安装：解析 → 拒绝坏结构 → 摘旧 → 追加
-pub fn install_in_text(raw: &str, command_for: impl Fn(&str) -> String) -> Result<(String, usize), String> {
+pub fn install_in_text(
+    raw: &str,
+    command_for: impl Fn(&str) -> String,
+) -> Result<(String, usize), String> {
     let mut config = parse_object(raw)?;
     strip_managed(&mut config);
     let added = append_managed(&mut config, command_for);
-    Ok((serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?, added))
+    Ok((
+        serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?,
+        added,
+    ))
 }
 
 /// 纯函数版卸载：没有自家条目时返回 None，表示「不必改动这个文件」
@@ -325,7 +337,10 @@ mod tests {
         assert_eq!(added, HOOK_PHASES.len());
         assert_eq!(config["theme"], "dark");
         assert_eq!(managed_count(&config), HOOK_PHASES.len());
-        assert_eq!(config["hooks"]["PreToolUse"][0]["hooks"][0]["type"], "command");
+        assert_eq!(
+            config["hooks"]["PreToolUse"][0]["hooks"][0]["type"],
+            "command"
+        );
     }
 
     #[test]
@@ -398,7 +413,13 @@ mod tests {
         let (after, removed) = uninstall_in_text(&raw.to_string()).unwrap().unwrap();
         let config = parse(&after);
         assert_eq!(removed, 1);
-        assert_eq!(config["hooks"]["Stop"][0]["hooks"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            config["hooks"]["Stop"][0]["hooks"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
         assert_eq!(config["hooks"]["Stop"][0]["hooks"][0]["command"], "keep.sh");
     }
 

@@ -265,6 +265,15 @@ MVP 范围：<这一轮只做什么>
 
 ## 4. 工程约定（派单时随卡片贴给接活者）
 
+- **`cargo fmt` 可能「装了但跑不起来」**（2026-10-12 实测）：钉住的 1.98.1 工具链里 `rustup component add rustfmt`
+  回 `info: component rustfmt is up to date`，但 `toolchains/1.98.1-*/bin/` 里根本没有 `rustfmt.exe`，
+  于是 `cargo fmt --check` 报的是「component is not applicable to the toolchain」而**不是**格式差异 ——
+  用 `cargo fmt --all -- --check; echo $?` 判绿会把这种「没跑」读成「没问题」。
+  修法：`rustup component remove rustfmt --toolchain <那个>` 再 `add`（E3 就是这么把 139 处真实差异跑出来的）。
+- **`git add` 只要带一个不存在的路径名就整批什么都不做**（E1 踩过）：`git mv` 之后旧目录已空，
+  再 `git add -A 旧目录 新目录` 会静默失败，提交进去的是重命名前的内容 —— 新检出的树直接断链。
+  提交前用 `git status --short` 对齐工作区，提交后用 `git grep --cached` 核对索引内容。
+
 - `npm run verify:game` 会真起一个铺满显示器的窗口，**会抢前台**；脚本被中断时自己收窗不留孤儿，
   但**不要在外面套 `timeout`**（2026-09-30 曾把用户会话压垮过一次）。用户在游戏/演示时不要派需要抢前台的验收。
 - 不碰安全软件设置，不加开机自启、不改注册表（`tauri-plugin-autostart` 除外，且那是本体能力）。

@@ -36,11 +36,69 @@ const MODIFIERS: &[(&str, &str)] = &[
 
 /// 允许出现在修饰键位置之外的键名。太宽会让用户注册出系统级冲突键
 const KEYS: &[&str] = &[
-    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S",
-    "T", "U", "V", "W", "X", "Y", "Z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
-    "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
-    "Space", "Tab", "Esc", "Enter", "Backspace", "Delete", "Insert", "Home", "End",
-    "PageUp", "PageDown", "Up", "Down", "Left", "Right",
+    "A",
+    "B",
+    "C",
+    "D",
+    "E",
+    "F",
+    "G",
+    "H",
+    "I",
+    "J",
+    "K",
+    "L",
+    "M",
+    "N",
+    "O",
+    "P",
+    "Q",
+    "R",
+    "S",
+    "T",
+    "U",
+    "V",
+    "W",
+    "X",
+    "Y",
+    "Z",
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "F1",
+    "F2",
+    "F3",
+    "F4",
+    "F5",
+    "F6",
+    "F7",
+    "F8",
+    "F9",
+    "F10",
+    "F11",
+    "F12",
+    "Space",
+    "Tab",
+    "Esc",
+    "Enter",
+    "Backspace",
+    "Delete",
+    "Insert",
+    "Home",
+    "End",
+    "PageUp",
+    "PageDown",
+    "Up",
+    "Down",
+    "Left",
+    "Right",
 ];
 
 /// 把用户写的各种写法（`Ctrl+Alt+p` / `control+alt+P` / `Ctrl P`）归一成
@@ -110,7 +168,9 @@ fn write_saved(app: &AppHandle, accel: &str) -> Result<(), String> {
     doc["hotkey"] = Value::String(accel.to_string());
     write_atomic(
         &path,
-        serde_json::to_vec_pretty(&doc).map_err(|e| e.to_string())?.as_slice(),
+        serde_json::to_vec_pretty(&doc)
+            .map_err(|e| e.to_string())?
+            .as_slice(),
     )
 }
 
@@ -135,16 +195,18 @@ pub fn hotkey_status(app: AppHandle) -> Result<Value, String> {
 
 /// 换键：只认设置窗。先注册新键，成功才注销旧键并落盘。
 #[tauri::command]
-pub fn hotkey_set(app: AppHandle, window: tauri::Window, accelerator: String) -> Result<String, String> {
+pub fn hotkey_set(
+    app: AppHandle,
+    window: tauri::Window,
+    accelerator: String,
+) -> Result<String, String> {
     crate::gate::settings(&window, "改动快捷键")?;
     let next = normalize_accel(&accelerator)?;
     let current = read_saved(&app).unwrap_or_else(|| DEFAULT_ACCEL.to_string());
     if current == next {
         return Ok(next);
     }
-    if let Err(err) = apply(&app, &next) {
-        return Err(err);
-    }
+    apply(&app, &next)?;
     unregister(&app, &current);
     write_saved(&app, &next)?;
     Ok(next)
@@ -153,7 +215,11 @@ pub fn hotkey_set(app: AppHandle, window: tauri::Window, accelerator: String) ->
 /// 只测一下能不能注册（不改变现状）：给界面上的「测试」按钮用。
 /// 注册这一步会短暂占用系统级快捷键，所以同样只认设置窗。
 #[tauri::command]
-pub fn hotkey_test(app: AppHandle, window: tauri::Window, accelerator: String) -> Result<bool, String> {
+pub fn hotkey_test(
+    app: AppHandle,
+    window: tauri::Window,
+    accelerator: String,
+) -> Result<bool, String> {
     crate::gate::settings(&window, "试注册快捷键")?;
     let probe = normalize_accel(&accelerator)?;
     // 试的就是当前生效的那个键：注册必然报「已占用」，那不是冲突。
@@ -202,7 +268,10 @@ mod tests {
             normalize_accel(DEFAULT_ACCEL).unwrap(),
             "CommandOrControl+Alt+P"
         );
-        assert_eq!(normalize_accel("CmdOrCtrl+Shift+Space").unwrap(), "CommandOrControl+Shift+Space");
+        assert_eq!(
+            normalize_accel("CmdOrCtrl+Shift+Space").unwrap(),
+            "CommandOrControl+Shift+Space"
+        );
     }
 
     #[test]

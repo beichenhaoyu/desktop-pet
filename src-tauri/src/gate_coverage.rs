@@ -12,17 +12,38 @@ mod tests {
 
     /// 不经能力门禁的命令：它们靠窗口门禁或根本不构成能力面，改这里要写清理由
     const WINDOW_GATED: &[(&str, &str)] = &[
-        ("overlay_reclaim", "宿主回收通道：只认宠物窗里的运行时（gate::pet），撤销授权后能力已没，窗还得收得掉"),
+        (
+            "overlay_reclaim",
+            "宿主回收通道：只认宠物窗里的运行时（gate::pet），撤销授权后能力已没，窗还得收得掉",
+        ),
         ("permission_check", "授权表本身的查询接口，门禁就是它"),
-        ("permission_request", "授权表本身的申请接口，未声明的能力在这里被拒"),
-        ("permission_revoke", "只认设置窗（gate::settings），撤销会连带清存储与悬浮层"),
-        ("plugin_file_version", "取文件 mtime 给 import() 拼 cache-busting，由 id + rel 校验兜底，不是能力面"),
+        (
+            "permission_request",
+            "授权表本身的申请接口，未声明的能力在这里被拒",
+        ),
+        (
+            "permission_revoke",
+            "只认设置窗（gate::settings），撤销会连带清存储与悬浮层",
+        ),
+        (
+            "plugin_file_version",
+            "取文件 mtime 给 import() 拼 cache-busting，由 id + rel 校验兜底，不是能力面",
+        ),
     ];
 
     /// 直接调门禁的写法
-    const DIRECT: &[&str] = &["gate::plugin_capability", "require_granted", "check_granted"];
+    const DIRECT: &[&str] = &[
+        "gate::plugin_capability",
+        "require_granted",
+        "check_granted",
+    ];
     /// 本文件里的薄封装：封装体必须真的去查门禁，否则不算
-    const WRAPPERS: &[&str] = &["resolve(", "check_grant(", "check_publish(", "assert_caller("];
+    const WRAPPERS: &[&str] = &[
+        "resolve(",
+        "check_grant(",
+        "check_publish(",
+        "assert_caller(",
+    ];
 
     fn src_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
@@ -218,6 +239,9 @@ mod tests {
             assert!(commands.iter().any(|c| c == name), "{name} 没被解析到");
         }
         // 注释里的命令名不算：generate_handler! 的每一项都得是路径
-        assert!(!commands.iter().any(|c| c.contains('/')), "解析把注释当成了命令");
+        assert!(
+            !commands.iter().any(|c| c.contains('/')),
+            "解析把注释当成了命令"
+        );
     }
 }

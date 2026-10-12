@@ -111,7 +111,13 @@ async fn notify_pump(app: AppHandle, peripheral: Peripheral, device_id: String, 
     while let Some(item) = stream.next().await {
         if item.uuid == HR_MEASUREMENT {
             if let Some(bpm) = parse_heart_rate(&item.value) {
-                let _ = app.emit("ble:heart-rate", HeartRate { bpm, device_id: device_id.clone() });
+                let _ = app.emit(
+                    "ble:heart-rate",
+                    HeartRate {
+                        bpm,
+                        device_id: device_id.clone(),
+                    },
+                );
             }
         }
     }
@@ -146,8 +152,13 @@ async fn init_ble(state: &BleState) -> Result<(), String> {
     if guard.is_some() {
         return Ok(());
     }
-    let manager = BtleManager::new().await.map_err(|e| format!("BLE manager: {e}"))?;
-    let adapters = manager.adapters().await.map_err(|e| format!("BLE adapters: {e}"))?;
+    let manager = BtleManager::new()
+        .await
+        .map_err(|e| format!("BLE manager: {e}"))?;
+    let adapters = manager
+        .adapters()
+        .await
+        .map_err(|e| format!("BLE adapters: {e}"))?;
     let adapter = adapters
         .into_iter()
         .next()
@@ -197,8 +208,7 @@ pub async fn ble_start_scan(
     {
         let core_guard = state.core.lock().await;
         let core = core_guard.as_ref().ok_or("BLE init failed")?;
-        core
-            .adapter
+        core.adapter
             .start_scan(ScanFilter::default())
             .await
             .map_err(|e| format!("启动扫描失败: {e}"))?;
@@ -223,7 +233,10 @@ pub async fn ble_start_scan(
             let known = {
                 let app_state = app.state::<BleState>();
                 let core_guard = app_state.core.lock().await;
-                core_guard.as_ref().map(|core| core.seen.clone()).unwrap_or_default()
+                core_guard
+                    .as_ref()
+                    .map(|core| core.seen.clone())
+                    .unwrap_or_default()
             };
             let peripherals = adapter.peripherals().await.unwrap_or_default();
 
@@ -310,7 +323,10 @@ pub async fn ble_connect(
             }
         }
     };
-    peripheral.connect().await.map_err(|e| format!("连接失败: {e}"))?;
+    peripheral
+        .connect()
+        .await
+        .map_err(|e| format!("连接失败: {e}"))?;
     peripheral
         .discover_services()
         .await
@@ -336,7 +352,10 @@ async fn ble_disconnect_inner(state: &BleState, device_id: String) -> Result<(),
     let core_guard = state.core.lock().await;
     if let Some(core) = core_guard.as_ref() {
         if let Ok(peripherals) = core.adapter.peripherals().await {
-            if let Some(p) = peripherals.into_iter().find(|p| format!("{}", p.id()) == device_id) {
+            if let Some(p) = peripherals
+                .into_iter()
+                .find(|p| format!("{}", p.id()) == device_id)
+            {
                 let _ = p.disconnect().await;
             }
         }

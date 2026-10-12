@@ -90,7 +90,9 @@ fn check_granted(
     if host_allowed(&state.granted_caps(plugin_id), host) {
         return Ok(());
     }
-    Err(format!("未授权访问 {host}：需要 manifest 声明 http 且已同意该域名"))
+    Err(format!(
+        "未授权访问 {host}：需要 manifest 声明 http 且已同意该域名"
+    ))
 }
 
 /// 逐跳发送并校验域名。重定向不再由 ureq 自动跟随：每一跳的新 host 都要重新过一次授权，
@@ -111,7 +113,9 @@ fn send_following_redirects(
     for hop in 0..=MAX_REDIRECTS {
         let host = host_key(&current)?;
         if !host_allowed(granted, &host) {
-            return Err(format!("未授权访问 {host}：需要 manifest 声明 http 且已同意该域名"));
+            return Err(format!(
+                "未授权访问 {host}：需要 manifest 声明 http 且已同意该域名"
+            ));
         }
         let cross_host = hop > 0 && host != last_host;
         last_host = host;
@@ -193,8 +197,11 @@ fn charset_of(content_type: Option<&str>) -> Option<&str> {
 /// 用 `decode_without_bom_handling` 是刻意的：不做 BOM 嗅探、不改判编码，声明什么就用什么，
 /// 且该解码器只会把坏字节换成 U+FFFD，没有「解码失败」这种状态，不必也不该向上抛错。
 fn decode_body(buf: &[u8], content_type: Option<&str>) -> String {
-    let gbk_family = charset_of(content_type)
-        .is_some_and(|cs| ["gbk", "gb2312", "gb18030"].iter().any(|k| cs.eq_ignore_ascii_case(k)));
+    let gbk_family = charset_of(content_type).is_some_and(|cs| {
+        ["gbk", "gb2312", "gb18030"]
+            .iter()
+            .any(|k| cs.eq_ignore_ascii_case(k))
+    });
     if gbk_family {
         let (text, _had_errors) = encoding_rs::GBK.decode_without_bom_handling(buf);
         return text.into_owned();
@@ -251,14 +258,7 @@ pub async fn http_request(
     let headers = headers.unwrap_or_default();
     let agent = http.agent().clone();
     let sent = tauri::async_runtime::spawn_blocking(move || {
-        send_following_redirects(
-            &agent,
-            &granted,
-            &url,
-            &method,
-            &headers,
-            body.as_deref(),
-        )
+        send_following_redirects(&agent, &granted, &url, &method, &headers, body.as_deref())
     })
     .await
     .map_err(|e| format!("HTTP 任务失败: {e}"))??;
@@ -271,7 +271,20 @@ fn is_valid_header_name(name: &str) -> bool {
             c.is_ascii_alphanumeric()
                 || matches!(
                     c,
-                    '!' | '#' | '$' | '%' | '&' | '\'' | '*' | '+' | '-' | '.' | '^' | '_' | '`' | '|' | '~'
+                    '!' | '#'
+                        | '$'
+                        | '%'
+                        | '&'
+                        | '\''
+                        | '*'
+                        | '+'
+                        | '-'
+                        | '.'
+                        | '^'
+                        | '_'
+                        | '`'
+                        | '|'
+                        | '~'
                 )
         })
 }
@@ -282,7 +295,8 @@ mod tests {
 
     /// 腾讯实时行情响应的真实前缀（实抓 `https://qt.gtimg.cn/q=sh600000`，
     /// 响应头 `text/html; charset=GBK`）。「浦发银行」的 GBK 字节是 c6 d6 b7 a2 d2 f8 d0 d0。
-    const TENCENT_GBK_PREFIX: &[u8] = b"v_sh600000=\"1~\xc6\xd6\xb7\xa2\xd2\xf8\xd0\xd0~600000~9.54~9.70~9.70\";";
+    const TENCENT_GBK_PREFIX: &[u8] =
+        b"v_sh600000=\"1~\xc6\xd6\xb7\xa2\xd2\xf8\xd0\xd0~600000~9.54~9.70~9.70\";";
 
     fn granted(caps: &[&str]) -> Vec<String> {
         caps.iter().map(|c| c.to_string()).collect()
@@ -297,10 +311,19 @@ mod tests {
         );
         // 无空格、带尾分号
         assert_eq!(charset_of(Some("text/html;charset=gbk;")), Some("gbk"));
-        assert_eq!(charset_of(Some("text/html; charset=gbk; boundary=x")), Some("gbk"));
+        assert_eq!(
+            charset_of(Some("text/html; charset=gbk; boundary=x")),
+            Some("gbk")
+        );
         // 带引号 / 键名大写 / 等号周围有空格
-        assert_eq!(charset_of(Some("text/html; charset=\"GB2312\"")), Some("GB2312"));
-        assert_eq!(charset_of(Some("text/html; CHARSET = gb18030")), Some("gb18030"));
+        assert_eq!(
+            charset_of(Some("text/html; charset=\"GB2312\"")),
+            Some("GB2312")
+        );
+        assert_eq!(
+            charset_of(Some("text/html; CHARSET = gb18030")),
+            Some("gb18030")
+        );
         assert_eq!(charset_of(Some("text/html")), None);
         assert_eq!(charset_of(Some("text/html; charset=")), None);
         assert_eq!(charset_of(Some("text/html; charset")), None);
@@ -343,7 +366,11 @@ mod tests {
         // 对照：lossy 那一份确实多切一刀、现价那格被顶成股票代码（这就是必须解字节的理由）
         let lossy = String::from_utf8_lossy(body);
         let lossy_fields: Vec<&str> = lossy.split('~').collect();
-        assert_eq!(lossy_fields.len(), fields.len() + 1, "样例没构造出多切一刀的效果");
+        assert_eq!(
+            lossy_fields.len(),
+            fields.len() + 1,
+            "样例没构造出多切一刀的效果"
+        );
         assert_eq!(lossy_fields[3], "600000", "样例没构造出错位的效果");
     }
 
@@ -351,7 +378,10 @@ mod tests {
     fn absent_or_unrecognised_charset_keeps_the_lossy_behaviour() {
         // 样例本身含非法 UTF-8 字节（GBK 的「浦发银行」），这条回归才不是空断言
         let lossy = String::from_utf8_lossy(TENCENT_GBK_PREFIX).into_owned();
-        assert!(lossy.contains('\u{FFFD}'), "样例不含非法字节，证明不了回落没被改掉");
+        assert!(
+            lossy.contains('\u{FFFD}'),
+            "样例不含非法字节，证明不了回落没被改掉"
+        );
         for ct in [
             None,
             Some("text/html"),
@@ -364,7 +394,11 @@ mod tests {
             Some("text/html; charset=gb2312x"),
             Some("text/html; charset=utf-8; charset=gbk"),
         ] {
-            assert_eq!(decode_body(TENCENT_GBK_PREFIX, ct), lossy, "content-type = {ct:?}");
+            assert_eq!(
+                decode_body(TENCENT_GBK_PREFIX, ct),
+                lossy,
+                "content-type = {ct:?}"
+            );
         }
     }
 
@@ -385,7 +419,10 @@ mod tests {
     #[test]
     fn default_ports_are_not_part_of_the_host_key() {
         // 前端桥用 new URL(url).host 申请授权，它不带默认端口；这边带了就会永远判未授权
-        assert_eq!(parse_host("https://push2.eastmoney.com/api/x").unwrap(), "push2.eastmoney.com");
+        assert_eq!(
+            parse_host("https://push2.eastmoney.com/api/x").unwrap(),
+            "push2.eastmoney.com"
+        );
         assert_eq!(parse_host("http://127.0.0.1/x").unwrap(), "127.0.0.1");
         // 显式写出的默认端口同样被 URL 规范省掉
         assert_eq!(parse_host("https://x.com:443/y").unwrap(), "x.com");
@@ -393,7 +430,10 @@ mod tests {
 
     #[test]
     fn non_default_ports_stay_in_the_host_key() {
-        assert_eq!(parse_host("http://localhost:1420/").unwrap(), "localhost:1420");
+        assert_eq!(
+            parse_host("http://localhost:1420/").unwrap(),
+            "localhost:1420"
+        );
         assert_eq!(parse_host("https://x.com:8443/y").unwrap(), "x.com:8443");
         assert_eq!(parse_host("http://127.0.0.1:9/x").unwrap(), "127.0.0.1:9");
     }
@@ -414,4 +454,3 @@ mod tests {
         assert!(!is_credential_header("Content-Type"));
     }
 }
-

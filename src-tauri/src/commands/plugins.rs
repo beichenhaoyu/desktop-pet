@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -19,10 +19,10 @@ fn plugins_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     }
 }
 
-/// 插件 id 的规则只在 `crate::ids::is_safe_id` 有一份实现（S4）——
-/// 它同时是存储目录名、overlay 窗口标签与授权表键的来源，各处的口径必须一致。
+// 插件 id 的规则只在 `crate::ids::is_safe_id` 有一份实现（S4）——
+// 它同时是存储目录名、overlay 窗口标签与授权表键的来源，各处的口径必须一致。
 
-fn read_manifest(dir: &PathBuf, plugin_id: &str) -> Result<Value, String> {
+fn read_manifest(dir: &Path, plugin_id: &str) -> Result<Value, String> {
     let path = dir.join(plugin_id).join("manifest.json");
     let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     serde_json::from_str::<Value>(&raw).map_err(|e| e.to_string())
@@ -39,13 +39,12 @@ fn collect_manifests(app: &tauri::AppHandle) -> Result<Vec<Value>, String> {
         if !entry.path().join("manifest.json").is_file() {
             continue;
         }
-        let loaded = read_manifest(&dir, &name).and_then(|v| {
-            match v.get("id").and_then(Value::as_str) {
+        let loaded =
+            read_manifest(&dir, &name).and_then(|v| match v.get("id").and_then(Value::as_str) {
                 Some(id) if id == name => Ok(v),
                 Some(id) => Err(format!("manifest.id \"{id}\" 与目录名 \"{name}\" 不一致")),
                 None => Err("manifest 缺少 id".to_string()),
-            }
-        });
+            });
         match loaded {
             Ok(v) => manifests.push(v),
             Err(e) => {
@@ -68,7 +67,11 @@ pub fn plugins_list(app: tauri::AppHandle) -> Result<Vec<Value>, String> {
 /// 「放进目录即生效」要对代码变更也成立，否则同名 URL 永远命中模块缓存，
 /// 覆盖 entry.js 之后非重启 webview 不可。
 #[tauri::command]
-pub fn plugin_file_version(app: tauri::AppHandle, plugin_id: String, rel: String) -> Result<u64, String> {
+pub fn plugin_file_version(
+    app: tauri::AppHandle,
+    plugin_id: String,
+    rel: String,
+) -> Result<u64, String> {
     if !is_safe_id(&plugin_id) || !is_safe_rel(&rel) {
         return Err("invalid plugin file".into());
     }
@@ -91,7 +94,10 @@ pub fn installed_plugin_ids(app: &tauri::AppHandle) -> Result<Vec<String>, Strin
 
 /// manifest 声明的能力列表。以磁盘上的 manifest 为唯一事实来源，
 /// 供 permission_request 校验「请求的能力确实声明过」。
-pub fn declared_capabilities(app: &tauri::AppHandle, plugin_id: &str) -> Result<Vec<String>, String> {
+pub fn declared_capabilities(
+    app: &tauri::AppHandle,
+    plugin_id: &str,
+) -> Result<Vec<String>, String> {
     if !is_safe_id(plugin_id) {
         return Err("invalid plugin id".into());
     }
@@ -112,9 +118,7 @@ pub fn declared_capabilities(app: &tauri::AppHandle, plugin_id: &str) -> Result<
 /// Windows 上 WebView2 把它映射成 `http://petplugin.localhost/...`。
 /// 磁盘位置只有 `plugins_dir()` 一个解析点，因此不必在配置里重复写一遍路径 ——
 /// asset 协议 + scope 的方案正是因为 `$CARGO_MANIFEST_DIR` 在 dev 下不展开而 403。
-pub fn register_plugin_protocol(
-    builder: tauri::Builder<tauri::Wry>,
-) -> tauri::Builder<tauri::Wry> {
+pub fn register_plugin_protocol(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.register_asynchronous_uri_scheme_protocol("petplugin", |ctx, request, responder| {
         let app = ctx.app_handle().clone();
         let origin = request
@@ -126,7 +130,9 @@ pub fn register_plugin_protocol(
         let path = request.uri().path().to_string();
         // 读盘走 blocking 线程池，不与 tokio worker 抢时间；一条请求一条裸线程的话
         // 插件页一刷新就是十几条线程
-        tauri::async_runtime::spawn_blocking(move || responder.respond(file_response(&app, &path, origin)));
+        tauri::async_runtime::spawn_blocking(move || {
+            responder.respond(file_response(&app, &path, origin))
+        });
     })
 }
 
@@ -134,7 +140,10 @@ pub fn register_plugin_protocol(
 fn is_local_origin(origin: &str) -> bool {
     tauri::Url::parse(origin)
         .ok()
-        .and_then(|u| u.host_str().map(|h| h == "localhost" || h.ends_with(".localhost")))
+        .and_then(|u| {
+            u.host_str()
+                .map(|h| h == "localhost" || h.ends_with(".localhost"))
+        })
         .unwrap_or(false)
 }
 
@@ -192,12 +201,12 @@ fn file_response(
         *resp.status_mut() = tauri::http::StatusCode::NOT_FOUND;
     }
     if let Ok(value) = content_type(url_path).parse() {
-        resp.headers_mut().insert(tauri::http::header::CONTENT_TYPE, value);
+        resp.headers_mut()
+            .insert(tauri::http::header::CONTENT_TYPE, value);
     }
     if let Some(origin) = origin {
         if let Ok(value) = origin.parse() {
-            resp
-                .headers_mut()
+            resp.headers_mut()
                 .insert("Access-Control-Allow-Origin", value);
         }
     }
@@ -256,9 +265,15 @@ mod tests {
     fn plugins_module_uses_the_single_id_validator() {
         let full = include_str!("plugins.rs");
         let code = full.split("#[cfg(test)]").next().unwrap_or(full);
-        assert!(code.contains("use crate::ids::is_safe_id;"), "plugins.rs 没有引用统一实现");
+        assert!(
+            code.contains("use crate::ids::is_safe_id;"),
+            "plugins.rs 没有引用统一实现"
+        );
         for banned in ["pub fn is_safe_id(", "fn valid_id(", "contains(\"..\")"] {
-            assert!(!code.contains(banned), "plugins.rs 里出现了第二份 id 检查: {banned}");
+            assert!(
+                !code.contains(banned),
+                "plugins.rs 里出现了第二份 id 检查: {banned}"
+            );
         }
     }
 }

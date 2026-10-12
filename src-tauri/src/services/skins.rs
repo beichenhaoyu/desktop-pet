@@ -77,9 +77,10 @@ pub fn normalize_name(raw: &str) -> Result<String, String> {
     if name.is_empty() || name.len() > 64 {
         return Err("名字为空或过长".into());
     }
-    if !name.chars().all(|c| {
-        c.is_ascii_alphanumeric() || c == '-' || c == '_'
-    }) {
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
         return Err(format!("名字不合法（只允许字母、数字、- 与 _）: {raw}"));
     }
     Ok(name)
@@ -428,11 +429,14 @@ pub async fn pet_skin_install(
 
 /// 在已安装的形象之间切换，不重新下载
 #[tauri::command]
-pub fn pet_skin_use(app: AppHandle, window: tauri::Window, slug: String) -> Result<SkinInfo, String> {
+pub fn pet_skin_use(
+    app: AppHandle,
+    window: tauri::Window,
+    slug: String,
+) -> Result<SkinInfo, String> {
     only_settings(&window)?;
     let root = skins_root(&app)?;
-    let info = read_meta(&skin_dir(&root, &slug)?)
-        .ok_or_else(|| format!("还没有安装过 {slug}"))?;
+    let info = read_meta(&skin_dir(&root, &slug)?).ok_or_else(|| format!("还没有安装过 {slug}"))?;
     set_active(&root, &info.slug)?;
     let _ = app.emit("pet:skin-changed", info.clone());
     Ok(info)
@@ -471,9 +475,7 @@ pub fn pet_skin_remove(app: AppHandle, window: tauri::Window, slug: String) -> R
 
 /// `petskin://<slug>/<文件>`：把已下载的形象图集读给 webview。
 /// 与插件文件的 petplugin:// 同一条路 —— 磁盘位置只有 skins_root() 一个解析点。
-pub fn register_skin_protocol(
-    builder: tauri::Builder<tauri::Wry>,
-) -> tauri::Builder<tauri::Wry> {
+pub fn register_skin_protocol(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.register_asynchronous_uri_scheme_protocol("petskin", |ctx, request, responder| {
         let app = ctx.app_handle().clone();
         // CORS 只反射给本地 origin：任何真实外站都不该读到本地形象文件
@@ -492,7 +494,9 @@ pub fn register_skin_protocol(
             })
             .map(str::to_string);
         let path = request.uri().path().to_string();
-        tauri::async_runtime::spawn_blocking(move || responder.respond(skin_response(&app, &path, origin)));
+        tauri::async_runtime::spawn_blocking(move || {
+            responder.respond(skin_response(&app, &path, origin))
+        });
     })
 }
 
@@ -528,7 +532,8 @@ fn skin_response(
         _ => "application/octet-stream",
     };
     if let Ok(value) = ctype.parse() {
-        resp.headers_mut().insert(tauri::http::header::CONTENT_TYPE, value);
+        resp.headers_mut()
+            .insert(tauri::http::header::CONTENT_TYPE, value);
     }
     // 图集要能被 canvas 读像素（回归与后续截图都用得上），同本地 origin 才给
     if let Some(origin) = origin {
@@ -635,7 +640,10 @@ mod tests {
             "fields": ["displayName","spriteVersionNumber","slug","spritesheet"],
             "pets": [["Boba",2,"boba","pets/boba/sprite.webp"]]
         });
-        assert_eq!(pick_pet(&shuffled, "boba").unwrap().spritesheet, "pets/boba/sprite.webp");
+        assert_eq!(
+            pick_pet(&shuffled, "boba").unwrap().spritesheet,
+            "pets/boba/sprite.webp"
+        );
     }
 
     #[test]
@@ -675,7 +683,8 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(
             dir.join("meta.json"),
-            json!({"slug":"deepseek","display_name":"deepseek酱","sprite_version_number":1}).to_string(),
+            json!({"slug":"deepseek","display_name":"deepseek酱","sprite_version_number":1})
+                .to_string(),
         )
         .unwrap();
         assert!(read_meta(&dir).is_none(), "只有 meta 没有图集不算装好");

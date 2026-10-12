@@ -89,11 +89,11 @@ pub fn watch_enabled() -> bool {
 #[cfg(windows)]
 fn sample() -> Snapshot {
     use windows::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MonitorFromWindow, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextW,
-        GWL_STYLE, IsIconic, IsWindowVisible, WS_CAPTION,
+        IsIconic, IsWindowVisible, GWL_STYLE, WS_CAPTION,
     };
 
     let mut snap = Snapshot {
@@ -113,7 +113,12 @@ fn sample() -> Snapshot {
         if GetWindowRect(hwnd, &mut rect).is_err() {
             return snap;
         }
-        snap.fg_rect = [rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top];
+        snap.fg_rect = [
+            rect.left,
+            rect.top,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+        ];
         if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
             return snap;
         }
@@ -124,7 +129,11 @@ fn sample() -> Snapshot {
         let mut title = [0u16; 256];
         let title_len = GetWindowTextW(hwnd, &mut title) as usize;
         let name = String::from_utf16_lossy(&title[..title_len]);
-        snap.foreground = if name.is_empty() { class_name.clone() } else { name };
+        snap.foreground = if name.is_empty() {
+            class_name.clone()
+        } else {
+            name
+        };
         snap.foreground = snap.foreground.chars().take(120).collect();
 
         snap.shell = SHELL_CLASSES
@@ -196,8 +205,7 @@ static HISTORY: AtomicU32 = AtomicU32::new(0);
 const WINDOW_BITS: u32 = 0b111;
 
 fn consider(app: &AppHandle, snap: &Snapshot) {
-    let hist =
-        ((HISTORY.load(Ordering::SeqCst) << 1) & WINDOW_BITS) | u32::from(snap.active);
+    let hist = ((HISTORY.load(Ordering::SeqCst) << 1) & WINDOW_BITS) | u32::from(snap.active);
     HISTORY.store(hist, Ordering::SeqCst);
     let positives = hist.count_ones();
     let current = LAST_ACTIVE.load(Ordering::SeqCst);
@@ -226,7 +234,10 @@ pub fn start(app: &AppHandle) {
             // 关掉功能时强制把「不在全屏」补发一次，别让宠物停在隐藏状态
             let blank = Snapshot::default();
             if LAST_ACTIVE.swap(false, Ordering::SeqCst) {
-                let _ = sink.emit("host:fullscreen", serde_json::json!({ "active": false, "title": "" }));
+                let _ = sink.emit(
+                    "host:fullscreen",
+                    serde_json::json!({ "active": false, "title": "" }),
+                );
             }
             record(blank);
             continue;
@@ -276,7 +287,12 @@ mod tests {
     #[test]
     fn borderless_window_covering_the_monitor_is_fullscreen() {
         assert!(looks_fullscreen(
-            Rect { x: 0, y: 0, w: 1920, h: 1080 },
+            Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080
+            },
             MON,
             false,
             false,
@@ -312,7 +328,12 @@ mod tests {
     fn maximized_window_is_not_fullscreen() {
         // 最大化窗口只盖住工作区（1080 - 40 任务栏），且带标题栏 —— 两条都不满足
         assert!(!looks_fullscreen(
-            Rect { x: 0, y: 0, w: 1920, h: 1040 },
+            Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1040
+            },
             MON,
             true,
             false,
@@ -321,7 +342,12 @@ mod tests {
         ));
         // 任务栏隐藏时最大化窗口能铺满整屏，但带标题栏，仍不算
         assert!(!looks_fullscreen(
-            Rect { x: 0, y: 0, w: 1920, h: 1080 },
+            Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080
+            },
             MON,
             true,
             false,
@@ -333,7 +359,12 @@ mod tests {
     #[test]
     fn window_smaller_than_the_monitor_is_not_fullscreen() {
         assert!(!looks_fullscreen(
-            Rect { x: 10, y: 0, w: 1900, h: 1080 },
+            Rect {
+                x: 10,
+                y: 0,
+                w: 1900,
+                h: 1080
+            },
             MON,
             false,
             false,
@@ -345,7 +376,12 @@ mod tests {
     #[test]
     fn our_own_windows_never_trigger_it() {
         assert!(!looks_fullscreen(
-            Rect { x: 0, y: 0, w: 1920, h: 1080 },
+            Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080
+            },
             MON,
             false,
             false,
@@ -357,7 +393,12 @@ mod tests {
     #[test]
     fn desktop_shell_never_triggers_it() {
         assert!(!looks_fullscreen(
-            Rect { x: 0, y: 0, w: 1920, h: 1080 },
+            Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080
+            },
             MON,
             false,
             false,
@@ -369,7 +410,12 @@ mod tests {
     #[test]
     fn minimized_never_triggers_it() {
         assert!(!looks_fullscreen(
-            Rect { x: 0, y: 0, w: 1920, h: 1080 },
+            Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080
+            },
             MON,
             false,
             true,
@@ -382,7 +428,12 @@ mod tests {
     fn sub_pixel_rounding_is_tolerated() {
         // 四舍五入少一两个像素仍算全屏，否则高 DPI 下会反复抖动
         assert!(looks_fullscreen(
-            Rect { x: 1, y: 1, w: 1918, h: 1078 },
+            Rect {
+                x: 1,
+                y: 1,
+                w: 1918,
+                h: 1078
+            },
             MON,
             false,
             false,

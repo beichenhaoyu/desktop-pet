@@ -12,7 +12,7 @@
 
 use std::path::PathBuf;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
 use crate::services::agent::HOOK_PHASES;
@@ -23,7 +23,12 @@ use crate::services::permission::PermissionState;
 pub const AGENT_HOOKS_CAP: &str = "agent:hooks";
 
 /// 调用面判定：任何调用都要过设置窗门禁；带 pluginId 的插件路径再加一层能力校验
-fn assert_caller(app: &AppHandle, window: &tauri::Window, plugin_id: Option<&str>, what: &str) -> Result<(), String> {
+fn assert_caller(
+    app: &AppHandle,
+    window: &tauri::Window,
+    plugin_id: Option<&str>,
+    what: &str,
+) -> Result<(), String> {
     crate::gate::settings(window, what)?;
     if let Some(pid) = plugin_id {
         let perms = app.state::<PermissionState>();
@@ -56,13 +61,21 @@ fn snapshot(app: &AppHandle) -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub fn agent_hooks_status(app: AppHandle, window: tauri::Window, plugin_id: Option<String>) -> Result<Value, String> {
+pub fn agent_hooks_status(
+    app: AppHandle,
+    window: tauri::Window,
+    plugin_id: Option<String>,
+) -> Result<Value, String> {
     assert_caller(&app, &window, plugin_id.as_deref(), "查询或改动 Agent hook")?;
     snapshot(&app)
 }
 
 #[tauri::command]
-pub fn agent_hooks_install(app: AppHandle, window: tauri::Window, plugin_id: Option<String>) -> Result<Value, String> {
+pub fn agent_hooks_install(
+    app: AppHandle,
+    window: tauri::Window,
+    plugin_id: Option<String>,
+) -> Result<Value, String> {
     assert_caller(&app, &window, plugin_id.as_deref(), "查询或改动 Agent hook")?;
     let files = agent_hooks::candidate_files(&home_dir(&app)?);
     if files.is_empty() {
@@ -73,7 +86,11 @@ pub fn agent_hooks_install(app: AppHandle, window: tauri::Window, plugin_id: Opt
 }
 
 #[tauri::command]
-pub fn agent_hooks_uninstall(app: AppHandle, window: tauri::Window, plugin_id: Option<String>) -> Result<Value, String> {
+pub fn agent_hooks_uninstall(
+    app: AppHandle,
+    window: tauri::Window,
+    plugin_id: Option<String>,
+) -> Result<Value, String> {
     assert_caller(&app, &window, plugin_id.as_deref(), "查询或改动 Agent hook")?;
     let files = agent_hooks::candidate_files(&home_dir(&app)?);
     let reports = agent_hooks::uninstall_files(&files);
@@ -136,14 +153,26 @@ mod tests {
             ]
         };
         assert_eq!(foreign(&installed), foreign(&after));
-        assert_eq!(foreign(&installed)[0], "{\"command\":\"other-tool --notify\",\"timeout\":5,\"type\":\"command\"}");
+        assert_eq!(
+            foreign(&installed)[0],
+            "{\"command\":\"other-tool --notify\",\"timeout\":5,\"type\":\"command\"}"
+        );
 
         // 其余内容也原样：theme 还在，顶层 hooks 只少了自家条目所在的数组项
         let val: Value = serde_json::from_str(&after).unwrap();
         assert_eq!(val["theme"], "dark");
         assert_eq!(agent_hooks::managed_count(&val), 0);
-        assert_eq!(val["hooks"]["PreToolUse"][0]["hooks"].as_array().unwrap().len(), 1);
-        assert_eq!(val["hooks"]["Stop"][0]["hooks"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            val["hooks"]["PreToolUse"][0]["hooks"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            val["hooks"]["Stop"][0]["hooks"].as_array().unwrap().len(),
+            1
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -1,17 +1,14 @@
 mod commands;
 mod fsutil;
+mod gate;
 #[cfg(test)]
 mod gate_coverage;
-mod gate;
 mod ids;
 mod services;
 mod window;
 
 use services::{
-    agent::AgentState,
-    ble::BleState,
-    http::HttpState,
-    permission::PermissionState,
+    agent::AgentState, ble::BleState, http::HttpState, permission::PermissionState,
     store::StoreState,
 };
 use std::sync::Arc;

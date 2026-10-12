@@ -69,10 +69,7 @@ pub fn overlay_label(plugin_id: &str) -> String {
 
 pub(crate) fn owner_of_label(label: &str) -> Option<String> {
     let guard = table().lock().unwrap_or_else(|p| p.into_inner());
-    guard
-        .keys()
-        .find(|id| overlay_label(id) == label)
-        .cloned()
+    guard.keys().find(|id| overlay_label(id) == label).cloned()
 }
 
 /// 悬浮窗页面问宿主「这扇窗是给谁的」——按调用者的窗口标签回答，前端伪造不了归属
@@ -85,11 +82,15 @@ const WIDTH: f64 = 320.0;
 const DEFAULT_HEIGHT: u32 = 200;
 
 fn clamp_height(h: u32) -> u32 {
-    h.max(48).min(900)
+    h.clamp(48, 900)
 }
 
 fn snapshot(plugin_id: &str) -> Option<OverlayState> {
-    table().lock().unwrap_or_else(|p| p.into_inner()).get(plugin_id).copied()
+    table()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(plugin_id)
+        .copied()
 }
 
 fn place_above_pet(app: &AppHandle, label: &str) {
@@ -97,20 +98,32 @@ fn place_above_pet(app: &AppHandle, label: &str) {
     else {
         return;
     };
-    let Ok(pet_pos) = pet.outer_position() else { return };
-    let Ok(pet_size) = pet.outer_size() else { return };
-    let Ok(ov_size) = overlay.outer_size() else { return };
+    let Ok(pet_pos) = pet.outer_position() else {
+        return;
+    };
+    let Ok(pet_size) = pet.outer_size() else {
+        return;
+    };
+    let Ok(ov_size) = overlay.outer_size() else {
+        return;
+    };
 
     let gap: i32 = 8;
     let x = pet_pos.x + (pet_size.width as i32 - ov_size.width as i32) / 2;
     // 头顶放不下就贴到宠物下沿：「看得见」优先于「在上方」
     let y = pet_pos.y - ov_size.height as i32 - gap;
-    let y = if y < 0 { pet_pos.y + pet_size.height as i32 + gap } else { y };
+    let y = if y < 0 {
+        pet_pos.y + pet_size.height as i32 + gap
+    } else {
+        y
+    };
     let _ = overlay.set_position(PhysicalPosition::new(x, y));
 }
 
 fn apply_visibility(app: &AppHandle, plugin_id: &str) {
-    let Some(state) = snapshot(plugin_id) else { return };
+    let Some(state) = snapshot(plugin_id) else {
+        return;
+    };
     let label = overlay_label(plugin_id);
     let Some(win) = app.get_webview_window(&label) else {
         // 窗还没建（或已被页面自己关掉）：意愿留着，下次 show 再建
@@ -126,7 +139,11 @@ fn apply_visibility(app: &AppHandle, plugin_id: &str) {
         let _ = win.hide();
     }
     if state.visible != show {
-        if let Some(entry) = table().lock().unwrap_or_else(|p| p.into_inner()).get_mut(plugin_id) {
+        if let Some(entry) = table()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_mut(plugin_id)
+        {
             entry.visible = show;
         }
     }
@@ -137,7 +154,12 @@ fn apply_visibility(app: &AppHandle, plugin_id: &str) {
 /// 恢复时按各插件当时的意愿决定显不显示。
 pub fn set_suppressed(app: &AppHandle, suppressed: bool) {
     SUPPRESSED.store(suppressed, Ordering::SeqCst);
-    let ids: Vec<String> = table().lock().unwrap_or_else(|p| p.into_inner()).keys().cloned().collect();
+    let ids: Vec<String> = table()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .keys()
+        .cloned()
+        .collect();
     for id in ids {
         apply_visibility(app, &id);
     }
@@ -152,24 +174,20 @@ fn ensure_window(app: &AppHandle, plugin_id: &str, height: u32) -> Result<(), St
         return Ok(());
     }
     // 页面靠自己的窗口标签（overlay-<插件 id>）认卡片属于谁，不必再传查询串
-    let win = WebviewWindowBuilder::new(
-        app,
-        &label,
-        WebviewUrl::App("overlay.html".into()),
-    )
-    // 标题带上插件 id：多扇悬浮窗在 CDP / 任务管理器里才分得清是谁的
-    .title(format!("DesktopPet Overlay · {plugin_id}"))
-    .position(24.0, 24.0)
-    .inner_size(WIDTH, clamp_height(height) as f64)
-    .decorations(false)
-    .transparent(true)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .resizable(false)
-    .shadow(false)
-    .visible(false)
-    .build()
-    .map_err(|e| e.to_string())?;
+    let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("overlay.html".into()))
+        // 标题带上插件 id：多扇悬浮窗在 CDP / 任务管理器里才分得清是谁的
+        .title(format!("DesktopPet Overlay · {plugin_id}"))
+        .position(24.0, 24.0)
+        .inner_size(WIDTH, clamp_height(height) as f64)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .shadow(false)
+        .visible(false)
+        .build()
+        .map_err(|e| e.to_string())?;
     // 悬浮层永远不拦截鼠标
     let _ = win.set_ignore_cursor_events(true);
     Ok(())
@@ -195,7 +213,10 @@ fn check_grant(perms: &PermissionState, plugin_id: &str) -> Result<(), String> {
 /// 收掉某插件的悬浮层（移出注册表 + 关窗）。
 /// 命令面与宿主内部回收共用这一份，差别只在调用前要过谁的门禁。
 fn reclaim(app: &AppHandle, plugin_id: &str) {
-    table().lock().unwrap_or_else(|p| p.into_inner()).remove(plugin_id);
+    table()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(plugin_id);
     if let Some(win) = app.get_webview_window(&overlay_label(plugin_id)) {
         let _ = win.close();
     }
@@ -224,7 +245,10 @@ pub async fn overlay_show(
 ) -> Result<(), String> {
     check_grant(&perms, &plugin_id)?;
     if !caller_may_act_for(window.label(), &plugin_id) {
-        return Err(format!("窗口 {} 不能为插件 {plugin_id} 开悬浮层", window.label()));
+        return Err(format!(
+            "窗口 {} 不能为插件 {plugin_id} 开悬浮层",
+            window.label()
+        ));
     }
     // 只为确实装着的插件开窗：凭空的 id 会留下一扇没人认领、也没人能收掉的窗
     // （插件之间的越权仍拦不住，那是自报 plugin_id 的固有问题，见 gate.rs 与 R2）
@@ -261,9 +285,16 @@ pub async fn overlay_hide(
 ) -> Result<(), String> {
     check_grant(&perms, &plugin_id)?;
     if !caller_may_act_for(window.label(), &plugin_id) {
-        return Err(format!("窗口 {} 不能收起插件 {plugin_id} 的悬浮层", window.label()));
+        return Err(format!(
+            "窗口 {} 不能收起插件 {plugin_id} 的悬浮层",
+            window.label()
+        ));
     }
-    if let Some(entry) = table().lock().unwrap_or_else(|p| p.into_inner()).get_mut(&plugin_id) {
+    if let Some(entry) = table()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get_mut(&plugin_id)
+    {
         entry.wanted = false;
     }
     apply_visibility(&app, &plugin_id);
@@ -280,7 +311,10 @@ pub async fn overlay_destroy(
 ) -> Result<(), String> {
     check_grant(&perms, &plugin_id)?;
     if !caller_may_act_for(window.label(), &plugin_id) {
-        return Err(format!("窗口 {} 不能销毁插件 {plugin_id} 的悬浮层", window.label()));
+        return Err(format!(
+            "窗口 {} 不能销毁插件 {plugin_id} 的悬浮层",
+            window.label()
+        ));
     }
     reclaim(&app, &plugin_id);
     Ok(())
@@ -327,9 +361,12 @@ pub fn start_follow_timer(app: &AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(150));
         // 顺手清掉「窗已经没了、意愿也收了」的死条目
-        table().lock().unwrap_or_else(|p| p.into_inner()).retain(|id, s| {
-            s.wanted || s.visible || sink.get_webview_window(&overlay_label(id)).is_some()
-        });
+        table()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|id, s| {
+                s.wanted || s.visible || sink.get_webview_window(&overlay_label(id)).is_some()
+            });
         if SUPPRESSED.load(Ordering::SeqCst) {
             continue;
         }
@@ -376,7 +413,10 @@ mod tests {
     #[test]
     fn only_host_windows_or_the_own_overlay_may_act_for_a_plugin() {
         let id = "com.pet.hr-ble".to_string();
-        table().lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), OverlayState::default());
+        table()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id.clone(), OverlayState::default());
         let label = overlay_label(&id);
         assert!(caller_may_act_for("pet", &id));
         assert!(caller_may_act_for("settings", &id));
@@ -385,6 +425,9 @@ mod tests {
         assert!(!caller_may_act_for(&label, "todo"));
         // 同意框一类窗口既不是宿主窗，也不属于这个插件
         assert!(!caller_may_act_for("consent-r1", &id));
-        table().lock().unwrap_or_else(|p| p.into_inner()).remove(&id);
+        table()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&id);
     }
 }

@@ -39,7 +39,11 @@ pub fn autostart_status(app: tauri::AppHandle) -> Result<AutostartStatus, String
 
 /// 只允许设置窗改：这是会跨会话生效的系统级开关
 #[tauri::command]
-pub fn autostart_set(app: tauri::AppHandle, window: tauri::Window, enabled: bool) -> Result<bool, String> {
+pub fn autostart_set(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+    enabled: bool,
+) -> Result<bool, String> {
     crate::gate::settings(&window, "改动开机自启")?;
     let starter = manager(&app);
     if enabled {

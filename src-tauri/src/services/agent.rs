@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
 /// 单次 hook 事件的 stdin 上限，防止某个工具把整篇 transcript 灌进来
@@ -54,7 +54,10 @@ pub fn hook_phase_from_args<I: Iterator<Item = String>>(args: &mut I) -> Option<
             continue;
         }
         let raw = args.next()?;
-        return HOOK_PHASES.iter().map(|(_, p)| *p).find(|p| *p == raw.as_str());
+        return HOOK_PHASES
+            .iter()
+            .map(|(_, p)| *p)
+            .find(|p| *p == raw.as_str());
     }
     None
 }
@@ -70,7 +73,11 @@ fn identifier() -> String {
     const CONF: &str = include_str!("../../tauri.conf.json");
     serde_json::from_str::<Value>(CONF)
         .ok()
-        .and_then(|v| v.get("identifier").and_then(Value::as_str).map(String::from))
+        .and_then(|v| {
+            v.get("identifier")
+                .and_then(Value::as_str)
+                .map(String::from)
+        })
         .unwrap_or_else(|| "com.desktoppet.pet".into())
 }
 
@@ -160,7 +167,10 @@ fn state_for_event(phase: &str, notification_kind: &str) -> Option<&'static str>
         }
         "approval-request" => Some("needs_input"),
         "notification" => {
-            if matches!(notification_kind, "permission_prompt" | "elicitation_dialog") {
+            if matches!(
+                notification_kind,
+                "permission_prompt" | "elicitation_dialog"
+            ) {
                 Some("needs_input")
             } else if matches!(notification_kind, "idle_prompt" | "agent_completed") {
                 Some("completed")
@@ -209,7 +219,11 @@ fn prompt_title(payload: &Value) -> Option<String> {
     let prompt = payload.get("prompt").and_then(Value::as_str)?;
     let one_line = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
     let title: String = one_line.chars().take(48).collect();
-    if title.is_empty() { None } else { Some(title) }
+    if title.is_empty() {
+        None
+    } else {
+        Some(title)
+    }
 }
 
 impl AgentState {
@@ -222,7 +236,11 @@ impl AgentState {
         title: Option<&str>,
     ) -> Option<&'static str> {
         let state = state_for_event(phase, kind)?;
-        let key = if session.is_empty() { "default".to_string() } else { session.to_string() };
+        let key = if session.is_empty() {
+            "default".to_string()
+        } else {
+            session.to_string()
+        };
         let mut sessions = self.sessions.lock().unwrap_or_else(|p| p.into_inner());
         if state == "idle" {
             sessions.remove(&key);
@@ -237,7 +255,9 @@ impl AgentState {
             stopped_at: None,
         });
         if matches!(phase, "pre" | "post" | "subagent-start" | "subagent-stop")
-            && entry.stopped_at.is_some_and(|at| now.duration_since(at) < STOP_GRACE)
+            && entry
+                .stopped_at
+                .is_some_and(|at| now.duration_since(at) < STOP_GRACE)
         {
             // 迟到的工具事件：状态保持「刚结束」，但事件照常往外发（卡片仍能更新摘要）
             return Some(entry.state);
@@ -313,7 +333,9 @@ impl AgentState {
                 "title": title,
                 "steps": steps,
             }),
-            None => json!({ "state": aggregate, "counter": counter, "title": title, "steps": steps }),
+            None => {
+                json!({ "state": aggregate, "counter": counter, "title": title, "steps": steps })
+            }
         };
         drop(emitted);
         app.emit("agent:state", payload).is_ok()
@@ -345,12 +367,18 @@ fn drain_file(state: &Arc<AgentState>, app: &AppHandle, path: &Path) {
         return;
     }
 
-    let Ok(mut file) = fs::File::open(path) else { return };
+    let Ok(mut file) = fs::File::open(path) else {
+        return;
+    };
     if file.seek(SeekFrom::Start(start)).is_err() {
         return;
     }
     let mut bytes = Vec::new();
-    if (&mut file).take(size - start).read_to_end(&mut bytes).is_err() {
+    if (&mut file)
+        .take(size - start)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
         return;
     }
     drop(file);
@@ -359,7 +387,11 @@ fn drain_file(state: &Arc<AgentState>, app: &AppHandle, path: &Path) {
         // 还没有完整一行：偏移保持不动，等 hook 把这一行写完再读
         return;
     };
-    state.offsets.lock().unwrap_or_else(|p| p.into_inner()).insert(path.to_path_buf(), next);
+    state
+        .offsets
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(path.to_path_buf(), next);
 
     let phase_from_name = path
         .file_stem()
@@ -371,7 +403,9 @@ fn drain_file(state: &Arc<AgentState>, app: &AppHandle, path: &Path) {
         if line.is_empty() || line.len() > MAX_LINE_BYTES {
             continue;
         }
-        let Ok(value) = serde_json::from_slice::<Value>(line) else { continue };
+        let Ok(value) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
         let phase = value
             .get("phase")
             .and_then(Value::as_str)
@@ -412,7 +446,9 @@ fn drain_file(state: &Arc<AgentState>, app: &AppHandle, path: &Path) {
 
 /// 启动时把已有文件对齐到末尾：历史事件不该在每次开机时重放一遍
 fn fast_forward(state: &AgentState, dir: &Path) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     let mut offsets = state.offsets.lock().unwrap_or_else(|p| p.into_inner());
     for entry in entries.flatten() {
         let path = entry.path();
@@ -437,13 +473,18 @@ fn drain_all(state: &Arc<AgentState>, app: &AppHandle, dir: &Path) {
 
 /// 收件目录的体积上限：超了就清空重记，宁可丢历史也不写满盘
 fn enforce_inbox_cap(dir: &Path) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
             continue;
         }
-        if fs::metadata(&path).map(|m| m.len() > INBOX_MAX_BYTES).unwrap_or(false) {
+        if fs::metadata(&path)
+            .map(|m| m.len() > INBOX_MAX_BYTES)
+            .unwrap_or(false)
+        {
             let _ = fs::write(&path, b"");
         }
     }
@@ -495,7 +536,9 @@ pub fn start_agent_ticker(app: &AppHandle) {
     let sink = app.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(20));
-        let Ok(app_data) = sink.path().app_data_dir() else { continue };
+        let Ok(app_data) = sink.path().app_data_dir() else {
+            continue;
+        };
         let dir = inbox_dir(&app_data);
         enforce_inbox_cap(&dir);
         let state = sink.state::<Arc<AgentState>>().inner().clone();
@@ -538,23 +581,46 @@ mod tests {
 
     #[test]
     fn detail_prefers_command_then_path_like_fields() {
-        assert_eq!(event_detail(&json!({"tool_input":{"command":"echo  hi   there"}})), "echo hi there");
-        assert_eq!(event_detail(&json!({"tool_input":{"file_path":"src/main.ts"}})), "src/main.ts");
-        assert_eq!(event_detail(&json!({"tool_input":{"pattern":"TODO"}})), "TODO");
-        assert_eq!(event_detail(&json!({"tool_input":{"todo":[{"content":"x"}]}})), "");
+        assert_eq!(
+            event_detail(&json!({"tool_input":{"command":"echo  hi   there"}})),
+            "echo hi there"
+        );
+        assert_eq!(
+            event_detail(&json!({"tool_input":{"file_path":"src/main.ts"}})),
+            "src/main.ts"
+        );
+        assert_eq!(
+            event_detail(&json!({"tool_input":{"pattern":"TODO"}})),
+            "TODO"
+        );
+        assert_eq!(
+            event_detail(&json!({"tool_input":{"todo":[{"content":"x"}]}})),
+            ""
+        );
     }
 
     #[test]
     fn detail_is_bounded_and_single_line() {
         let long = "a".repeat(500);
-        assert_eq!(event_detail(&json!({"tool_input":{"command":long}})).chars().count(), 120);
+        assert_eq!(
+            event_detail(&json!({"tool_input":{"command":long}}))
+                .chars()
+                .count(),
+            120
+        );
         let multi = "first\nsecond\tthird";
-        assert_eq!(event_detail(&json!({"tool_input":{"command":multi}})), "first second third");
+        assert_eq!(
+            event_detail(&json!({"tool_input":{"command":multi}})),
+            "first second third"
+        );
     }
 
     #[test]
     fn title_comes_from_first_prompt_and_is_bounded() {
-        assert_eq!(prompt_title(&json!({"prompt":"测试 Agent 桥功能\n第二行"})).as_deref(), Some("测试 Agent 桥功能 第二行"));
+        assert_eq!(
+            prompt_title(&json!({"prompt":"测试 Agent 桥功能\n第二行"})).as_deref(),
+            Some("测试 Agent 桥功能 第二行")
+        );
         assert_eq!(prompt_title(&json!({"prompt":"   "})), None);
         assert_eq!(prompt_title(&json!({"tool_input":{}})), None);
         assert!(payload(json!({})).get("payload").is_some());
