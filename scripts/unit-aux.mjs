@@ -302,6 +302,79 @@ const TODAY = "2026-10-12";
   eq("limitDown：kind", hits[0]?.kind, "limitDown");
 }
 
+// 封板判定的价格优先口径（A10）：腾讯 47/48 段、东财 f51/f52 给的是**交易所价**，
+// 有价就按价判（不再依赖 pct 与"顶在当日最高/最低"）；该源不供价（东财批量快照、新浪、
+// 或 -1/0 这种不供标记）才回落按代码前缀猜的幅度。fixture 照 market.js 的 quote 形状构造。
+{
+  const bjWatch = [{ secid: "0.920185", code: "920185", name: "F", limit: true }];
+
+  // 1) 北交所 +10% 且顶在当日最高，但没到交易所涨停价 27.31 → 旧实现（按前缀 10%）会误报
+  const bjFalse = R.evalAlerts({
+    quotes: {
+      "0.920185": { name: "贝特瑞", price: 23.5, pct: 10, high: 23.5, low: 22.9, prevClose: 21.36, limitUp: 27.31, limitDown: 14.71 },
+    },
+    watch: bjWatch,
+    alerted: {},
+    today: TODAY,
+  });
+  eq("北交所 +10% 顶最高价但未到涨停价：不报（旧实现按 10% 误报）", bjFalse.length, 0);
+
+  // 2) 价到涨停 → 报（价判优先）
+  const bjHit = R.evalAlerts({
+    quotes: {
+      "0.920185": { name: "贝特瑞", price: 27.31, pct: 30, high: 27.31, low: 22.9, prevClose: 21.01, limitUp: 27.31, limitDown: 14.71 },
+    },
+    watch: bjWatch,
+    alerted: {},
+    today: TODAY,
+  });
+  eq("北交所价到涨停价：报 limitUp", bjHit[0]?.kind, "limitUp");
+
+  // 3) 有交易所价时不再依赖 pct：pct 算不出来（null，昨收异常）照样能判
+  const noPct = R.evalAlerts({
+    quotes: {
+      "1.600519": { name: "贵州茅台", price: 11, pct: null, high: 11, low: 10.4, prevClose: null, limitUp: 11, limitDown: 9 },
+    },
+    watch: [{ secid: "1.600519", code: "600519", name: "G", limit: true }],
+    alerted: {},
+    today: TODAY,
+  });
+  eq("有交易所价时 pct 为 null 仍报 limitUp", noPct[0]?.kind, "limitUp");
+
+  // 4) 该源不供价（东财批量快照 limitUp/limitDown = null）→ 回落按前缀猜，行为与改动前一致
+  const fallback = R.evalAlerts({
+    quotes: {
+      "1.600519": { name: "贵州茅台", price: 11, pct: 10, high: 11, low: 10.4, prevClose: 10, limitUp: null, limitDown: null },
+    },
+    watch: [{ secid: "1.600519", code: "600519", name: "G", limit: true }],
+    alerted: {},
+    today: TODAY,
+  });
+  eq("无价回落：主板 +10% 顶最高价仍按旧口径报 limitUp", fallback[0]?.kind, "limitUp");
+
+  // 5) 跌停方向对称：价到跌停价、pct 缺失也报
+  const down = R.evalAlerts({
+    quotes: {
+      "1.600519": { name: "贵州茅台", price: 9, pct: null, high: 11, low: 9, prevClose: null, limitUp: 11, limitDown: 9 },
+    },
+    watch: [{ secid: "1.600519", code: "600519", name: "G", limit: true }],
+    alerted: {},
+    today: TODAY,
+  });
+  eq("有交易所价时跌停价到、pct 为 null 也报 limitDown", down[0]?.kind, "limitDown");
+
+  // 6) -1/0 表示该源这次不供：必须按 null 走回落，绝不许拿 -1 参与比较（那会把每只都判成涨停）
+  const bogus = R.evalAlerts({
+    quotes: {
+      "1.600519": { name: "贵州茅台", price: 10.5, pct: 5, high: 10.5, low: 10.4, prevClose: 10, limitUp: -1, limitDown: 0 },
+    },
+    watch: [{ secid: "1.600519", code: "600519", name: "G", limit: true }],
+    alerted: {},
+    today: TODAY,
+  });
+  eq("-1/0 的涨跌停价按不供处理：不许因 -1 误报", bogus.length, 0);
+}
+
 // 五类联合：kind 集合与 KINDS 一致
 {
   const watch = [

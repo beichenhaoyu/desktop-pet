@@ -313,7 +313,7 @@ export function depthRows(depth) {
       tag: `${side === "ask" ? "卖" : "买"}${i + 1}`,
       price: r.price,
       volume: r.volume,
-      /** 占比用于画那根深浅条，100% 就是本侧最大的那一档 */
+      /** 占比用于画那根深浅条，100% 是**买卖两侧合并**里最大的那一档（两侧能横向比较才有意义） */
       weight: Math.round(((r.volume ?? 0) / maxVol) * 100),
     }));
   return {

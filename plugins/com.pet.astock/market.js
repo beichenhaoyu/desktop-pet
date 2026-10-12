@@ -70,10 +70,15 @@ export function secidOf(code) {
   return null;
 }
 
-/** 涨跌停幅度：创业板 30 / 科创板 68 是 20%，主板 10%。ST 的 5% 这里不区分（见 README 记录） */
+/** 涨跌停幅度**回落表**（只在源不供交易所涨跌停价时才用，见 rules.js；腾讯 47/48 段、
+ *  东财 f51/f52 给的都是价，有价时判定不经过这里）：创业板 30 / 科创板 68 是 20%；
+ *  北交所 92/4/8 开头（前缀口径与 secidOf 完全一致，别另起一份）是 30%；其余 10%。
+ *  ST 的 5% 这里不区分 —— 判不出就是判不出，不假装解决（有交易所价时不受影响） */
 export function limitPct(code) {
   const c = normalizeCode(code) ?? "";
-  return c.startsWith("30") || c.startsWith("68") ? 20 : 10;
+  if (c.startsWith("30") || c.startsWith("68")) return 20;
+  if (c.startsWith("92") || c.startsWith("4") || c.startsWith("8")) return 30;
+  return 10;
 }
 
 export function buildQuoteUrl(secids) {

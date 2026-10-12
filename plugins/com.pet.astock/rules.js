@@ -2,8 +2,9 @@
 //
 // 两类规则：
 //   用户设的：upper（涨到）/ lower（跌到）/ pct（涨跌幅绝对值，正负都算）
-//   市场本身：limit_up / limit_down —— 涨跌停用「现价 == 最高/最低 且 幅度到限制」判，
-//             停牌与集合竞价阶段因为价格还没连续成交，交给 quoteAt 是否前进来挡（见 index.js）
+//   市场本身：limitUp / limitDown —— 优先用交易所给的涨跌停**价**判（腾讯 47/48 段、东财 f51/f52）；
+//             该源不供价时才回落到「现价 == 最高/最低 且 幅度到按代码前缀猜的限制」。停牌与
+//             集合竞价阶段因为价格还没连续成交，交给 quoteAt 是否前进来挡（见 index.js）
 //
 // 去重口径与待办插件一致：一条规则一天只提醒一次，键记在 alerted 里。
 
@@ -13,6 +14,12 @@ export const KINDS = ["upper", "lower", "pct", "limitUp", "limitDown"];
 
 function num(v) {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+/** 涨跌停价：只认正数；-1 / 0（该源这次不供的标记，见 AGENTS.md 腾讯字段口径）与非法值一律落 null，绝不参与比较 */
+function limitPrice(v) {
+  const n = num(v);
+  return n !== null && n > 0 ? n : null;
 }
 
 /** 一条自选股的规则摘要，用于界面上说明「这只在盯什么」 */
@@ -62,14 +69,24 @@ export function evalAlerts({ quotes, watch, alerted, today }) {
       );
     }
     if (item.limit !== false) {
-      const lim = limitPct(item.code);
       const high = num(q.high);
       const low = num(q.low);
-      // 顶到最高价且幅度接近限制 → 视为封板；跌停同理
-      if (pct !== null && pct >= lim - 0.05 && high !== null && price >= high - 1e-6) {
+      // 交易所价优先：腾讯 47/48 段、东财 f51/f52 给的是**价**，有价就按价判 ——
+      // pct 与"顶在当日最高/最低"都不再是必要条件（昨收异常时 pct 可能为 null）
+      const upPrice = limitPrice(q.limitUp);
+      const downPrice = limitPrice(q.limitDown);
+      if (upPrice !== null && price >= upPrice - 1e-6) {
         push("limitUp", `${q.name || item.name} 涨停 ${price.toFixed(2)}`, "up");
-      } else if (pct !== null && pct <= -(lim - 0.05) && low !== null && price <= low + 1e-6) {
+      } else if (downPrice !== null && price <= downPrice + 1e-6) {
         push("limitDown", `${q.name || item.name} 跌停 ${price.toFixed(2)}`, "down");
+      } else if (upPrice === null && downPrice === null) {
+        // 该源不供价（东财批量快照 / 新浪 / -1、0 这类不供标记）→ 回落到按代码前缀猜的幅度
+        const lim = limitPct(item.code);
+        if (pct !== null && pct >= lim - 0.05 && high !== null && price >= high - 1e-6) {
+          push("limitUp", `${q.name || item.name} 涨停 ${price.toFixed(2)}`, "up");
+        } else if (pct !== null && pct <= -(lim - 0.05) && low !== null && price <= low + 1e-6) {
+          push("limitDown", `${q.name || item.name} 跌停 ${price.toFixed(2)}`, "down");
+        }
       }
     }
   }

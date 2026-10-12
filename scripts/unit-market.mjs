@@ -76,7 +76,14 @@ eq("secidOf 非代码返回 null", m.secidOf("abc"), null);
 eq("limitPct 主板 10", m.limitPct("600519"), 10);
 eq("limitPct 创业板 20", m.limitPct("300750"), 20);
 eq("limitPct 科创板 20", m.limitPct("688111"), 20);
-eq("limitPct 北交所按实现落 10（该函数只区分 30/68）", m.limitPct("920185"), 10);
+eq("limitPct 北交所 92 段 30", m.limitPct("920185"), 30);
+eq("limitPct 北交所 4 开头 30", m.limitPct("430047"), 30);
+eq("limitPct 北交所 8 开头 30", m.limitPct("830799"), 30);
+eq("limitPct 沪 B 股（900xxx）仍是 10", m.limitPct("900953"), 10);
+check(
+  "limitPct 的北交所口径与 secidOf 一致（92/4/8 都由 secidOf 归市场 0）",
+  ["920185", "430047", "830799"].every((c) => m.limitPct(c) === 30 && m.secidOf(c) === `0.${c}`),
+);
 eq("limitPct 认不出也回落 10", m.limitPct(""), 10);
 
 eq("isNum 数值真", [m.isNum(1), m.isNum(0), m.isNum(-1.5)].join(","), "true,true,true");
