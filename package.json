@@ -10,7 +10,7 @@
     "tauri": "tauri",
     "dev:debug": "node tools/dev-debug.mjs",
     "lint": "biome lint .",
-    "unit:astock": "node tests/unit/unit-market.mjs && node tests/unit/unit-aux.mjs",
+    "unit:astock": "node --test tests/unit/unit-market.mjs tests/unit/unit-aux.mjs",
     "verify": "node tests/e2e/verify-isolation.mjs",
     "verify:agent": "node tests/e2e/verify-agent-bridge.mjs",
     "verify:game": "node tests/e2e/verify-game-mode.mjs",

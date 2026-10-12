@@ -6,44 +6,17 @@
 // fixture 一律按 market.js 注释里的实测口径构造（列序、段位、时间戳形态），不凭记忆猜。
 // 不在范围：fetchQuotes / fetchDepth / fetchTrend / fetchKline / fetchSuggest（要真网络）。
 
+import { check, deep, eq, group, throws } from "./harness.mjs";
+
 const src = (name) => new URL(`../../plugins/com.pet.astock/${name}`, import.meta.url).href;
 const m = await import(src("market.js"));
 
-let pass = 0;
-let fail = 0;
-const attempts = { "编码与secid": 0, "URL构造": 0, "东财解析": 0, "腾讯解析": 0, "新浪解析": 0, "时间戳与时段": 0 };
-let group = "编码与secid";
-
-function check(name, cond, detail = "") {
-  attempts[group]++;
-  if (cond) {
-    pass++;
-    return;
-  }
-  fail++;
-  console.log(`FAIL [${group}] ${name}${detail ? " :: " + detail : ""}`);
-}
-function eq(name, actual, expected) {
-  check(name, Object.is(actual, expected), `actual=${JSON.stringify(actual)} expected=${JSON.stringify(expected)}`);
-}
-function deep(name, actual, expected) {
-  check(name, JSON.stringify(actual) === JSON.stringify(expected), `actual=${JSON.stringify(actual)} expected=${JSON.stringify(expected)}`);
-}
-function throws(name, fn, includes = "") {
-  let err = null;
-  try {
-    fn();
-  } catch (e) {
-    err = e;
-  }
-  check(name, err instanceof Error && (!includes || String(err.message).includes(includes)), err ? `message=${err.message}` : "没有抛错");
-}
 function qp(url) {
   return new URL(url).searchParams;
 }
 
 /* ==================== 编码与 secid ==================== */
-group = "编码与secid";
+group("编码与secid");
 
 eq("normalizeCode 六位裸码", m.normalizeCode("600519"), "600519");
 eq("normalizeCode 数字入参", m.normalizeCode(600519), "600519");
@@ -116,7 +89,7 @@ eq("secidOfTencentCode 拒绝 5 位", m.secidOfTencentCode("sh60000"), null);
 }
 
 /* ==================== URL 构造与源注册表 ==================== */
-group = "URL构造";
+group("URL构造");
 
 {
   const u = m.buildQuoteUrl(["1.600519", "0.000001", "1.600519", "", null]);
@@ -182,7 +155,7 @@ eq("briefReason 掐掉 URL 尾巴", m.briefReason(new Error("fetch failed on htt
 eq("briefReason 无 URL 时原样返回", m.briefReason(new Error("连接被重置")), "连接被重置");
 
 /* ==================== 东财解析 ==================== */
-group = "东财解析";
+group("东财解析");
 
 const emRow = { f12: "600519", f13: 1, f14: "贵州茅台", f2: 1700.5, f3: 1.2, f4: 20.1, f5: 123456, f6: 2100000000, f15: 1710, f16: 1690, f17: 1695, f18: 1680.4, f124: 1759973400 };
 
@@ -303,7 +276,7 @@ eq("changeOf 基本换算", m.changeOf(9.54, 9.7), -0.16);
 eq("changeOf 缺值落 null", m.changeOf(null, 9.7), null);
 
 /* ==================== 腾讯解析 ==================== */
-group = "腾讯解析";
+group("腾讯解析");
 
 function tencentSegs(n) {
   return new Array(n).fill("");
@@ -479,7 +452,7 @@ throws(
 );
 
 /* ==================== 新浪解析 ==================== */
-group = "新浪解析";
+group("新浪解析");
 
 const sinaSh = new Array(34).fill("");
 sinaSh[0] = "浦发银行"; sinaSh[1] = "9.68"; sinaSh[2] = "9.70"; sinaSh[3] = "9.54"; sinaSh[4] = "9.75"; sinaSh[5] = "9.50";
@@ -511,7 +484,7 @@ throws("新浪解析器不吃腾讯 body（前缀不符判失败，不是静默�
 throws("腾讯解析器不吃新浪 body（同上，防拿错响应体）", () => m.parseTencentQuotes(sinaBody), "可解析的行情行");
 
 /* ==================== 时间戳与时段 ==================== */
-group = "时间戳与时段";
+group("时间戳与时段");
 
 eq("epochMsOfSeconds 秒 → 毫秒", m.epochMsOfSeconds(1759973400), 1759973400 * 1000);
 eq("epochMsOfSeconds 毫秒入参原样保留", m.epochMsOfSeconds(1759973400000), 1759973400000);
@@ -561,8 +534,3 @@ deep("progressOf 首轮无记忆源按同源处理", m.progressOf({ prevAt: 0, p
   eq("marketSession 周六不计交易", [m.marketSession(at(10, 10, 10, 0)).phase, m.marketSession(at(10, 10, 10, 0)).trading].join(","), "weekend,false");
   eq("marketSession 周日不计交易", m.marketSession(at(10, 11, 10, 0)).phase, "weekend");
 }
-
-/* ==================== 汇总 ==================== */
-for (const key of Object.keys(attempts)) console.log(`[${key}] ${attempts[key]}`);
-console.log(`RESULT pass=${pass} fail=${fail}`);
-process.exitCode = fail === 0 ? 0 : 1;

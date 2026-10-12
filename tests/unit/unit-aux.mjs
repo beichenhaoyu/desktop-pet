@@ -9,37 +9,16 @@
 // 不在本卡范围：charts.js 的 drawTrend / drawKline / prepareCanvas —— 它们要真实画布上下文，
 // 由 verify:astock 用像素计数覆盖；本卡不造假画布（那只会产出恒真断言）。
 
+import { check, deep, eq, group } from "./harness.mjs";
+
 const src = (name) => new URL(`../../plugins/com.pet.astock/${name}`, import.meta.url).href;
 const T = await import(src("throttle.js"));
 const R = await import(src("rules.js"));
 const C = await import(src("charts.js"));
 const M = await import(src("market.js"));
 
-let pass = 0;
-let fail = 0;
-const attempts = { throttle: 0, rules: 0, charts: 0, sourceBranch: 0 };
-let group = "throttle";
-
-function check(name, cond, detail = "") {
-  attempts[group]++;
-  if (cond) {
-    pass++;
-    return;
-  }
-  fail++;
-  console.log(`FAIL [${group}] ${name}${detail ? " :: " + detail : ""}`);
-}
-
-function eq(name, actual, expected) {
-  check(name, Object.is(actual, expected), `actual=${JSON.stringify(actual)} expected=${JSON.stringify(expected)}`);
-}
-
-function deep(name, actual, expected) {
-  check(name, JSON.stringify(actual) === JSON.stringify(expected), `actual=${JSON.stringify(actual)} expected=${JSON.stringify(expected)}`);
-}
-
 /* ============================ throttle ============================ */
-group = "throttle";
+group("throttle");
 
 // createGate：注入假时钟，验证「最小间隔」语义
 {
@@ -190,7 +169,7 @@ eq("isTransportError({status:429, message:'fetch failed'}) = false（带状态�
 }
 
 /* ============================ rules ============================ */
-group = "rules";
+group("rules");
 
 deep("KINDS 词表 = 五类提醒", R.KINDS, ["upper", "lower", "pct", "limitUp", "limitDown"]);
 eq("limitPct 主板 = 10", M.limitPct("600519"), 10);
@@ -466,7 +445,7 @@ eq("ruleSummary 非数字阈值被忽略", R.ruleSummary({ upper: "abc", lower: 
 eq("ruleSummary limit 为真时带「涨跌停」", R.ruleSummary({ limit: 1 }), "涨跌停");
 
 /* ============================ charts ============================ */
-group = "charts";
+group("charts");
 
 // movingAverage：长度、前段 null、手算校验
 {
@@ -550,7 +529,7 @@ check("COLORS 涨/跌/平盘都是颜色字符串", [C.COLORS.up, C.COLORS.down,
 /* ==================== sourceBranch（A11：源无关判定的离线钉） ==================== */
 // 两种网络形态（全通 / 东财坏 / 只有新浪）下，判定层必须各自给出可解释的 PASS/FAIL ——
 // 「今天网络正好是这样」不再影响结论，由这里离线钉住。判定层本身不许联网（纯函数）。
-group = "sourceBranch";
+group("sourceBranch");
 {
   const B = await import(new URL("../e2e/harness/astock-source-branch.mjs", import.meta.url).href);
   const H = {
@@ -632,11 +611,3 @@ group = "sourceBranch";
     check("面板无记忆、实际换过源：9 次 → 放宽档内（PM 现场形态）", m3.ok === true && m3.allSameTier === false, m3.reason);
   }
 }
-
-/* ============================ 汇总 ============================ */
-console.log(`[throttle] ${attempts.throttle}`);
-console.log(`[rules] ${attempts.rules}`);
-console.log(`[charts] ${attempts.charts}`);
-console.log(`[sourceBranch] ${attempts.sourceBranch}`);
-console.log(`RESULT pass=${pass} fail=${fail}`);
-process.exitCode = fail === 0 ? 0 : 1;
