@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "consent",
+  "description": "权限同意框：读自己的 pending 详情、答完关掉自己。它不该有任何改动别的窗口的能力。",
+  "windows": ["consent-*"],
+  "permissions": ["core:default", "core:window:allow-close"]
+}

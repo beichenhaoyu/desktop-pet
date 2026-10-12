@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings",
+  "description": "设置窗：只关掉自己。跨会话生效的系统级开关由 Rust 侧 gate::settings 负责，不靠窗口权限。",
+  "windows": ["settings"],
+  "permissions": ["core:default", "core:window:allow-close"]
+}

@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "pet",
+  "description": "宠物窗：本体拖拽 + 点击穿透（含穿透期间的光标轮询与原点重读）。这些权限只属于宠物窗 —— 悬浮层与同意框既不该拖窗口，也不该轮询光标。",
+  "windows": ["pet"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-ignore-cursor-events",
+    "core:window:allow-cursor-position",
+    "core:window:allow-outer-position",
+    "core:window:allow-scale-factor"
+  ]
+}

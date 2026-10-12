@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "overlay",
+  "description": "插件悬浮层（overlay-<id>）：读事件、关掉自己那一扇。摆放与显隐由宿主 Rust 侧负责（window/overlay.rs），页面拿不到拖拽与光标轮询。",
+  "windows": ["overlay-*"],
+  "permissions": ["core:default", "core:window:allow-close"]
+}
