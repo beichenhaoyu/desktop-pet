@@ -9,8 +9,9 @@ edition = "2021"
 
 [lib]
 # `_lib` 后缀避免 Windows 上 lib 名与 bin 名冲突，见 https://github.com/rust-lang/cargo/issues/8519
+# 只做 Windows 桌面，staticlib/cdylib 是给移动目标准备的 —— 留着每次构建都多编两遍产物
 name = "desktop_pet_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
