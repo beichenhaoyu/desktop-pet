@@ -1,6 +1,7 @@
 // PetAPI 能力桥：按 manifest 权限逐项校验，未授权时触发同意框，拒绝默认。
 // 进程内插件不是硬安全边界，这里是策略层（见 ARCHITECTURE.md 信任模型）。
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { bus } from "./event-bus";
 import { PET_ACTIONS, petController, type ActionName } from "../pet/host";
 import { claim, release } from "./resources";
@@ -29,6 +30,11 @@ interface ManifestLike {
  * 撤销授权时由 runtime 监听 `host:permission-revoked` 清掉对应条目。
  */
 const granted = new Map<string, Set<string>>();
+
+// 撤销授权后必须丢掉**本窗口**的桥缓存。运行时（宠物窗）的监听在 plugin-runtime 里，
+// 但设置窗里的插件设置页用的是本窗口的模块实例，而撤销入口就在设置窗 —— 漏了这条，
+// 缓存会一直说「已授权」，设置区插件的下一次调用要等整窗重载才会重新走能力校验。
+void listen<string>("host:permission-revoked", (e) => invalidatePermissions(e.payload)).catch(() => undefined);
 
 export function invalidatePermissions(pluginId?: string): void {
   if (pluginId) granted.delete(pluginId);
@@ -83,6 +89,21 @@ function gated<A extends unknown[], R>(
       throw new Error(`[${manifest.id}] 权限被拒绝: ${capability}`);
     }
     return fn(...args);
+  };
+}
+
+/** 插件设置页专属能力：查询/安装/卸载本机编码 Agent（Qoder）的 hook 配置（见 ADR-0001） */
+export const AGENT_HOOKS_CAP = "agent:hooks";
+
+/**
+ * settings 区 widget 的受控宿主通道。只在 `widget-host.ts` 里当
+ * `ctx.host.agentHooks` 注入 —— 这是本卡唯一的新攻击面，别在这里扩大面。
+ */
+export function createAgentHooksApi(manifest: ManifestLike) {
+  return {
+    status: gated(manifest, AGENT_HOOKS_CAP, () => invoke<unknown>("agent_hooks_status", { pluginId: manifest.id })),
+    install: gated(manifest, AGENT_HOOKS_CAP, () => invoke<unknown>("agent_hooks_install", { pluginId: manifest.id })),
+    uninstall: gated(manifest, AGENT_HOOKS_CAP, () => invoke<unknown>("agent_hooks_uninstall", { pluginId: manifest.id })),
   };
 }
 

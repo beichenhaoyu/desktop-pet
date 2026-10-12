@@ -6,17 +6,22 @@
 import { bus } from "./event-bus";
 import { pluginFileUrl, pluginFileVersion } from "./plugin-url";
 import { createScopedBus, type ScopedBus } from "./topic-acl";
+import { createAgentHooksApi } from "./bridge";
 
 export interface WidgetManifest {
   id: string;
+  name?: string;
   widget?: string;
   permissions?: string[];
 }
 
+/** settings 区 widget 才能拿到的受控宿主通道（见 ADR-0001，别扩大注入面） */
+type HostBridge = { agentHooks: ReturnType<typeof createAgentHooksApi> };
+
 export interface WidgetExports {
   mount: (
     root: ShadowRoot,
-    ctx: { pluginId: string; region: string; bus: ScopedBus },
+    ctx: { pluginId: string; region: string; bus: ScopedBus; host?: HostBridge },
   ) => void | Promise<void>;
   unmount?: (root: ShadowRoot) => void | Promise<void>;
 }
@@ -83,11 +88,22 @@ class WidgetHost {
       const shadow = host.attachShadow({ mode: "closed" });
       root.appendChild(host);
 
-      await mod.mount(shadow, {
+      const ctx: Parameters<WidgetExports["mount"]>[1] = {
         pluginId: manifest.id,
         region,
         bus: createScopedBus(manifest.id, manifest.permissions ?? [], bus),
-      });
+      };
+      // 受控宿主通道只往设置区注入：badge / overlay 区与宠物窗主 realm 都拿不到 ctx.host
+      if (region === "settings") {
+        ctx.host = {
+          agentHooks: createAgentHooksApi({
+            id: manifest.id,
+            name: manifest.name ?? manifest.id,
+            permissions: manifest.permissions,
+          }),
+        };
+      }
+      await mod.mount(shadow, ctx);
 
       if (this.epochOf(manifest.id) !== startedAt) {
         host.remove();

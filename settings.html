@@ -81,22 +81,6 @@
           </div>
 
           <div class="card">
-            <h2>Agent 事件接入</h2>
-            <p class="hint" id="agent-status">正在读取状态…</p>
-            <p class="hint" id="agent-detail"></p>
-            <div class="actions">
-              <button type="button" id="agent-install">安装 Qoder hook</button>
-              <button type="button" id="agent-uninstall">卸载</button>
-              <button type="button" id="agent-refresh">刷新</button>
-            </div>
-            <p class="hint">
-              安装会往 ~/.qoder/settings.json 与 ~/.qoder-cn/settings.json 追加本宠物的 hook
-              条目（首次改动会留 .pre-pet-backup 备份），只增删自己的条目，不动其他 hook。
-              装好后 Agent 的工具调用、等待确认、任务完成等事件就会驱动宠物。
-            </p>
-          </div>
-
-          <div class="card">
             <h2>游戏模式</h2>
             <label class="row-line">
               <input type="checkbox" id="game-mode-switch" class="switch" />

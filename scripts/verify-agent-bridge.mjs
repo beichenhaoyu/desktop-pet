@@ -456,10 +456,19 @@ try {
   );
   r.check("会话结束后悬浮卡收起", true, await overlayVisible(false, 15_000));
 
-  r.group("hook 命令写的是真实用户配置吗");
+  r.group("hook 命令的调用面：宠物窗被拒，宿主路径（设置窗）放行");
   const status = await invoke("agent_hooks_status");
-  r.check("非设置窗调用被拒", false, status.ok);
+  r.check("宠物窗（主 realm）调用被拒", false, status.ok);
   r.info("拒绝原因", String(status.e ?? "").slice(0, 60));
+  // B2 迁移：声明 agent:hooks 的插件设置页（settings 区）经能力校验后才放行 ——
+  // 那条链路（同意框、badge/overlay 区取不到 host、撤销两分支）在 verify-isolation 里断言；
+  // 这里钉住反向：从宠物窗绕过桥直接 invoke，带不带 pluginId 都被窗口门禁挡住。
+  const petInstall = await invoke("agent_hooks_install", { pluginId: AGENT_ID });
+  r.check("宠物窗带 pluginId 直接 invoke install 也被拒（label 决定，不是能力决定）", false, petInstall.ok);
+  if (!settings) settings = await openSettingsInvoker(PORT, c);
+  const hostStatus = await settings.invoke("agent_hooks_status");
+  r.check("宿主路径（设置窗、不带 pluginId）照旧可用", true, hostStatus.ok === true);
+  r.check("宿主 status 回显含配置文件列表", true, Array.isArray(hostStatus.v?.files));
 
   r.group("收尾前的完整性");
   r.check("测试期间宠物窗未被重载", token, await c.ev(`window.__verifyToken ?? null`));

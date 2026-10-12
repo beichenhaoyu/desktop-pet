@@ -2,7 +2,7 @@
 //   终端 1: npm run dev:debug     终端 2: npm run verify
 // 只覆盖 dev 能验证的部分；CSP 与打包路径见 verify-release.mjs（每波次收尾手工跑一次）。
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { argv, env } from "node:process";
 import { attach, createReport, hostInvoke, openSettingsInvoker, reloadAndWait, waitForPage, waitUntil } from "./cdp.mjs";
 import { NET_ID, PROBE_ID, SPOOF_DIR, removeFixtures, writeFixtures } from "./fixtures.mjs";
@@ -40,6 +40,8 @@ async function driveConsent(how) {
     };
     if (how === "allow") {
       await cs.ev(`document.getElementById('btn-allow').click()`);
+    } else if (how === "deny") {
+      await cs.ev(`document.getElementById('btn-deny').click()`);
     } else {
       await cs.ev(
         `(() => { window.__TAURI_INTERNALS__.invoke('plugin:window|close', { label: ${JSON.stringify(seen.label)} }); return true; })()`,
@@ -801,16 +803,23 @@ try {
       await navViews(),
     );
     r.check(
-      "宠物设置这一页含形象/快捷键/自启/Agent/游戏模式五张卡片",
-      '["桌宠形象","唤出本页的全局快捷键","开机自动运行","Agent 事件接入","游戏模式"]',
+      "宠物设置这一页含形象/快捷键/自启/游戏模式四张卡片（Agent 卡片已移交插件页）",
+      '["桌宠形象","唤出本页的全局快捷键","开机自动运行","游戏模式"]',
       JSON.stringify(await sc.ev(`[...document.querySelectorAll('[data-panel=pet] .card h2')].map(h => h.textContent)`)),
     );
     r.check(
-      "宠物设置里含形象/快捷键/自启/Agent/游戏模式的控件",
-      '[true,true,true,true,true,true,true]',
+      "宠物设置里含形象/快捷键/自启/游戏模式的控件",
+      '[true,true,true,true,true,true]',
       JSON.stringify(await sc.ev(
-        `['skin-list','hotkey-input','autostart-switch','agent-install','game-mode-switch','skin-name','hotkey-test']` +
+        `['skin-list','hotkey-input','autostart-switch','game-mode-switch','skin-name','hotkey-test']` +
           `.map(id => !!document.getElementById(id))`,
+      )),
+    );
+    r.check(
+      "Agent 卡片的 DOM 与控件已删干净（不留死代码）",
+      '[false,false,false,false,false]',
+      JSON.stringify(await sc.ev(
+        `['agent-status','agent-detail','agent-install','agent-uninstall','agent-refresh'].map(id => !!document.getElementById(id))`,
       )),
     );
     r.check("初始只有 pet 面板可见", "pet", await sc.ev(`[...document.querySelectorAll('[data-panel]')].filter(p => !p.hidden).map(p => p.dataset.panel).join(',')`));
@@ -865,6 +874,257 @@ try {
     await new Promise((res) => setTimeout(res, 400));
     r.check("回到宠物设置", "pet", await sc.ev(`[...document.querySelectorAll('[data-panel]')].filter(p => !p.hidden).map(p => p.dataset.panel).join(',')`));
     r.check("离开插件页后插件页被卸载", 0, await sc.ev(`document.querySelectorAll('#plugin-settings div[data-plugin-id]').length`));
+
+    // ---------- B2：agent:hooks 受控能力（settings 区专属，ADR-0001） ----------
+    // 探针复用 zz.probe 目录（.gitignore 已忽略、收尾统一删除）。把它的 widget 换成
+    // 「钩子能力探针」：mount 本身不发起任何调用，只把 ctx 形状与手动调用函数挂到 window，
+    // 免得早先的挂载/开关用例被同意框打断。
+    r.group("agent:hooks 受控能力（settings 区专属）");
+    const TEMP_ROOT = resolve(import.meta.dirname, "../temp");
+    const hookDir = join(PLUGINS_DIR, PROBE_ID);
+    const hookManifest = (permits) =>
+      JSON.stringify({
+        id: PROBE_ID,
+        name: "钩子能力探针",
+        version: "0.0.0",
+        entry: "index.js",
+        widget: "widget.js",
+        permissions: permits,
+        description: "验证 agent:hooks 的受控注入面与同意流程。",
+      });
+    const HOOK_WIDGET = `export function mount(root, ctx) {
+  const api = ctx.host && ctx.host.agentHooks;
+  const entry = {
+    region: ctx.region,
+    hostIsUndefined: typeof ctx.host === "undefined",
+    hasAgentHooks: !!api,
+    keys: ctx.host ? Object.keys(ctx.host).sort() : [],
+  };
+  entry.call = async (name) => {
+    if (!api) return { ok: false, e: "no host.agentHooks on ctx" };
+    try { return { ok: true, v: await api[name]() }; }
+    catch (e) { return { ok: false, e: String(e && e.message ? e.message : e) }; }
+  };
+  (window.__hookProbes = window.__hookProbes || {})[ctx.region] = entry;
+}
+export function unmount() {}
+`;
+    const MOUNT_HOOK_PROBES = `(async () => {
+      const { widgetHost } = await import('/src/runtime/widget-host.ts');
+      window.__hookHost = widgetHost;
+      document.getElementById('hook-probe-slot')?.remove();
+      const slot = document.createElement('div');
+      slot.id = 'hook-probe-slot';
+      document.body.append(slot);
+      const manifest = ${hookManifest([])};
+      await widgetHost.mount(manifest, 'settings', slot);
+      await widgetHost.mount(manifest, 'badge', slot);
+      await widgetHost.mount(manifest, 'overlay', slot);
+      return Object.keys(window.__hookProbes || {}).sort().join(',');
+    })()`;
+
+    writeFileSync(join(hookDir, "widget.js"), HOOK_WIDGET);
+    writeFileSync(join(hookDir, "manifest.json"), hookManifest([]));
+    mkdirSync(join(TEMP_ROOT, "b2"), { recursive: true });
+    await sleep(900);
+
+    r.check("探针在 settings/badge/overlay 三区都能挂上", "badge,overlay,settings", await sc.ev(MOUNT_HOOK_PROBES));
+    const shape = await sc.ev(`({
+      hasAgentHooks: window.__hookProbes.settings.hasAgentHooks,
+      keys: window.__hookProbes.settings.keys.join(','),
+      badgeHost: window.__hookProbes.badge.hostIsUndefined,
+      badgeApi: window.__hookProbes.badge.hasAgentHooks,
+      overlayHost: window.__hookProbes.overlay.hostIsUndefined,
+      overlayApi: window.__hookProbes.overlay.hasAgentHooks,
+    })`);
+    r.check("settings 区注入 ctx.host.agentHooks（且只有这一个键）", true, shape.hasAgentHooks === true && shape.keys === "agentHooks");
+    r.check("badge 区取到的 ctx.host 是 undefined（断言 undefined，不是调用报错）", true, shape.badgeHost === true && shape.badgeApi === false);
+    r.check("overlay 区取到的 ctx.host 是 undefined", true, shape.overlayHost === true && shape.overlayApi === false);
+
+    // 起点确定：清掉上一次（可能崩溃留下）的旧授权，否则 permission_check 会短路掉声明校验
+    await sCall("permission_revoke", { pluginId: PROBE_ID });
+    const undeclared = await sc.ev(`window.__hookProbes.settings.call("status")`);
+    r.check(
+      "未声明 agent:hooks：settings 区调用被拒（未声明的能力不弹框，直接拒）",
+      true,
+      undeclared.ok === false && /未在 manifest 声明/.test(undeclared.e),
+    );
+
+    // 声明后：首次调用应弹同意框。先拒绝一次，再同意。
+    writeFileSync(join(hookDir, "manifest.json"), hookManifest(["agent:hooks"]));
+    await sleep(500);
+    const pendingDeny = sc.ev(`window.__hookProbes.settings.call("status")`);
+    const consentDeny = await driveConsent("deny");
+    r.check("同意框列出了 agent:hooks", true, consentDeny.caps.some((x) => x.includes("agent:hooks")));
+    // 同意框标题是既有文案 `${plugin_name}（${plugin_id}）`（consent/main.ts:34），断言整串
+    r.check("同意框显示的是探针插件名（既有文案含 id）", "钩子能力探针（zz.probe）", consentDeny.name);
+    const denied = await pendingDeny;
+    r.check("拒绝后调用被拒（默认拒绝语义）", true, denied.ok === false && /权限被拒绝/.test(denied.e));
+
+    const pendingAllow = sc.ev(`window.__hookProbes.settings.call("status")`);
+    const consentAllow = await driveConsent("allow");
+    r.check("拒绝没留下授权（第二次调用仍弹框）", true, consentAllow.caps.some((x) => x.includes("agent:hooks")));
+    const allowed = await pendingAllow;
+    r.check("同意后 settings 区调用放行", true, allowed.ok === true);
+    const hostStatus = await sCall("agent_hooks_status");
+    r.check("status 回显与宿主路径一致", JSON.stringify(allowed.v), JSON.stringify(hostStatus.v));
+
+    // 宠物窗主 realm：绕过 JS 桥直接 invoke 必须被窗口门禁拒（label=pet）
+    const petStatus = await call("agent_hooks_status");
+    r.check("宠物窗直接 invoke status 被拒（label=pet）", true, petStatus.ok === false && /设置窗/.test(String(petStatus.e)));
+    const petInstall = await call("agent_hooks_install", { pluginId: PROBE_ID });
+    r.check("宠物窗带 pluginId 的 install 同样被窗口门禁拒", true, petInstall.ok === false && /设置窗/.test(String(petInstall.e)));
+
+    // 写盘类断言只在宿主被指到 temp/ 时跑（PET_AGENT_CONFIG_FILES 启动方式）；
+    // 否则一律不改写真实用户配置，只做只读断言。
+    const statusFiles = Array.isArray(allowed.v?.files) ? allowed.v.files : [];
+    const underTemp = statusFiles.length > 0 && statusFiles.every((f) => resolve(String(f.path)).startsWith(TEMP_ROOT + sep));
+    r.info("hook 配置落点", statusFiles.map((f) => f.path).join(" ； ") || "(空)");
+
+    let sampleForeign = "";
+    // 「他人条目未变」的比较口径：宿主用 serde_json 整文件重写（BTreeMap 按键排序），
+    // 键序会被归一 —— 两侧都按键排序后比较（与 Rust 单测同口径），键序差异不算改动。
+    const canon = (value) => {
+      if (Array.isArray(value)) return value.map(canon);
+      if (value && typeof value === "object") {
+        const out = {};
+        for (const k of Object.keys(value).sort()) out[k] = canon(value[k]);
+        return out;
+      }
+      return value;
+    };
+    const foreignOf = (text) => {
+      const v = JSON.parse(text);
+      return JSON.stringify([canon(v.hooks.PreToolUse[0].hooks[0]), canon(v.hooks.Stop[0].hooks[0])]);
+    };
+    if (underTemp) {
+      const sample = JSON.stringify(
+        {
+          theme: "dark",
+          hooks: {
+            PreToolUse: [{ hooks: [
+              { type: "command", command: "other-tool --notify", timeout: 5 },
+              { type: "command", command: `"D:\\old\\desktop-pet.exe" --pet-hook pre`, timeout: 2 },
+            ] }],
+            Stop: [{ hooks: [{ type: "command", command: "keep.sh", timeout: 3 }] }],
+          },
+        },
+        null,
+        2,
+      );
+      for (const f of statusFiles) writeFileSync(f.path, sample);
+      sampleForeign = foreignOf(sample);
+
+      const installRes = await sc.ev(`window.__hookProbes.settings.call("install")`);
+      r.check(
+        "声明并同意后 install 成功（每个文件回显条数）",
+        true,
+        installRes.ok === true && Array.isArray(installRes.v?.files) && installRes.v.files.every((f) => f.managed > 0 && !f.error),
+      );
+      const afterInstall = (await sCall("agent_hooks_status")).v;
+      r.check("install 后 status 回显条数与文件数一致", afterInstall.managed, statusFiles.length * afterInstall.expectedPerFile);
+      for (const f of statusFiles) {
+        const text = readFileSync(f.path, "utf8");
+        r.check("install 后样例只有自家条目在增", afterInstall.expectedPerFile, text.split("--pet-hook").length - 1);
+        r.check("install 后他人 hook 条目逐字段未变（键序由宿主归一）", sampleForeign, foreignOf(text));
+      }
+    } else {
+      r.info(
+        "跳过写盘断言",
+        "hook 配置未指向 temp/：install 与「连带卸载」断言不做（会改写真实用户配置）；" +
+          '用 PET_AGENT_CONFIG_FILES="<temp>\\a.json;<temp>\\b.json" npm run dev:debug 启动可跑全量',
+      );
+    }
+
+    // ---------- 撤销授权两条分支（CONTEXT.md 生命周期） ----------
+    // 先重载设置窗：manifest 改写后要拿到刷新过的权限列表（nav 的 data-search 带权限名）。
+    await reloadAndWait(sc);
+    r.check(
+      "设置页在 manifest 改写后刷新出 agent:hooks 权限",
+      true,
+      await waitUntil(sc, `document.querySelector('.nav-item[data-view=${JSON.stringify(PROBE_ID)}]')?.dataset.search?.includes('agent:hooks') === true`, 10_000),
+    );
+    // 重载把 window 上的探针句柄与桥缓存都清了：重新挂一次、再走一次 status 把缓存填上
+    await sc.ev(MOUNT_HOOK_PROBES);
+    const regrant = await sc.ev(`window.__hookProbes.settings.call("status")`);
+    r.check("重载后凭已授权记录直接放行（不再弹框）", true, regrant.ok === true);
+
+    // 所有点击都先等元素出现、缺了产出可读 FAIL —— 固定 sleep 赌渲染会在缺元素时抛
+    // TypeError 把整个套件打断（上一轮就是这么丢掉尾部汇总的）。
+    // 注意：撤销按钮是 **class** `btn-revoke`（settings/main.ts:158 用 el() 的第三参赋 className），
+    // 不是 id —— 上一轮用 getElementById 查它永远为 null，是脚本选择器写错，不是产品缺口。
+    const clickReady = async (selector) => {
+      const ready = await waitUntil(sc, `!!document.querySelector(${JSON.stringify(selector)})`, 8_000).catch(() => false);
+      if (ready) await sc.ev(`document.querySelector(${JSON.stringify(selector)}).click(); true`);
+      return ready;
+    };
+
+    const navOpened = await clickReady(`.nav-item[data-view=${JSON.stringify(PROBE_ID)}]`);
+    const hasRevokeBtn = navOpened && (await waitUntil(sc, `!!document.querySelector('.btn-revoke')`, 8_000).catch(() => false));
+    r.check("插件壳上出现「撤销授权」（class=btn-revoke，声明列表已刷新）", true, hasRevokeBtn);
+
+    // 分支一「只撤能力」：不写 hook 配置文件，任何模式都可跑
+    const beforeSnap = JSON.stringify((await sCall("agent_hooks_status")).v);
+    const beforeBytes = underTemp ? statusFiles.map((f) => readFileSync(f.path, "utf8")) : [];
+    r.check(
+      "撤销前桥缓存里有 agent:hooks（下面「失效」才是真的变化）",
+      true,
+      (await sc.ev(`(async () => (await import('/src/runtime/bridge.ts')).grantedCapabilities(${JSON.stringify(PROBE_ID)}).includes('agent:hooks'))()`)) === true,
+    );
+    if (hasRevokeBtn) await clickReady(".btn-revoke");
+    const stripUp = hasRevokeBtn === true && (await waitUntil(sc, `document.getElementById('revoke-uninstall')?.checked === true`, 5_000).catch(() => false));
+    r.check("确认条默认勾选「同时卸载 hook」", true, stripUp);
+    if (stripUp) {
+      await sc.ev(`(() => { document.getElementById('revoke-uninstall').checked = false; return true; })()`);
+      await clickReady("#revoke-go");
+    }
+    r.check(
+      "「只撤能力」的回显",
+      true,
+      stripUp && (await waitUntil(sc, `document.querySelector('.btn-revoke')?.textContent.includes("仅能力") === true`, 8_000).catch(() => false)),
+    );
+    r.check(
+      "确认条执行后收起",
+      0,
+      stripUp ? await sc.ev(`document.querySelectorAll('#revoke-confirm').length`) : "撤销流程未执行（前一步失败）",
+    );
+    r.check("「只撤能力」不动 hook 配置（宿主回显不变）", beforeSnap, JSON.stringify((await sCall("agent_hooks_status")).v));
+    if (underTemp) {
+      r.check("「只撤能力」后样例文件字节不变", true, statusFiles.every((f, i) => readFileSync(f.path, "utf8") === beforeBytes[i]));
+    }
+    // 撤销后缓存失效是异步广播（host:permission-revoked）：轮询断言，别一次性查询竞态
+    r.check(
+      "「只撤能力」后桥的能力缓存失效",
+      true,
+      await waitUntil(sc, `(async () => !(await import('/src/runtime/bridge.ts')).grantedCapabilities(${JSON.stringify(PROBE_ID)}).includes('agent:hooks'))()`, 5_000),
+    );
+
+    // 分支二「连带卸载」：写盘，仅 temp 模式
+    if (underTemp) {
+      await clickReady(`.nav-item[data-view=pet]`);
+      await clickReady(`.nav-item[data-view=${JSON.stringify(PROBE_ID)}]`);
+      const hasBtn2 = await waitUntil(sc, `!!document.querySelector('.btn-revoke')`, 8_000).catch(() => false);
+      r.check("重新进入插件页后撤销按钮再次可用", true, hasBtn2);
+      if (hasBtn2) await clickReady(".btn-revoke");
+      const stripUp2 = hasBtn2 === true && (await waitUntil(sc, `document.getElementById('revoke-uninstall')?.checked === true`, 5_000).catch(() => false));
+      r.check("第二次确认条默认勾选（不取消，走连带卸载）", true, stripUp2);
+      if (stripUp2) await clickReady("#revoke-go");
+      r.check(
+        "「连带卸载」的回显",
+        true,
+        stripUp2 && (await waitUntil(sc, `document.querySelector('.btn-revoke')?.textContent.includes("含卸载 hook") === true`, 8_000).catch(() => false)),
+      );
+      const clean = (await sCall("agent_hooks_status")).v;
+      r.check("「连带卸载」后配置文件干净", 0, clean.managed ?? -1);
+      for (const f of statusFiles) {
+        const text = readFileSync(f.path, "utf8");
+        r.check("卸载后 --pet-hook 条目归零", 0, text.split("--pet-hook").length - 1);
+        r.check("卸载后他人 hook 条目逐字段未变（键序由宿主归一）", sampleForeign, foreignOf(text));
+      }
+    }
+
+    await sc.ev(`(async () => { await window.__hookHost.unmount(${JSON.stringify(PROBE_ID)}); document.getElementById('hook-probe-slot')?.remove(); return true; })()`);
+    await clickReady(`.nav-item[data-view=pet]`);
 
     const noMod = await sCall("hotkey_set", { accelerator: "P" });
     r.check("不带修饰键的组合被拒", true, !noMod.ok && /修饰键/.test(String(noMod.e)));

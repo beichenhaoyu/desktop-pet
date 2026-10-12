@@ -6,6 +6,8 @@
 //! 那要等 Web Worker 宿主才收口（见 ARCHITECTURE.md 信任模型）。
 use tauri::Window;
 
+use crate::services::permission::PermissionState;
+
 /// 跨会话生效的系统级开关、授权表、形象与 hook 配置：只认设置窗
 pub fn settings(window: &Window, what: &str) -> Result<(), String> {
     require(window.label(), "settings", "设置窗", what)
@@ -14,6 +16,20 @@ pub fn settings(window: &Window, what: &str) -> Result<(), String> {
 /// 影响宠物本体显隐与宿主窗口自身的动作：只认宠物窗
 pub fn pet(window: &Window, what: &str) -> Result<(), String> {
     require(window.label(), "pet", "宠物窗", what)
+}
+
+/// 插件调用面的第二道门：命令带 `pluginId` 时，除窗口门禁外还要该能力已授权。
+/// 与 BLE 命令的 `require_granted` 同一口径（兜的是「绕过 JS 桥直接 invoke」）；
+/// 同 realm 的插件之间仍分不出，那条缺口要等 Web Worker 宿主。
+pub fn plugin_capability(state: &PermissionState, plugin_id: &str, capability: &str) -> Result<(), String> {
+    if !crate::commands::plugins::is_safe_id(plugin_id) {
+        return Err("invalid plugin id".into());
+    }
+    if state.is_granted(plugin_id, capability) {
+        Ok(())
+    } else {
+        Err(format!("未授权 {capability}：需要 manifest 声明且已同意"))
+    }
 }
 
 fn require(label: &str, expected: &str, name: &str, what: &str) -> Result<(), String> {
@@ -26,7 +42,8 @@ fn require(label: &str, expected: &str, name: &str, what: &str) -> Result<(), St
 
 #[cfg(test)]
 mod tests {
-    use super::require;
+    use super::{plugin_capability, require};
+    use crate::services::permission::PermissionState;
 
     #[test]
     fn only_the_named_window_passes() {
@@ -37,5 +54,20 @@ mod tests {
         );
         // overlay / consent 这类窗口都不在放行名单里
         assert!(require("overlay-com-pet-hr-ble", "settings", "设置窗", "撤销授权").is_err());
+    }
+
+    /// B2：带 pluginId 的插件调用面 —— 未授权被拒、授权后放行、逐项校验、非法 id 被拒
+    #[test]
+    fn plugin_capability_requires_grant_and_valid_id() {
+        let state = PermissionState::new();
+        assert!(plugin_capability(&state, "zz.probe", "agent:hooks").is_err());
+        state.grant("zz.probe", &["agent:hooks".to_string()]);
+        assert!(plugin_capability(&state, "zz.probe", "agent:hooks").is_ok());
+        // 逐项校验：同一插件没授权的另一个能力仍然被拒
+        assert!(plugin_capability(&state, "zz.probe", "ble:scan").is_err());
+        // 别的插件没被连带授权
+        assert!(plugin_capability(&state, "zz.other", "agent:hooks").is_err());
+        // 非法 id 一律拒（与 is_safe_id 对齐）
+        assert!(plugin_capability(&state, "../evil", "agent:hooks").is_err());
     }
 }
