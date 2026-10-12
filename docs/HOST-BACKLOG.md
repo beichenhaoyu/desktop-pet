@@ -33,12 +33,12 @@ MVP 范围：<这一轮只做什么>
 |---|---|---|---|---|---|---|
 | S1 | 发布 0.2.0 便携包 | 工程发布 | **搁置**（用户 2026-10-11 定的口径：等 B2/B3/B4/A9 落地后一起出包，省一次重编与一轮 `verify:release`；版本号改动与文档提交同样压到那时） | — | — | — |
 | B2 | `agent:hooks` 受控能力：钩子配置从设置窗移交到插件页 | 本体功能 + 安全边界 | **已放行**（第二轮返工后 PM 全量重跑：cargo 72、`verify` **189/0**、`verify:agent` 53、`verify:release` 12、build 0；三条打回问题都修在脚本侧，根因见卡 §10 与提交说明） | — | `7b9b558` | — |
-| A9a | agent 桥：把 hook 装/卸入口接到自己的插件页（**补 B2 留下的空窗**） | 插件 | **已写执行卡**（`.dispatch/A股盯盘质量加固/cards/A9a-插件页承接hook入口.md`，**批次 3，优先派**） | B2（已满足） | — | — |
-| B3 | 本体气泡常驻状态行 + 节点台词分层 | 本体功能 | **已写执行卡**（`.dispatch/A股盯盘质量加固/cards/B3-气泡常驻状态行.md`，**批次 5**；T04 已回，几何结论见 adr/0003 修订） | ~~T04~~ 已解 | — | — |
-| B4 | Agent 适配器注册表 + 单联动事务（卸旧装新） | 本体功能 | 待排（**批次 6**）；T03 的两条缺陷已并入方案约束第 8 条 | B2（已满足） | — | — |
+| A9a | agent 桥：把 hook 装/卸入口接到自己的插件页（**补 B2 留下的空窗**） | 插件 | **已放行**（`.dispatch/A股盯盘质量加固/cards/A9a-插件页承接hook入口.md`；PM 重跑 `verify:agent` 53→**71**、`verify` 189 不变、cargo 72、build 0；HEAD 的 54 条断言标题逐条核对仍全在） | B2（已满足） | `f3be069` | — |
+| B3 | 本体气泡常驻状态行 + 节点台词分层 | 本体功能 | **已写执行卡**（`.dispatch/A股盯盘质量加固/cards/B3-气泡常驻状态行.md`，**批次 4**；T04 已回，几何结论见 adr/0003 修订） | ~~T04~~ 已解 | — | — |
+| B4 | Agent 适配器注册表 + 单联动事务（卸旧装新） | 本体功能 | 待排（**批次 5**）；T03 的两条缺陷已并入方案约束第 8 条 | B2（已满足） | — | — |
 | A10 | A股封板判定改用交易所涨跌停价 | 插件缺陷 | **已放行**（`.dispatch/A股盯盘质量加固/cards/A10-封板判定与权重注释.md`，批次 2；单测 397 条、6 处变异抽查全杀掉、`verify:astock` 的 10 条红与它无关） | — | `1cd4b5b` | — |
-| A11 | `verify:astock` 源归属断言改回源无关（回归套件的测试缺陷） | 工程/回归 | **已写执行卡**（`.dispatch/A股盯盘质量加固/cards/A11-回归源无关化.md`，**批次 4**） | B2（已满足） | — | — |
-| A9b | agent 桥：去掉会话状态卡 + 多 Agent 单选（依赖本体新能力） | 插件 | 待排（**批次 7**），**等 B3/B4 放行** | B3 B4 | — | — |
+| A11 | `verify:astock` 源归属断言改回源无关（回归套件的测试缺陷） | 工程/回归 | **已写执行卡**（`.dispatch/A股盯盘质量加固/cards/A11-回归源无关化.md`，**批次 3 —— 下一批**） | B2（已满足） | — | — |
+| A9b | agent 桥：去掉会话状态卡 + 多 Agent 单选（依赖本体新能力） | 插件 | 待排（**批次 6**），**等 B3/B4 放行** | B3 B4 | — | — |
 
 **两处调度纠正（2026-10-10 规划方复核）**：
 
@@ -248,7 +248,7 @@ MVP 范围：<这一轮只做什么>
 | `src/runtime/`（插件运行时、bridge、widget 宿主、订阅回收） | `npm run verify` | **189** |
 | `src-tauri/`（Rust 能力服务、gate、fsutil、hotkeys） | `cargo test --lib` + `npm run verify` + 对应 `verify:<域>` | cargo **72** / verify **189** |
 | `http` 能力 / charset 解码 / 重定向 | `npm run verify:http` | 21 |
-| Agent hook 链路 | `npm run verify:agent` | **53** |
+| Agent hook 链路 | `npm run verify:agent` | **71**（A9a 加了插件页端到端组；`cargo` 72 / `verify` 189 同批实测） |
 | 待办链路 | `npm run verify:todo` | 30 |
 | A股插件 | `npm run verify:astock` | 154（**2026-10-12 实跑 145 passed / 10 failed，总数 155** —— 红的 10 条全是"钉死某家源"，本机东财通路当天恢复所致，与代码无关；**A11** 负责源无关化，在它放行前别拿 154 当打回依据） |
 | `plugins/com.pet.astock` 的纯函数（三源解析 / 节流 / 提醒判定 / 五档数据） | `npm run unit:astock`（常驻单测，零 GUI、零联网、秒级） | market **247** / aux **150** |
@@ -277,5 +277,10 @@ MVP 范围：<这一轮只做什么>
   `settings.json`，serde_json 默认按 BTreeMap 排键（`HEAD` 起就是这样，不是某张卡引入的回归）。
   所以"别人条目逐字节未变"不是可承诺的口径 —— 断言只能按**键排序后的规范串**比内容，
   要保住原键序得引入 `preserve_order`，属新增依赖，本轮禁止。
+- **同意框在「激活插件」时一次性弹，不是首次调用时弹**（2026-10-12 核实）：`src/runtime/plugin-runtime.ts:107-115`
+  在激活流程里逐个 `permission_check` 收集未授权的能力，然后**一次** `permission_request` 全要；
+  `src/runtime/bridge.ts:78` 的 `gated()` 只在"调用时仍缺"才补弹（例如激活后才改过 manifest，或上次被拒）。
+  写这类断言时**断言"弹过同意框"并核对授权记录**，不要钉死触发时机 —— A9a 的执行者就是按这条把断言写对的，
+  而 PM 的卡在 §6 里写"首次调用会弹框"是错的。**派卡前先把 PLUGIN_SDK §2 对一遍**。
 - std Mutex 一律 `unwrap_or_else(|p| p.into_inner())`。
 - 宿主日志：`%LOCALAPPDATA%\com.desktoppet.pet\logs\host.log`，验收时先看它再猜。
