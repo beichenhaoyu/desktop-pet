@@ -32,12 +32,13 @@ MVP 范围：<这一轮只做什么>
 | 卡 | 标题 | 类型 | 状态 | 依赖 | 提交 | 评审 |
 |---|---|---|---|---|---|---|
 | S1 | 发布 0.2.0 便携包 | 工程发布 | **搁置**（用户 2026-10-11 定的口径：等 B2/B3/B4/A9 落地后一起出包，省一次重编与一轮 `verify:release`；版本号改动与文档提交同样压到那时） | — | — | — |
-| B2 | `agent:hooks` 受控能力：钩子配置从设置窗移交到插件页 | 本体功能 + 安全边界 | **打回（2026-10-12 PM 补跑后）**：实现侧全绿（cargo 72、`verify:agent` 53、`verify:release` 12、`build` 0），但 `npm run verify` **4 条 FAIL + TypeError 打断套件**；三条问题与放行条件写在卡 §10 | — | — | — |
-| B3 | 本体气泡常驻状态行 + 节点台词分层 | 本体功能 | **已写执行卡**（`.dispatch/A股盯盘质量加固/cards/B3-气泡常驻状态行.md`，**批次 4**；T04 已回，几何结论见 adr/0003 修订） | ~~T04~~ 已解 | — | — |
-| B4 | Agent 适配器注册表 + 单联动事务（卸旧装新） | 本体功能 | 待排（**批次 5**），**等 B2 放行**（原写"可与 B2 并行"经核实不成立，见下；T03 的两条缺陷已并入方案约束第 8 条） | B2 | — | — |
+| B2 | `agent:hooks` 受控能力：钩子配置从设置窗移交到插件页 | 本体功能 + 安全边界 | **已放行**（第二轮返工后 PM 全量重跑：cargo 72、`verify` **189/0**、`verify:agent` 53、`verify:release` 12、build 0；三条打回问题都修在脚本侧，根因见卡 §10 与提交说明） | — | `7b9b558` | — |
+| A9a | agent 桥：把 hook 装/卸入口接到自己的插件页（**补 B2 留下的空窗**） | 插件 | **已写执行卡**（`.dispatch/A股盯盘质量加固/cards/A9a-插件页承接hook入口.md`，**批次 3，优先派**） | B2（已满足） | — | — |
+| B3 | 本体气泡常驻状态行 + 节点台词分层 | 本体功能 | **已写执行卡**（`.dispatch/A股盯盘质量加固/cards/B3-气泡常驻状态行.md`，**批次 5**；T04 已回，几何结论见 adr/0003 修订） | ~~T04~~ 已解 | — | — |
+| B4 | Agent 适配器注册表 + 单联动事务（卸旧装新） | 本体功能 | 待排（**批次 6**）；T03 的两条缺陷已并入方案约束第 8 条 | B2（已满足） | — | — |
 | A10 | A股封板判定改用交易所涨跌停价 | 插件缺陷 | **已放行**（`.dispatch/A股盯盘质量加固/cards/A10-封板判定与权重注释.md`，批次 2；单测 397 条、6 处变异抽查全杀掉、`verify:astock` 的 10 条红与它无关） | — | `1cd4b5b` | — |
-| A11 | `verify:astock` 源归属断言改回源无关（回归套件的测试缺陷） | 工程/回归 | **已写执行卡**（`.dispatch/A股盯盘质量加固/cards/A11-回归源无关化.md`，**批次 3**） | B2 | — | — |
-| A9 | agent 桥改造：插件页承接配置 + 多 Agent 单选 + 去掉会话卡片 | 插件 | 待排（**批次 6**），**等 B2/B3/B4 全部放行** | B2 B3 B4 | — | — |
+| A11 | `verify:astock` 源归属断言改回源无关（回归套件的测试缺陷） | 工程/回归 | **已写执行卡**（`.dispatch/A股盯盘质量加固/cards/A11-回归源无关化.md`，**批次 4**） | B2（已满足） | — | — |
+| A9b | agent 桥：去掉会话状态卡 + 多 Agent 单选（依赖本体新能力） | 插件 | 待排（**批次 7**），**等 B3/B4 放行** | B3 B4 | — | — |
 
 **两处调度纠正（2026-10-10 规划方复核）**：
 
@@ -47,6 +48,11 @@ MVP 范围：<这一轮只做什么>
    同屏两层被几何否掉（要它就得加高窗口，那是另一个决定）。数字、被否掉的三条路与理由记在
    [adr/0003](adr/0003-session-visibility-on-pet-bubble.md) 的「修订」一节，B3 的卡片照修订后的口径写。
 3. 另外：所有需要跑 `npm run verify*` 的卡实际上**互斥**（CDP 端口 9223 固定 + 单实例锁 + 会起 GUI），排批时按串行处理，不与只读取证卡混在同一批。
+4. **A9 已拆成 A9a / A9b（2026-10-12，B2 放行当天发现的真空窗）**：B2 按 ADR-0001 删掉了宿主设置窗那张
+   「Agent 事件接入」卡片，但 agent 桥还没有自己的 hook 装/卸入口 —— 于是**从 B2 落地到 A9 落地之间，界面上没有任何地方能安装或卸载 hook**
+   （已装好的条目照常工作，因为配置文件是持久的）。原 A9 还同时压着 B3（常驻行）与 B4（多 Agent 单选）两个依赖，排在最后，
+   等于把这个空窗留在整波的尾巴上。拆开：**A9a 只依赖 B2，提到批次 3 优先补上入口**；A9b（去会话卡片 + 多 Agent 单选）留到最后。
+   这也是"删入口"类改动的通用规矩：**卡片删除必须和替代入口同批或更晚**，下一波别再分开派。
 
 状态词表沿用 PLUGIN-BACKLOG：`待排` / `已派` / `进行中` / `待评审` / `已放行` / `搁置`。
 术语与决策见 [../CONTEXT.md](../CONTEXT.md) 与 [adr/0001](adr/0001-agent-hooks-capability-in-plugin-page.md)、
@@ -238,14 +244,14 @@ MVP 范围：<这一轮只做什么>
 
 | 改动落点 | 必须跑 | 上一轮实测断言数（**下限，不许倒退**） |
 |---|---|---|
-| `src/pet/`（状态机、图集切片、点击穿透、气泡） | `npm run verify` + `npm run verify:skin`（动了形象/协议）+ `verify:game`（动了显隐） | verify 147 / skin 26 / game 15 |
-| `src/runtime/`（插件运行时、bridge、widget 宿主、订阅回收） | `npm run verify` | 147 |
-| `src-tauri/`（Rust 能力服务、gate、fsutil、hotkeys） | `cargo test --lib` + `npm run verify` + 对应 `verify:<域>` | cargo 70 |
+| `src/pet/`（状态机、图集切片、点击穿透、气泡） | `npm run verify` + `npm run verify:skin`（动了形象/协议）+ `verify:game`（动了显隐） | verify **189** / skin 26 / game 15 |
+| `src/runtime/`（插件运行时、bridge、widget 宿主、订阅回收） | `npm run verify` | **189** |
+| `src-tauri/`（Rust 能力服务、gate、fsutil、hotkeys） | `cargo test --lib` + `npm run verify` + 对应 `verify:<域>` | cargo **72** / verify **189** |
 | `http` 能力 / charset 解码 / 重定向 | `npm run verify:http` | 21 |
-| Agent hook 链路 | `npm run verify:agent` | 50 |
+| Agent hook 链路 | `npm run verify:agent` | **53** |
 | 待办链路 | `npm run verify:todo` | 30 |
 | A股插件 | `npm run verify:astock` | 154（**2026-10-12 实跑 145 passed / 10 failed，总数 155** —— 红的 10 条全是"钉死某家源"，本机东财通路当天恢复所致，与代码无关；**A11** 负责源无关化，在它放行前别拿 154 当打回依据） |
-| `plugins/com.pet.astock` 的纯函数（三源解析 / 节流 / 提醒判定 / 五档数据） | `npm run unit:astock`（常驻单测，零 GUI、零联网、秒级） | market 243 / aux 144 |
+| `plugins/com.pet.astock` 的纯函数（三源解析 / 节流 / 提醒判定 / 五档数据） | `npm run unit:astock`（常驻单测，零 GUI、零联网、秒级） | market **247** / aux **150** |
 | 任何新增脚本 / 协议源 / CSP / 打包相关 | `npm run verify:release` | 12 |
 | Cargo 依赖变动 | `cargo tree -p tauri` 必须仍是 **2.12.0**，且 `npm run verify:release` | — |
 
