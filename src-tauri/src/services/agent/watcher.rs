@@ -22,6 +22,15 @@ pub(super) fn complete_line_prefix(start: u64, bytes: &[u8]) -> Option<(usize, u
     Some((end, start + end as u64 + 1))
 }
 
+/// 读增量该从哪一字节开始：没记过从 0 起；记过且不超过当前长度就沿用；
+/// 记录比文件还大说明文件被 `enforce_inbox_cap` 清空或轮换过，**从头再读**而不是钳到末尾。
+pub(super) fn resume_offset(stored: Option<u64>, size: u64) -> u64 {
+    match stored {
+        Some(offset) if offset <= size => offset,
+        _ => 0,
+    }
+}
+
 /// 读一个 phase 文件的增量。只消费到最后一个换行，半行留给下一次。
 ///
 /// 偏移量只在真正消费掉若干整行之后才前进：原先是先写成 `size` 再读，
@@ -33,8 +42,7 @@ fn drain_file(state: &Arc<AgentState>, app: &AppHandle, path: &Path) {
 
     let start = {
         let offsets = state.offsets.lock().unwrap_or_else(|p| p.into_inner());
-        // 文件比记录的偏移小 = 被截断或轮换，从头再读
-        offsets.get(path).copied().unwrap_or(0).min(size)
+        resume_offset(offsets.get(path).copied(), size)
     };
     if start == size {
         return;

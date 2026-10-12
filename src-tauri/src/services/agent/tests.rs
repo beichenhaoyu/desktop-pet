@@ -1,5 +1,5 @@
 use super::state::{bounded_str, event_detail, prompt_title};
-use super::watcher::complete_line_prefix;
+use super::watcher::{complete_line_prefix, resume_offset};
 use serde_json::{json, Value};
 
 use super::*;
@@ -140,4 +140,26 @@ fn bounded_str_keeps_exactly_max_chars() {
     let got = bounded_str(&json!({ "session_id": long }), "session_id", 96);
     assert_eq!(got.chars().count(), 96);
     assert_eq!(got, "超".repeat(96));
+}
+
+#[test]
+fn unseen_file_starts_at_zero() {
+    assert_eq!(resume_offset(None, 500), 0);
+}
+
+#[test]
+fn offset_inside_the_file_is_kept() {
+    assert_eq!(resume_offset(Some(120), 500), 120);
+}
+
+#[test]
+fn offset_at_end_of_file_means_no_new_bytes() {
+    assert_eq!(resume_offset(Some(500), 500), 500);
+}
+
+#[test]
+fn truncated_inbox_is_read_from_the_start_again() {
+    // enforce_inbox_cap 会把超过 2 MiB 的 phase 文件清空重记。
+    // 此时内存里的旧偏移远大于新的 size —— 必须回退到 0，否则这个文件永久失联。
+    assert_eq!(resume_offset(Some(2 * 1024 * 1024), 1024), 0);
 }
