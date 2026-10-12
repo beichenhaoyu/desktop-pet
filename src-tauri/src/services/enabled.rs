@@ -1,0 +1,219 @@
+//! 插件启停清单（C1）：唯一事实来源落到宿主磁盘上。
+//!
+//! 原先这份清单存在 WebView 的 localStorage 里，而它决定「哪些插件会被激活」——
+//! 属于跨会话状态。清一次 WebView 缓存（或换 webview 数据目录）用户给的启停就全没了，
+//! 而且插件 JS 在同一 realm 里也能改写它。现在：
+//!   * 读写都走宿主命令，落 `<app_data>/plugins-enabled.json`，原子写（fsutil）
+//!   * 写只认设置窗（与其他跨会话开关同一口径，见 gate.rs）
+//!   * 老用户的第一次启动由宠物窗运行时做一次性迁移（`plugin_enabled_migrate`，
+//!     只在文件还不存在时生效，重复调用是 no-op）
+use std::collections::HashSet;
+use std::fs;
+use std::path::PathBuf;
+
+use serde_json::Value;
+use tauri::{AppHandle, Emitter, Manager};
+
+use crate::fsutil::write_atomic;
+
+const FILE_NAME: &str = "plugins-enabled.json";
+
+fn file(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|dir| dir.join(FILE_NAME))
+        .map_err(|e| e.to_string())
+}
+
+/// 只保留符合 id 词表的那些（清单里可能有指向已删除插件的残留 id，
+/// 那类 id 在 reconcile 时本来就会被忽略，但别让它把 `../x` 这种形态带进文件）。
+fn sanitize(ids: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for id in ids {
+        if !crate::ids::is_safe_id(id) {
+            continue;
+        }
+        if seen.insert(id.clone()) {
+            out.push(id.clone());
+        }
+    }
+    out
+}
+
+/// 读清单。返回 `None` = 还没写过（新安装，或老用户尚未迁移）。
+/// 文件在但读不动/形状不对时按 `None` 处理并留日志 —— 这条恢复路径由迁移那一步接管，
+/// 但**不在此处覆盖原文件**（写只发生在 set / migrate）。
+fn read_ids(path: &PathBuf) -> Result<Option<Vec<String>>, String> {
+    let raw = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("读取启停清单失败: {e}")),
+    };
+    match serde_json::from_str::<Value>(&raw) {
+        Ok(value) => Ok(value.get("ids").and_then(Value::as_array).map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })),
+        Err(e) => {
+            log::warn!("启停清单读坏了，本次按未初始化处理并等运行时迁移: {path:?}: {e}");
+            Ok(None)
+        }
+    }
+}
+
+fn write_ids(app: &AppHandle, ids: &[String]) -> Result<(), String> {
+    let path = file(app)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("创建宿主数据目录失败: {e}"))?;
+    }
+    let json = serde_json::to_string_pretty(&serde_json::json!({ "ids": ids }))
+        .map_err(|e| e.to_string())?;
+    write_atomic(&path, json.as_bytes())
+}
+
+#[tauri::command]
+pub fn plugin_enabled_list(app: AppHandle) -> Result<Option<Vec<String>>, String> {
+    read_ids(&file(&app)?)
+}
+
+/// 设置窗写启停清单。读回的值由宿主给出，不信任前端传来的顺序与重复。
+/// 写完向所有窗口广播 `host:enabled-changed`：每个窗口手里是一份同步缓存，
+/// 谁写的人都必须让别窗知道，否则设置页会拿旧名单判定「这个插件没启用」而不挂它的页面。
+#[tauri::command]
+pub fn plugin_enabled_set(
+    app: AppHandle,
+    window: tauri::Window,
+    ids: Vec<String>,
+) -> Result<Vec<String>, String> {
+    crate::gate::settings(&window, "改动插件启停清单")?;
+    let cleaned = sanitize(&ids);
+    write_ids(&app, &cleaned)?;
+    let _ = app.emit("host:enabled-changed", &cleaned);
+    Ok(cleaned)
+}
+
+/// 一次性迁移：把 WebView 里那份旧清单搬进宿主。
+/// 只认宠物窗里的运行时，且**只在文件还不存在（或读坏了）时**写入 —— 之后重复调用
+/// 一律原样回读现有那份，免得某个带着旧 localStorage 的窗口把用户最新的启停覆盖回去。
+/// 返回值就是宿主认定的那份，调用方直接拿来用（不用自己猜过滤结果）。
+#[tauri::command]
+pub fn plugin_enabled_migrate(
+    app: AppHandle,
+    window: tauri::Window,
+    ids: Vec<String>,
+) -> Result<Vec<String>, String> {
+    crate::gate::pet(&window, "迁移插件启停清单")?;
+    let path = file(&app)?;
+    if let Some(existing) = read_ids(&path)? {
+        return Ok(existing);
+    }
+    let cleaned = sanitize(&ids);
+    write_ids(&app, &cleaned)?;
+    let _ = app.emit("host:enabled-changed", &cleaned);
+    log::info!("已从 WebView 迁移插件启停清单到宿主");
+    Ok(cleaned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("pet-enabled-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("建临时目录");
+        dir
+    }
+
+    /// 文件层的读写与形状判定（命令层要 AppHandle，这里把同一份逻辑对着临时目录测）
+    #[test]
+    fn missing_file_reads_as_none() {
+        let path = tmp_dir("missing").join(FILE_NAME);
+        assert_eq!(
+            read_ids(&path).unwrap(),
+            None,
+            "没写过 = None，让运行时去迁移"
+        );
+    }
+
+    #[test]
+    fn roundtrip_keeps_order_and_dedupe() {
+        let dir = tmp_dir("roundtrip");
+        let path = dir.join(FILE_NAME);
+        let ids = vec!["todo".to_string(), "com.pet.astock".to_string()];
+        fs::write(
+            &path,
+            serde_json::to_string(&serde_json::json!({ "ids": ids })).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(read_ids(&path).unwrap(), Some(ids));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_file_reads_as_none_without_touching_it() {
+        // 读坏要能被迁移那一步救回来（返回 None），但也绝不能在这里覆盖原文件：
+        // 半截清单被当成「没写过」再写回空表，等于把用户的启停抹了
+        let dir = tmp_dir("corrupt");
+        let path = dir.join(FILE_NAME);
+        fs::write(&path, "{ 这不是合法 json").unwrap();
+        assert_eq!(read_ids(&path).unwrap(), None);
+        assert!(
+            fs::read_to_string(&path).unwrap().contains("这不是合法"),
+            "读坏不该改写文件"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wrong_shape_reads_as_none() {
+        let dir = tmp_dir("shape");
+        let path = dir.join(FILE_NAME);
+        fs::write(&path, r#"{"ids":{"not":"an array"}}"#).unwrap();
+        assert_eq!(read_ids(&path).unwrap(), None);
+        let path2 = dir.join(FILE_NAME);
+        fs::write(&path2, r#"{"other":[]}"#).unwrap();
+        assert_eq!(read_ids(&path2).unwrap(), None, "缺 ids 键按未初始化处理");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sanitize_drops_ids_outside_the_vocab_and_duplicates() {
+        let input = vec![
+            "todo".to_string(),
+            "todo".to_string(),
+            "C:".to_string(),
+            "../evil".to_string(),
+            "a/b".to_string(),
+            "ab".to_string(),
+            "com.pet.hr-ble".to_string(),
+            "".to_string(),
+        ];
+        assert_eq!(
+            sanitize(&input),
+            vec!["todo".to_string(), "com.pet.hr-ble".to_string()],
+            "非法 id 与重复项都该被挡在文件外"
+        );
+    }
+
+    #[test]
+    fn empty_list_is_a_valid_state() {
+        // 「全部停用」是有意义的状态，必须与「还没写过（None）」区分开
+        let dir = tmp_dir("empty");
+        let path = dir.join(FILE_NAME);
+        fs::write(
+            &path,
+            serde_json::to_string(&serde_json::json!({ "ids": [] })).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(read_ids(&path).unwrap(), Some(vec![]));
+        assert!(
+            read_ids(&path).unwrap().is_some(),
+            "空表不该被误判成未初始化"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

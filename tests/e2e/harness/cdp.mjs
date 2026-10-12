@@ -183,9 +183,14 @@ export async function waitUntil(c, expression, timeoutMs = 20_000) {
 export async function openSettingsInvoker(port, petClient, timeoutMs = 25_000) {
   const invoke = hostInvoke(petClient);
   await invoke("settings_show");
-  const target = await waitForPage(port, (t) => /localhost:1420\/settings\.html/.test(t.url), timeoutMs);
+  // dev 是 localhost:1420，打包版是 tauri.localhost —— 两边都要认（verify:release 用的就是后者）
+  const target = await waitForPage(
+    port,
+    (t) => /(localhost:1420|tauri\.localhost)\/settings\.html/.test(t.url),
+    timeoutMs,
+  );
   const client = await attach(port, (t) => t.webSocketDebuggerUrl === target.webSocketDebuggerUrl, 15_000);
-  await new Promise((res) => setTimeout(res, 1200)); // 等设置页把列表渲染出来，别抢它的首屏
+  await new Promise((res) => setTimeout(res, 1200));
   return {
     client,
     invoke: hostInvoke(client),
@@ -194,6 +199,36 @@ export async function openSettingsInvoker(port, petClient, timeoutMs = 25_000) {
       client.close();
     },
   };
+}
+
+/**
+ * 插件启停清单（C1 起唯一事实来源在宿主磁盘上）。
+ * 读：任何窗口都行；写：只认设置窗（gate::settings），所以写入必须有 settings 那一侧的 invoker。
+ * 回归脚本一律走这两个口 —— localStorage 里那个键现在只是「迁移前的旧副本」，
+ * 碰它等于测不到真正的那份状态。
+ */
+export async function readEnabledIds(invoke) {
+  const r = await invoke("plugin_enabled_list");
+  return r.ok && Array.isArray(r.v) ? r.v : [];
+}
+
+export async function writeEnabledIds(settingsInvoke, ids) {
+  const r = await settingsInvoke("plugin_enabled_set", { ids });
+  if (!r.ok) throw new Error(`写启停清单失败: ${r.e}`);
+  return r.v;
+}
+
+/**
+ * 写完清单后让宠物窗的运行时跟上（脚本从设置窗写，宠物窗不会收到 host:plugin-toggled）。
+ * reconcile 会自己向宿主重取清单，所以这一步不需要把 ids 再传一遍。
+ */
+export async function reconcilePetWindow(petClient) {
+  return petClient.ev(`(async () => {
+    const rt = await import('/src/runtime/plugin-runtime.ts');
+    const list = await window.__TAURI_INTERNALS__.invoke('plugins_list');
+    await rt.reconcile(list);
+    return (await rt.loadEnabled()).join(',');
+  })()`);
 }
 
 /**

@@ -7,7 +7,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { argv, env } from "node:process";
 
-import { attach, createReport, hostInvoke, reloadAndWait, waitUntil } from "./harness/cdp.mjs";
+import { attach, createReport, hostInvoke, openSettingsInvoker, readEnabledIds, reloadAndWait, waitUntil, writeEnabledIds } from "./harness/cdp.mjs";
 import { PROBE_ID, removeFixtures, writeFixtures } from "./harness/fixtures.mjs";
 
 const skipBuild = argv.includes("--skip-build");
@@ -72,8 +72,12 @@ try {
     r.check("图集解码成功且尺寸是 petdex v1 布局", "1536x1872", decoded);
 
     r.group("宿主自身在 CSP 下加载插件（真实启动路径，非 CDP 发起）");
-    const prev = await c.ev(`localStorage.getItem('host:enabled-plugins') ?? '[]'`);
-    await c.ev(`localStorage.setItem('host:enabled-plugins', JSON.stringify([${JSON.stringify(PROBE_ID)}]))`);
+    // 启停清单归宿主（C1）：写只认设置窗，打包版也一样（这一组同时在验打包版的门禁与协议）
+    const prev = await readEnabledIds(invoke);
+    const settingsWin = await openSettingsInvoker(PORT, c).catch(() => null);
+    if (settingsWin) await writeEnabledIds(settingsWin.invoke, [PROBE_ID]);
+    else r.check("打包版能唤出设置窗（写启停清单要用）", true, false);
+    await settingsWin?.close().catch(() => undefined);
     await reloadAndWait(c);
     // 刚构建完的首次冷启动（杀软扫描 + WebView2 初始化）可能超过 20s，这里放宽
     const badgeSelector = `#widget-badge > div[data-plugin-id=${JSON.stringify(PROBE_ID)}]`;
@@ -113,7 +117,12 @@ try {
     r.check("违规条数", 0, violations.length);
     for (const n of c.noise.filter((n) => !n.startsWith("CSP:"))) console.log("   " + n);
 
-    await c.ev(`localStorage.setItem('host:enabled-plugins', ${JSON.stringify(prev)})`);
+    // 恢复用户那份清单（写仍然只认设置窗）
+    {
+      const back = await openSettingsInvoker(PORT, c).catch(() => null);
+      if (back) await writeEnabledIds(back.invoke, prev).catch(() => undefined);
+      await back?.close().catch(() => undefined);
+    }
   } finally {
     exitCode = r.summary() ? 1 : 0;
     c.close();

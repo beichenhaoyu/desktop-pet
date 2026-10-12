@@ -8,11 +8,21 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { join, resolve, sep } from "node:path";
 import { argv, env } from "node:process";
 import { spawnSync } from "node:child_process";
-import { attach, createReport, hostInvoke, listPages, openSettingsInvoker, reloadAndWait, waitForPage, waitUntil } from "./harness/cdp.mjs";
+import {
+  attach,
+  createReport,
+  hostInvoke,
+  listPages,
+  openSettingsInvoker,
+  readEnabledIds,
+  reloadAndWait,
+  waitForPage,
+  waitUntil,
+  writeEnabledIds,
+} from "./harness/cdp.mjs";
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
 const AGENT_ID = "com.pet.agent-bridge";
-const ENABLED_KEY = "host:enabled-plugins";
 const EXE = join(import.meta.dirname, "../../src-tauri/target/debug/desktop-pet.exe");
 // 没有 APPDATA 就拼不出收件目录，断言会打在 cwd 下一个同名相对路径上 ——
 // 那种失败和「宿主真的没收到事件」长得一模一样，必须当场拒绝开跑
@@ -66,7 +76,7 @@ function makeConsentPump(seen) {
 
 let c = null;
 let settings = null;
-let origEnabled = null;
+let origEnabled = [];
 let pumpDone = null;
 const grantedCaps = [];
 const consentPump = makeConsentPump(grantedCaps);
@@ -138,7 +148,7 @@ try {
   // ---------- 2) 采集 → 归一化 → 宠物 ----------
   c = await attach(PORT, isPetPage);
   const invoke = hostInvoke(c);
-  origEnabled = await c.ev(`localStorage.getItem(${JSON.stringify(ENABLED_KEY)}) ?? '[]'`);
+  origEnabled = await readEnabledIds(invoke);
   const token = `agent-${Date.now()}`;
   await c.ev(`window.__verifyToken = ${JSON.stringify(token)}; true`);
   pumpDone = consentPump.run(600_000); // 应答窗口必须比整轮长：宿主对同意框有 60 秒超时即视为拒绝 // 宿主对同意框有 60 秒超时即视为拒绝，应答窗口必须比整轮测试更长
@@ -234,7 +244,10 @@ try {
 
   r.group("启用插件");
   // 经运行时启停，不靠重载：重载会切断页面在途的 IPC（点击穿透每 250ms 问一次光标位置），
-  // 宿主随后把「孤儿回调」告警喷到页面上，被后面的零噪音断言算作本跑噪音
+  // 宿主随后把「孤儿回调」告警喷到页面上，被后面的零噪音断言算作本跑噪音。
+  // 清单归宿主（C1）：先由设置窗写进去，宠物窗这边只是 loadEnabled + activate。
+  settings = await openSettingsInvoker(PORT, c);
+  await writeEnabledIds(settings.invoke, [...origEnabled, AGENT_ID]);
   r.check(
     "插件经运行时激活",
     true,
@@ -243,7 +256,7 @@ try {
       const manifests = await window.__TAURI_INTERNALS__.invoke('plugins_list');
       const manifest = manifests.find((m) => m.id === ${JSON.stringify(AGENT_ID)});
       if (!manifest) throw new Error('宿主没扫到插件');
-      rt.setEnabledIds([...JSON.parse(${JSON.stringify(origEnabled)}), ${JSON.stringify(AGENT_ID)}]);
+      await rt.loadEnabled();
       await rt.activatePlugin(manifest);
       return rt.isActive(${JSON.stringify(AGENT_ID)});
     })()`),
@@ -291,8 +304,8 @@ try {
   }
 
   r.group("插件上线与授权");
-  // 撤销授权、读授权表都是「只认设置窗」的命令，先把设置窗唤出来
-  settings = await openSettingsInvoker(PORT, c);
+  // 撤销授权、读授权表都是「只认设置窗」的命令，先有设置窗的命令通道（上面启用时已经开过）
+  if (!settings) settings = await openSettingsInvoker(PORT, c);
   const fromPet = await invoke("permission_list");
   r.check("宠物窗读授权表被门禁拒绝", true, !fromPet.ok && /设置窗/.test(String(fromPet.e)));
   r.check("总线授权已就位（activate 时的首次发布）", true, await awaitGranted("bus:publish"));
@@ -648,14 +661,16 @@ try {
   consentPump.stop();
   await pumpDone?.catch(() => undefined);
   if (c) {
-    const wasEnabled = origEnabled !== null && JSON.parse(origEnabled).includes(AGENT_ID);
-    if (origEnabled !== null) {
+    const wasEnabled = origEnabled.includes(AGENT_ID);
+    {
       // 原样恢复用户那份清单。先前这里会把 agent-bridge 从清单里摘掉，
       // 用户本来开着它，跑完一轮回归它就悄悄下线了
+      if (!settings) settings = await openSettingsInvoker(PORT, c).catch(() => null);
+      if (settings) await writeEnabledIds(settings.invoke, origEnabled).catch(() => undefined);
       await c
         .ev(`(async () => {
           const rt = await import('/src/runtime/plugin-runtime.ts');
-          rt.setEnabledIds(JSON.parse(${JSON.stringify(origEnabled)}));
+          await rt.loadEnabled();
           ${wasEnabled ? "" : `await rt.deactivatePlugin(${JSON.stringify(AGENT_ID)});`}
           return true;
         })()`)

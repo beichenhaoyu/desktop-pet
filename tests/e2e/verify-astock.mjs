@@ -23,9 +23,11 @@ import {
   hostInvoke,
   listPages,
   openSettingsInvoker,
+  readEnabledIds,
   reloadAndWait,
   waitForPage,
   waitUntil,
+  writeEnabledIds,
 } from "./harness/cdp.mjs";
 import {
   SOURCE_IDS,
@@ -56,7 +58,6 @@ import {
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
 const PID = "com.pet.astock";
-const ENABLED_KEY = "host:enabled-plugins";
 const isPetPage = (t) => /localhost:1420\/(index\.html)?$/.test(t.url);
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 const r = createReport("A股盯盘插件（dev）");
@@ -109,7 +110,7 @@ async function pump(deadlineMs) {
 
 let c = null;
 let settings = null;
-let origEnabled = "[]";
+let origEnabled = [];
 
 try {
   await waitForPage(PORT, isPetPage, 60_000);
@@ -121,7 +122,7 @@ try {
 try {
   c = await attach(PORT, isPetPage);
   const invoke = hostInvoke(c);
-  origEnabled = await c.ev(`localStorage.getItem(${JSON.stringify(ENABLED_KEY)}) ?? '[]'`);
+  origEnabled = await readEnabledIds(invoke);
   // 整轮要 12~14 分钟（阶段二又加了快照/五档与北交所那几组），pump 必须活得比它长：
   // 一旦 pump 先退出，之后弹出的同意框没人点，那条请求会卡满宿主的 60s 才按拒绝返回（实测踩过）
   void pump(1_800_000);
@@ -139,9 +140,11 @@ try {
   await sleep(1200);
 
   r.group("启用并授权");
+  // 清单归宿主（C1）：先由设置窗写进去，宠物窗这边只是把缓存取回来再激活
+  await writeEnabledIds(settings.invoke, [...origEnabled, PID]);
   await c.ev(`(async () => {
     const rt = await import('/src/runtime/plugin-runtime.ts');
-    rt.setEnabledIds([...(JSON.parse(${JSON.stringify(origEnabled)}) ?? []), ${JSON.stringify(PID)}]);
+    await rt.loadEnabled();
     const ms = await window.__TAURI_INTERNALS__.invoke('plugins_list');
     await rt.activatePlugin(ms.find((m) => m.id === ${JSON.stringify(PID)}));
     return rt.isActive(${JSON.stringify(PID)});
@@ -1219,7 +1222,7 @@ try {
     // 失败要能说清是哪一类：还在活动列表里被 watcher 重新激活了，还是 destroy 真的没落地
     r.info("卡仍可见时的现场", JSON.stringify({
       active: await c.ev(`(async () => (await import('/src/runtime/plugin-runtime.ts')).isActive(${JSON.stringify(PID)}))()`),
-      enabled: await c.ev(`localStorage.getItem('host:enabled-plugins')`),
+      enabled: await readEnabledIds(invoke),
       mode: ((await invoke("store_get", { pluginId: PID, key: "config" })).v ?? {}).mode,
       windows: (await listPages(PORT)).filter((t) => /overlay\.html/.test(t.url)).map((t) => t.title),
     }));
@@ -1238,15 +1241,17 @@ try {
   stopped = true;
   if (c) {
     // 下线 + 撤销授权（连带清掉它的存储），最后换新文档
+    if (!settings) settings = await openSettingsInvoker(PORT, c).catch(() => null);
+    // 清单归宿主（C1）：恢复用户那份要由设置窗写
+    if (settings) await writeEnabledIds(settings.invoke, origEnabled).catch(() => undefined);
     await c
       .ev(`(async () => {
         const rt = await import('/src/runtime/plugin-runtime.ts');
-        rt.setEnabledIds(JSON.parse(${JSON.stringify(origEnabled)}));
+        await rt.loadEnabled();
         await rt.deactivatePlugin(${JSON.stringify(PID)});
         return true;
       })()`)
       .catch(() => undefined);
-    if (!settings) settings = await openSettingsInvoker(PORT, c).catch(() => null);
     if (settings) await settings.invoke("permission_revoke", { pluginId: PID }).catch(() => undefined);
     settings?.close();
     settings = null;

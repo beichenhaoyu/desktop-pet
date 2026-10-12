@@ -2,6 +2,7 @@ pub mod agent;
 pub mod agent_hooks;
 pub mod autostart;
 pub mod ble;
+pub mod enabled;
 pub mod fullscreen;
 pub mod hotkeys;
 pub mod http;

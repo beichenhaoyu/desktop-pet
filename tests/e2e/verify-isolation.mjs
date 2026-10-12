@@ -4,7 +4,17 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { argv, env } from "node:process";
-import { attach, createReport, hostInvoke, openSettingsInvoker, reloadAndWait, waitForPage, waitUntil } from "./harness/cdp.mjs";
+import {
+  attach,
+  createReport,
+  hostInvoke,
+  openSettingsInvoker,
+  readEnabledIds,
+  reloadAndWait,
+  waitForPage,
+  waitUntil,
+  writeEnabledIds,
+} from "./harness/cdp.mjs";
 import { NET_ID, PROBE_ID, SPOOF_DIR, removeFixtures, writeFixtures } from "./harness/fixtures.mjs";
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
@@ -74,6 +84,12 @@ let settings = null;
 async function revoke(pluginId) {
   if (!settings) settings = await openSettingsInvoker(PORT, c);
   return settings.invoke("permission_revoke", { pluginId });
+}
+
+/** 启停清单归宿主（C1）：写只认设置窗，脚本要改就先唤出设置窗再走真实通道 */
+async function setEnabled(ids) {
+  if (!settings) settings = await openSettingsInvoker(PORT, c);
+  return writeEnabledIds(settings.invoke, ids);
 }
 
 /**
@@ -146,13 +162,12 @@ try {
 
   // 上一轮崩溃可能把探针留在启用清单里：目录 watcher 会据此自动激活它，
   // 于是测试自己看到的 badge 里多出别人（宿主）挂的容器。起点钉死清单。
-  await c.ev(`(() => {
-    const key = 'host:enabled-plugins';
-    const prev = JSON.parse(localStorage.getItem(key) ?? '[]');
-    const clean = Array.isArray(prev) ? prev.filter((id) => id !== ${JSON.stringify(PROBE_ID)} && id !== ${JSON.stringify(NET_ID)}) : [];
-    localStorage.setItem(key, JSON.stringify(clean));
-    return JSON.stringify(prev);
-  })()`);
+  // C1 起这份清单归宿主，写只认设置窗 —— 别再碰 localStorage 那个旧键。
+  {
+    const prev = await readEnabledIds(invoke(c));
+    const clean = prev.filter((id) => id !== PROBE_ID && id !== NET_ID);
+    if (clean.join(",") !== prev.join(",")) await setEnabled(clean);
+  }
 
   // 页面若在测试中途重载（编辑触发的 HMR、崩溃），window 上的句柄与计数会凭空消失，
   // 表现为看不懂的 TypeError。这里埋一个世代标记，越界时给出可执行的提示。
@@ -236,8 +251,8 @@ try {
   // 上面都是测试主动 mount；这一组让宿主在页面加载时自己去 import 入口与 widget，
   // 覆盖 activatePlugin 那条 import（petplugin 协议的真实使用方）
   r.group("宿主自身激活路径");
-  const prevEnabled = await c.ev(`localStorage.getItem('host:enabled-plugins') ?? '[]'`);
-  await c.ev(`localStorage.setItem('host:enabled-plugins', JSON.stringify([${JSON.stringify(PROBE_ID)}]))`);
+  const prevEnabled = await readEnabledIds(invoke_);
+  await setEnabled([PROBE_ID]);
   await reloadAndWait(c);
   const badgeSelector = `#widget-badge > div[data-plugin-id=${JSON.stringify(PROBE_ID)}]`;
   const mountedByHost = await waitUntil(c, `!!document.querySelector(${JSON.stringify(badgeSelector)})`);
@@ -253,15 +268,39 @@ try {
         " 全部 id=" +
         JSON.stringify(await c.ev(`[...document.querySelectorAll('div[data-plugin-id]')].map(d=>d.dataset.pluginId+':'+d.dataset.region)`)) +
         " enabled=" +
-        JSON.stringify(await c.ev(`localStorage.getItem('host:enabled-plugins')`)),
+        JSON.stringify(await readEnabledIds(invoke_)),
     );
   }
   r.check("探针 widget 由宿主挂载成功", true, mountedByHost);
   r.check("入口 index.js 的 activate() 被调用", true, await c.ev(`(window.__probeActivated ?? 0) >= 1`));
+
+  r.group("启停清单归宿主：清掉 WebView 存储也不丢（C1）");
+  const beforeClear = await readEnabledIds(invoke_);
+  // 只删那个旧键：localStorage.clear() 会连游戏模式开关等别的 WebView 状态一起抹掉，
+  // 那不是本条要证的，也不该在回归里顺手改用户设置
+  await c.ev(`localStorage.removeItem('host:enabled-plugins'); true`);
+  await reloadAndWait(c);
+  r.check(
+    "旧键删掉并重启后，清单原样还在",
+    JSON.stringify(beforeClear),
+    JSON.stringify(await readEnabledIds(invoke_)),
+  );
+  r.check("探针仍在这份清单里（宿主那份才是来源）", true, (await readEnabledIds(invoke_)).includes(PROBE_ID));
+  // 反向对照：把旧键写成干扰值，运行时读的仍该是宿主那份
+  await c.ev(`localStorage.setItem('host:enabled-plugins', JSON.stringify(["zz.nobody"])); true`);
+  await reloadAndWait(c);
+  const afterPoison = await readEnabledIds(invoke_);
+  r.check("旧键被写成干扰值后仍以宿主那份为准", true, afterPoison.includes(PROBE_ID) && !afterPoison.includes("zz.nobody"));
+  r.check(
+    "宠物窗运行时的启停判定跟着宿主走",
+    true,
+    await c.ev(`(async () => { const rt = await import('/src/runtime/plugin-runtime.ts'); return (await rt.loadEnabled()).includes(${JSON.stringify(PROBE_ID)}); })()`),
+  );
+  await c.ev(`localStorage.removeItem('host:enabled-plugins'); true`);
   r.group("热安装 / 热移除（不重启宿主，仅靠 plugins 目录 watcher）");
   // 先造出「有启用记录但目录不存在」的状态：此时不该有任何激活
   removeFixtures(PLUGINS_DIR);
-  await c.ev(`localStorage.setItem('host:enabled-plugins', JSON.stringify([${JSON.stringify(PROBE_ID)}]))`);
+  await setEnabled([PROBE_ID]);
   await reloadAndWait(c);
   // 哨兵：整段测试期间页面一旦被重载，下面的结论就都不成立
   await c.ev(`window.__hotSentinel = "armed"`);
@@ -286,11 +325,24 @@ try {
   const swapped = await c.ev(`(async () => {
     const rt = await import('/src/runtime/plugin-runtime.ts');
     await rt.deactivatePlugin(${JSON.stringify(PROBE_ID)});
+    const wasActive = rt.isActive(${JSON.stringify(PROBE_ID)});
     const ms = await window.__TAURI_INTERNALS__.invoke('plugins_list');
-    await rt.activatePlugin(ms.find((m) => m.id === ${JSON.stringify(PROBE_ID)}));
-    return window.__probeFlavor ?? null;
+    const manifest = ms.find((m) => m.id === ${JSON.stringify(PROBE_ID)});
+    const enabledAtCall = rt.getEnabled();
+    await rt.activatePlugin(manifest);
+    return {
+      flavor: window.__probeFlavor ?? null,
+      wasActive,
+      activeAfter: rt.isActive(${JSON.stringify(PROBE_ID)}),
+      enabledAtCall,
+      declared: manifest?.permissions ?? null,
+    };
   })()`);
-  r.check("关掉再打开就跑的是新代码", "B", swapped);
+  if (swapped.flavor !== "B") {
+    // 三条早退路径都长得一样「没跑新代码」：清单里没它、权限没过、模块 URL 没变（命中旧缓存）
+    r.info("flavor 没换成 B 时的现场", JSON.stringify(swapped));
+  }
+  r.check("关掉再打开就跑的是新代码", "B", swapped.flavor);
   const sameVersion = (await invoke_("plugins_list")).v?.find((m) => m.id === PROBE_ID)?.version;
   r.check("前后是同一个版本号（改的只有代码）", "0.0.0", sameVersion);
   // 上面那次「关掉再打开」本身会跑一次 deactivate：计数器归零再往下断言，
@@ -415,7 +467,7 @@ try {
     }
   }
 
-  await c.ev(`localStorage.setItem('host:enabled-plugins', ${JSON.stringify(prevEnabled)})`);
+  await setEnabled(prevEnabled);
   await reloadAndWait(c);
 
   r.group("共享资源持有者计数（停用不得误伤他插件）");
@@ -932,7 +984,8 @@ try {
   if (sc) {
     await new Promise((res) => setTimeout(res, 3000));
     const installed = (await sCall("plugins_list")).v ?? [];
-    const enabledIds = JSON.parse(await sc.ev(`localStorage.getItem('host:enabled-plugins') ?? '[]'`));
+    // 清单在宿主那边，从设置窗读同一个源即可（别再读 localStorage 那个旧键）
+    const enabledIds = await readEnabledIds(sCall);
     const navViews = () =>
       sc.ev(`[...document.querySelectorAll('#nav-list .nav-item')].map(b => b.dataset.view).join(',')`);
 
@@ -1008,7 +1061,7 @@ try {
     r.check("清空搜索后侧栏恢复完整", installed.length, await sc.ev(`[...document.querySelectorAll('#nav-plugins .nav-item')].filter(b => b.style.display !== 'none').length`));
 
     // 上面只是把探针开了又关，清单该回到起点
-    const afterToggle = JSON.parse(await sc.ev(`localStorage.getItem('host:enabled-plugins') ?? '[]'`));
+    const afterToggle = await readEnabledIds(sCall);
     r.check("插件启停回到起点", JSON.stringify([...enabledIds].sort()), JSON.stringify([...afterToggle].sort()));
     await sc.ev(`document.querySelector('.nav-item[data-view=pet]').click(); true`);
     await new Promise((res) => setTimeout(res, 400));

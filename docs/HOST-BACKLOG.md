@@ -246,14 +246,14 @@ MVP 范围：<这一轮只做什么>
 |---|---|---|
 | `src/pet/`（状态机、图集切片、点击穿透、气泡） | `npm run verify` + `npm run verify:skin`（动了形象/协议）+ `verify:game`（动了显隐） | verify **189** / skin 26 / game 15 |
 | `src/runtime/`（插件运行时、bridge、widget 宿主、订阅回收） | `npm run verify` | **189** |
-| `src-tauri/`（Rust 能力服务、gate、fsutil、hotkeys） | `cargo test --lib` + `npm run verify` + 对应 `verify:<域>` | cargo **105** / verify **230**（S 卡与 Q1 后；verify 的条数随同意框流程实际弹出与否在 215~230 间浮动，下限按 215） |
+| `src-tauri/`（Rust 能力服务、gate、fsutil、hotkeys） | `cargo test --lib` + `npm run verify` + 对应 `verify:<域>` | cargo **111** / verify **234**（S/Q/C1 之后。verify 的条数随同意框是否真弹在 215~234 间浮动，**下限按 215**） |
 | `http` 能力 / charset 解码 / 重定向 | `npm run verify:http` | 21 |
 | Agent hook 链路 | `npm run verify:agent` | **72**（A9a 加了插件页端到端组；当批实测 `cargo` 72 / `verify` 189。本波只改了 overlay/bus 门禁那条采样路径，verify:agent 72/72 复跑过） |
-| 待办链路 | `npm run verify:todo` | 30 |
+| 待办链路 | `npm run verify:todo` | 30（C1 后复跑 30/30） |
 | A股插件 | `npm run verify:astock` | **154**（A11 后是源无关断言：PM 与执行者在**两种不同网络形态**下各实测 0 红。套件开头的 preflight 行会告诉你当轮是哪一种形态） |
 | `plugins/com.pet.astock` 的纯函数（三源解析 / 节流 / 提醒判定 / 五档数据 / 源判定层） | `npm run unit:astock`（常驻单测，零 GUI、零联网、秒级） | market **247** / aux **186**（含 A11 的 `sourceBranch` 组 36 条；Q2 起跑在 `node --test`，读 `ℹ tests 433 / fail 0` 与 `ASSERTIONS` 分组计数） |
-| `src/` 运行时纯逻辑（状态机、topic ACL、总线、插件 URL、manifest 校验、资源回收） | `npm run unit:runtime`（离线，靠 `tests/unit/ts-loader.mjs` 转译 .ts） | runtime **94**（Q3；`npm run unit` 合计 **527**） |
-| 插件纯函数（`plugins/todo/todo-txt.js`；hr-ble 的 BPM 解析在 Rust，归 cargo test） | `npm run unit:plugins` | plugins **53**（Q4；`npm run unit` 合计 **580**） |
+| `src/` 运行时纯逻辑（状态机、topic ACL、总线、插件 URL、manifest 校验、资源回收） | `npm run unit:runtime`（离线，靠 `tests/unit/ts-loader.mjs` 转译 .ts） | runtime **107**（Q3 + C1 的启停清单迁移；`npm run unit` 合计 **593**） |
+| 插件纯函数（`plugins/todo/todo-txt.js`；hr-ble 的 BPM 解析在 Rust，归 cargo test） | `npm run unit:plugins` | plugins **53**（Q4；`npm run unit` 合计 **593**） |
 | 任何新增脚本 / 协议源 / CSP / 打包相关 | `npm run verify:release` | 12 |
 | Cargo 依赖变动 | `cargo tree -p tauri` 必须仍是 **2.12.0**，且 `npm run verify:release` | — |
 
@@ -272,6 +272,10 @@ MVP 范围：<这一轮只做什么>
   于是 `cargo fmt --check` 报的是「component is not applicable to the toolchain」而**不是**格式差异 ——
   用 `cargo fmt --all -- --check; echo $?` 判绿会把这种「没跑」读成「没问题」。
   修法：`rustup component remove rustfmt --toolchain <那个>` 再 `add`（E3 就是这么把 139 处真实差异跑出来的）。
+- **做变异抽查之前先提交**。抽查要故意改坏产品代码再看测试是否变红，而还原手法是 `git checkout -- <文件>` ——
+  如果那个文件里还有本次**尚未提交**的接缝（新抽的纯函数、新加的 mod 声明），checkout 会把它们一起吞掉
+  （2026-10-12 Q1 就这么丢过一次：`cargo test` 从 111 掉回 86，得把接缝重新落一遍）。
+  顺序应当是：改完 → 全绿 → **先提交** → 再做变异抽查 → `git checkout --` 还原 → 复跑确认回到基线。
 - **`git add` 只要带一个不存在的路径名就整批什么都不做**（E1 踩过）：`git mv` 之后旧目录已空，
   再 `git add -A 旧目录 新目录` 会静默失败，提交进去的是重命名前的内容 —— 新检出的树直接断链。
   提交前用 `git status --short` 对齐工作区，提交后用 `git grep --cached` 核对索引内容。

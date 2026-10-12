@@ -8,13 +8,14 @@ import {
   hostInvoke,
   listPages,
   openSettingsInvoker,
+  readEnabledIds,
   reloadAndWait,
   waitUntil,
+  writeEnabledIds,
 } from "./harness/cdp.mjs";
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
 const PID = "todo";
-const ENABLED_KEY = "host:enabled-plugins";
 const isPetPage = (t) => /localhost:1420\/(index\.html)?$/.test(t.url);
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 const r = createReport("待办插件（dev）");
@@ -48,7 +49,7 @@ async function pump(deadlineMs) {
 }
 
 let c = null;
-let origEnabled = "[]";
+let origEnabled = [];
 let cdp;
 let settings = null;
 
@@ -62,7 +63,7 @@ try {
 try {
   cdp = c;
   const invoke = hostInvoke(c);
-  origEnabled = await c.ev(`localStorage.getItem(${JSON.stringify(ENABLED_KEY)}) ?? '[]'`);
+  origEnabled = await readEnabledIds(invoke);
   void pump(420_000);
 
   r.group("发现与激活");
@@ -83,9 +84,8 @@ try {
   // 等 Rust 把删目录的异步操作做完再重载：否则在飞的 IPC 回调会被 reload 打断，
   // WebView2 会报「custom protocol failed / 找不到 callback id」，混进零噪音断言里
   await sleep(1500);
-  await c.ev(`localStorage.setItem(${JSON.stringify(ENABLED_KEY)}, ${JSON.stringify(
-    JSON.stringify([...JSON.parse(origEnabled), PID]),
-  )}); true`);
+  // 启停清单归宿主（C1）：写从设置窗走，宠物窗调用会被门禁拒
+  await writeEnabledIds(settings.invoke, [...origEnabled, PID]);
   await reloadAndWait(c);
   await sleep(5000);
 
@@ -237,8 +237,8 @@ try {
   stopped = true;
   if (cdp) {
     // 下线插件 + 撤销授权（撤销会连带清掉它的存储目录），最后换新文档
-    await cdp.ev(`localStorage.setItem(${JSON.stringify(ENABLED_KEY)}, ${JSON.stringify(origEnabled)}); true`).catch(() => undefined);
     if (!settings) settings = await openSettingsInvoker(PORT, cdp).catch(() => null);
+    if (settings) await writeEnabledIds(settings.invoke, origEnabled).catch(() => undefined);
     if (settings) await settings.invoke("permission_revoke", { pluginId: PID }).catch(() => undefined);
     settings?.close();
     settings = null;

@@ -13,7 +13,8 @@ const smod = await import("../../src/pet/state-machine.ts");
 const acl = await import("../../src/runtime/topic-acl.ts");
 const { bus } = await import("../../src/runtime/event-bus.ts");
 const { pluginFileUrl, pluginFileVersion } = await import("../../src/runtime/plugin-url.ts");
-const { validateManifest } = await import("../../src/runtime/plugin-runtime.ts");
+const rt = await import("../../src/runtime/plugin-runtime.ts");
+const { validateManifest } = rt;
 const resources = await import("../../src/runtime/resources.ts");
 const subs = await import("../../src/runtime/subscriptions.ts");
 
@@ -385,4 +386,70 @@ group("资源回收");
   eq("清理函数抛错时不计入回收成功数", subs.disposeAll("zz.probe"), 0);
   console.error = realError;
   check("抛错的回收有告警留下", errors.some((e) => e.includes("回收 zz.probe")), JSON.stringify(errors));
+}
+
+/* ============================ 启停清单与一次性迁移（C1） ============================ */
+group("启停清单");
+
+{
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: (k) => store.delete(k),
+  };
+
+  // 1) 宿主已有那份 → 直接用，也不碰旧键
+  resetStub();
+  setReply("plugin_enabled_list", ["todo"]);
+  deep("宿主已有清单时直接采用", await rt.loadEnabled(), ["todo"]);
+  deep("getEnabled 读到同一份", rt.getEnabled(), ["todo"]);
+  eq("不再触发迁移", tauriCalls.some((c) => c.cmd === "plugin_enabled_migrate"), false);
+
+  // 2) 宿主还没写过 → 拿旧键那份去迁移，并以宿主回读的那份为准
+  resetStub();
+  setReply("plugin_enabled_list", null);
+  setReply("plugin_enabled_migrate", ["todo", "com.pet.astock"]);
+  store.set("host:enabled-plugins", JSON.stringify(["todo", 7, "C:", "com.pet.astock"]));
+  deep("迁移结果以宿主回读为准", await rt.loadEnabled(), ["todo", "com.pet.astock"]);
+  deep(
+    "旧键里非字符串的项在 JS 侧就先挡掉（宿主还有一层 id 词表）",
+    tauriCalls.find((c) => c.cmd === "plugin_enabled_migrate")?.args?.ids,
+    ["todo", "C:", "com.pet.astock"],
+  );
+  deep("本窗缓存跟着迁移结果走", rt.getEnabled(), ["todo", "com.pet.astock"]);
+
+  // 3) 旧键是坏 JSON → 按空表迁移，不能抛
+  resetStub();
+  setReply("plugin_enabled_list", null);
+  setReply("plugin_enabled_migrate", []);
+  store.set("host:enabled-plugins", "{ 不是 json");
+  deep("旧键读坏按空表处理", await rt.loadEnabled(), []);
+  deep("交给宿主的也是空表", tauriCalls.find((c) => c.cmd === "plugin_enabled_migrate")?.args?.ids, []);
+
+  // 4) 旧键整个不存在 → 空表，且仍把这次迁移落下去（宿主要有自己的一份，才谈得上清缓存不丢）
+  resetStub();
+  setReply("plugin_enabled_list", null);
+  setReply("plugin_enabled_migrate", []);
+  store.delete("host:enabled-plugins");
+  deep("没有旧键时是空表", await rt.loadEnabled(), []);
+  eq("仍然调了迁移命令", tauriCalls.some((c) => c.cmd === "plugin_enabled_migrate"), true);
+
+  // 5) 老宿主没这条命令 → 退回旧键那份继续跑，别把用户挡在门外
+  resetStub();
+  setReply("plugin_enabled_list", null);
+  setReply("plugin_enabled_migrate", () => Promise.reject(new Error("命令不存在")));
+  store.set("host:enabled-plugins", JSON.stringify(["todo"]));
+  deep("迁移失败时退回旧键那份", await rt.loadEnabled(), ["todo"]);
+
+  // 6) 写清单：以宿主回读的那份为准（它滤过非法项与重复项）
+  resetStub();
+  setReply("plugin_enabled_set", ["com.pet.hr-ble"]);
+  await rt.setEnabledIds(["com.pet.hr-ble", "C:"]);
+  deep("写入后本窗缓存采用宿主的结果", rt.getEnabled(), ["com.pet.hr-ble"]);
+  deep(
+    "参数原样带给宿主",
+    tauriCalls.find((c) => c.cmd === "plugin_enabled_set")?.args,
+    { ids: ["com.pet.hr-ble", "C:"] },
+  );
 }
