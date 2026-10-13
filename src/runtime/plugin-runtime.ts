@@ -8,6 +8,7 @@ import manifestSchema from "../../packages/sdk/manifest.schema.json" with { type
 import hostConfig from "../../src-tauri/tauri.conf.json" with { type: "json" };
 import { bus } from "./event-bus";
 import { buildContext, invalidatePermissions } from "./bridge";
+import { applyHotReload, reloadIdsFrom } from "./hot-reload";
 import { CAPABILITIES } from "./plugin-capabilities";
 import { pluginFileUrl, pluginFileVersion } from "./plugin-url";
 import { widgetHost } from "./widget-host";
@@ -342,8 +343,12 @@ export async function initRuntime(): Promise<void> {
   await listen<string>("host:permission-revoked", (e) => {
     invalidatePermissions(e.payload);
   });
-  // 插件目录变动（放入/移除插件）即时生效，不必重启宿主
-  await listen("host:plugins-changed", async () => {
+  // 插件目录变动（放入/移除插件）即时生效，不必重启宿主。
+  // 其中「覆盖了正在跑的插件的文件」光靠 reconcile 不成立：入口的 ?v= 管不到子模块，
+  // 同一 realm 的模块映射表会把旧实例还回来 —— dev 下先按载荷判定本窗要不要整页重载，
+  // reconcile 逻辑保留（新装/删除插件仍靠它，重载只是它之上的一层判断）。
+  await listen<{ ids?: string[]; reloadIds?: string[] }>("host:plugins-changed", async (e) => {
+    applyHotReload(reloadIdsFrom(e.payload), (id) => active.has(id));
     await reconcile(await invoke<PluginManifest[]>("plugins_list"));
   });
   await reconcile(await invoke<PluginManifest[]>("plugins_list"));

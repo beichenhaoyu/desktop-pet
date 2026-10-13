@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { bus } from "../runtime/event-bus";
+import { applyHotReload, reloadIdsFrom } from "../runtime/hot-reload";
 import { loadEnabled, type PluginManifest } from "../runtime/plugin-runtime";
 import { widgetHost } from "../runtime/widget-host";
 import "./style.css";
@@ -46,10 +47,14 @@ async function main(): Promise<void> {
   await bus.init();
   await sync();
 
-  // 启停与目录增删都收敛到一次同步（清单的事实来源在宿主，sync 每次都去取）
+  // 启停与目录增删都收敛到一次同步（清单的事实来源在宿主，sync 每次都去取）。
+  // 这扇窗只承载 overlay_owner 认领的那一个插件：它的文件被覆盖 → dev 下整页重载
   await listen("host:enabled-changed", () => void sync().catch(console.error));
   await listen("host:plugin-toggled", () => void sync().catch(console.error));
-  await listen("host:plugins-changed", () => void sync().catch(console.error));
+  await listen<{ ids?: string[]; reloadIds?: string[] }>("host:plugins-changed", (e) => {
+    applyHotReload(reloadIdsFrom(e.payload), (id) => id === pluginId);
+    void sync().catch(console.error);
+  });
 }
 
 void main();

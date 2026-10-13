@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { bus } from "../runtime/event-bus";
+import { applyHotReload, reloadIdsFrom } from "../runtime/hot-reload";
 import {
   loadEnabled,
   validateManifest,
@@ -118,8 +119,10 @@ async function main(): Promise<void> {
     banner.style.display = "";
   });
 
-  // 插件目录变动 → 侧栏立刻跟着增删
-  await listen("host:plugins-changed", () => {
+  // 插件目录变动 → 侧栏立刻跟着增删；正在看的插件页被覆盖 → dev 下整页重载
+  // （承载判定 = 该 id 正是当前挂载着的插件页，换别的插件页就与它无关）
+  await listen<{ ids?: string[]; reloadIds?: string[] }>("host:plugins-changed", (e) => {
+    applyHotReload(reloadIdsFrom(e.payload), (id) => id === mountedFor);
     void render().catch((e) => console.error("[settings] render", e));
   });
 

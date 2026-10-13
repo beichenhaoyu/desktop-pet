@@ -17,6 +17,7 @@ const rt = await import("../../src/runtime/plugin-runtime.ts");
 const { validateManifest } = rt;
 const resources = await import("../../src/runtime/resources.ts");
 const subs = await import("../../src/runtime/subscriptions.ts");
+const hotReload = await import("../../src/runtime/hot-reload.ts");
 
 const { PetStateMachine } = smod;
 
@@ -452,4 +453,50 @@ group("启停清单");
     tauriCalls.find((c) => c.cmd === "plugin_enabled_set")?.args,
     { ids: ["com.pet.hr-ble", "C:"] },
   );
+}
+
+/* ============================ 插件热重载判定 ============================ */
+group("插件热重载判定");
+
+{
+  const carryA = (id) => id === "zz.a";
+  // dev 下承载了变更插件 → 重载；其余一律不动。判定是纯函数（dev 由调用方传入），
+  // 所以两条分支都能离线跑；真机上的 dev 值来自 import.meta.env.DEV（装配层读取）。
+  deep("dev 下变更命中本窗承载的插件 → 要重载", hotReload.decideHotReload(["zz.a"], carryA, true), {
+    carried: ["zz.a"],
+    shouldReload: true,
+  });
+  deep("非 dev 构建绝不重载（打包版不该掀用户窗口）", hotReload.decideHotReload(["zz.a"], carryA, false), {
+    carried: ["zz.a"],
+    shouldReload: false,
+  });
+  deep("变更与本窗无关 → 不动", hotReload.decideHotReload(["zz.b"], carryA, true), {
+    carried: [],
+    shouldReload: false,
+  });
+  deep(
+    "同一 id 重复出现只算一次，且只回报确实承载的那些",
+    hotReload.decideHotReload(["zz.a", "zz.a", "zz.b", "zz.a"], (id) => id !== "zz.b", true),
+    { carried: ["zz.a"], shouldReload: true },
+  );
+  deep("空变更列表 → 不动", hotReload.decideHotReload([], () => true, true), {
+    carried: [],
+    shouldReload: false,
+  });
+  // 装配层：node 里没有 Vite 注入的 import.meta.env，必须安全落到「不重载」——
+  // 这条同时钉住「离开 dev 就不碰 location」的接线（node 里没有 location，碰了就会抛）
+  deep("装配层在非 Vite 环境不重载也不抛", hotReload.applyHotReload(["zz.a"], carryA), {
+    carried: ["zz.a"],
+    shouldReload: false,
+  });
+  deep("载荷里的变更 id 被取出", hotReload.changedIdsFrom({ ids: ["zz.a", "zz.b"] }), ["zz.a", "zz.b"]);
+  deep("载荷里的非字符串项被滤掉", hotReload.changedIdsFrom({ ids: ["zz.a", 7, null, "zz.b"] }), ["zz.a", "zz.b"]);
+  deep("旧载荷（()）按取不到处理", hotReload.changedIdsFrom(null), []);
+  deep("不带 ids 的对象按取不到处理", hotReload.changedIdsFrom({}), []);
+  // 重载判定只认 reloadIds（模块文件被覆盖的那部分插件）
+  deep("reloadIds 被取出", hotReload.reloadIdsFrom({ ids: ["zz.a", "zz.b"], reloadIds: ["zz.b"] }), ["zz.b"]);
+  deep("只有 manifest 被动过时 reloadIds 为空 → 不重载", hotReload.reloadIdsFrom({ ids: ["zz.a"], reloadIds: [] }), []);
+  deep("reloadIds 里的非字符串项被滤掉", hotReload.reloadIdsFrom({ reloadIds: ["zz.a", 9, undefined] }), ["zz.a"]);
+  deep("缺 reloadIds 的载荷按空处理（不误重载）", hotReload.reloadIdsFrom({ ids: ["zz.a"] }), []);
+  deep("坏载荷按空处理", hotReload.reloadIdsFrom(null), []);
 }

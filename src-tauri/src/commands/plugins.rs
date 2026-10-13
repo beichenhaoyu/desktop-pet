@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::Value;
 use tauri::{Emitter, Manager};
@@ -279,6 +278,12 @@ fn file_response(
         resp.headers_mut()
             .insert(tauri::http::header::CONTENT_TYPE, value);
     }
+    // 插件文件必须每次回源：覆盖代码免重启生效的前提是 HTTP 层不夹缓存
+    //（ESM 模块映射表由文档重载解决，见 src/runtime/hot-reload.ts；这里只管协议层）。
+    resp.headers_mut().insert(
+        tauri::http::header::CACHE_CONTROL,
+        tauri::http::HeaderValue::from_static("no-store"),
+    );
     if let Some(origin) = origin {
         if let Ok(value) = origin.parse() {
             resp.headers_mut()
@@ -294,8 +299,69 @@ fn file_response(
 #[allow(dead_code)]
 pub struct PluginWatcher(pub notify::RecommendedWatcher);
 
-/// 监听 plugins 目录变化，去抖后广播 `host:plugins-changed`，
-/// 让宠物窗 reconcile 启停、设置窗/悬浮窗刷新列表。
+/// 去抖窗口内的待播报清单。`in_flight` 与 `paths` 在同一把锁里翻动：
+/// 「取走路径」和「置回可开新轮」必须原子，否则新事件会与上一轮广播交错（漏播或把两轮并错）。
+#[derive(Default)]
+struct PendingChanges {
+    paths: Vec<PathBuf>,
+    in_flight: bool,
+}
+
+/// 把一批事件路径折叠成「受影响的插件 id」列表：只认 plugins 根目录**第一层**的名字，
+/// 且必须通过 `crate::ids::is_safe_id`（与 collect_manifests、overlay 标签同一口径）。
+/// 纯函数：不碰 IO、不碰 AppHandle，watcher 线程与单测共用同一份判定。
+///
+/// 递归监听下事件会带子目录里的文件（`<id>/nested/leaf.js`），剥到第一段就归一了；
+/// Windows 上一次写入连发多个事件（CreateFile + ChangeMetadata…），同一 id 只留一个。
+/// 只有 JS 模块被覆盖才需要「丢掉整张 ESM 模块映射表」（判定侧见 `src/runtime/hot-reload.ts`）。
+/// manifest.json / 资源文件的改动靠 reconcile 重读就够了，不该因此掀翻正在显示这一插件的文档 ——
+/// 宿主的回归脚本就是靠反复重写 manifest 来逐项要回能力的，把它算进重载集合会让套件中途丢全局。
+fn is_module_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("js") | Some("mjs") | Some("cjs")
+    )
+}
+
+fn plugin_ids_from_paths(plugins_root: &Path, paths: &[PathBuf]) -> Vec<String> {
+    collect_ids(plugins_root, paths, false)
+}
+
+/// 同一份折叠，但只收「这一轮里确实被覆盖过模块文件」的插件 id。
+fn plugin_reload_ids_from_paths(plugins_root: &Path, paths: &[PathBuf]) -> Vec<String> {
+    collect_ids(plugins_root, paths, true)
+}
+
+fn collect_ids(plugins_root: &Path, paths: &[PathBuf], modules_only: bool) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for path in paths {
+        if modules_only && !is_module_file(path) {
+            continue;
+        }
+        let Ok(rel) = path.strip_prefix(plugins_root) else {
+            continue;
+        };
+        // 根目录自身、以及用 `..` 爬出去的第一段都不算插件目录
+        let Some(std::path::Component::Normal(dir)) = rel.components().next() else {
+            continue;
+        };
+        let id = dir.to_string_lossy();
+        if !is_safe_id(&id) {
+            continue;
+        }
+        if !ids.iter().any(|seen| seen == id.as_ref()) {
+            ids.push(id.to_string());
+        }
+    }
+    ids
+}
+
+/// 监听 plugins 目录变化（递归：插件入口引出的子模块被覆盖也要发事件），
+/// 去抖后广播 `host:plugins-changed`，载荷 `{ "ids": [...], "reloadIds": [...] }`：
+/// `ids` 是这一轮被动过的插件 id（取不到合法 id 时是空数组，广播照发，保留既有「目录被动过」的语义），
+/// `reloadIds` 是其中**模块文件被覆盖**的那部分 —— 只有它们值得让承载窗口整页换茬，
+/// 见 `plugin_reload_ids_from_paths` 与 `src/runtime/hot-reload.ts`。
+/// 宠物窗据此 reconcile 启停并按需重载文档、设置窗/悬浮窗刷新列表。
 pub fn spawn_plugins_watcher(app: &tauri::AppHandle) -> Result<PluginWatcher, String> {
     use notify::{EventKind, RecursiveMode, Watcher};
 
@@ -303,30 +369,52 @@ pub fn spawn_plugins_watcher(app: &tauri::AppHandle) -> Result<PluginWatcher, St
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建插件目录失败: {e}"))?;
 
     let sink = app.clone();
-    let in_flight = Arc::new(AtomicBool::new(false));
+    let root = dir.clone();
+    let pending = Arc::new(Mutex::new(PendingChanges::default()));
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         let Ok(event) = event else { return };
         // 只读访问与属性变化不代表插件集合变了
         if matches!(event.kind, EventKind::Access(_) | EventKind::Other) {
             return;
         }
-        // 一次安装会连发多个事件：600ms 内合并成一次广播
-        if in_flight.swap(true, Ordering::SeqCst) {
+        // 一次安装/覆盖会连发多个事件：600ms 内合并成一次广播，窗口内的路径先全部攒下
+        let start_round = {
+            let mut state = pending.lock().unwrap_or_else(|p| p.into_inner());
+            state.paths.extend(event.paths.iter().cloned());
+            if state.in_flight {
+                false
+            } else {
+                state.in_flight = true;
+                true
+            }
+        };
+        if !start_round {
             return;
         }
         let sink = sink.clone();
-        let flag = in_flight.clone();
+        let state = pending.clone();
+        let root = root.clone();
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(600));
-            flag.store(false, Ordering::SeqCst);
+            let paths = {
+                let mut state = state.lock().unwrap_or_else(|p| p.into_inner());
+                state.in_flight = false;
+                std::mem::take(&mut state.paths)
+            };
+            let ids = plugin_ids_from_paths(&root, &paths);
+            let reloadIds = plugin_reload_ids_from_paths(&root, &paths);
             crate::services::permission::prune_orphan_grants(&sink);
-            let _ = sink.emit("host:plugins-changed", ());
+            let _ = sink.emit(
+                "host:plugins-changed",
+                serde_json::json!({ "ids": ids, "reloadIds": reloadIds }),
+            );
         });
     })
     .map_err(|e| e.to_string())?;
-    // 只监听一层：插件必须是以自身 id 命名的顶层目录（见 collect_manifests 的一致性校验）
+    // 递归：插件入口引出的子模块（如 astock 的 sources/ 与 views/settings/）也要收事件，
+    // 改子目录里的文件同样要让承载该插件的窗口知道 —— id 折叠见 plugin_ids_from_paths
     watcher
-        .watch(&dir, RecursiveMode::NonRecursive)
+        .watch(&dir, RecursiveMode::Recursive)
         .map_err(|e| e.to_string())?;
     Ok(PluginWatcher(watcher))
 }
@@ -472,5 +560,132 @@ mod tests {
             checked >= 4,
             "只校验到 {checked} 个真实插件，扫目录的口径大概坏了"
         );
+    }
+
+    /* ---------- H2：递归 watcher 的「事件路径 → 插件 id」折叠 ---------- */
+    // 与 watcher 用同一个根：dev 下 plugins_dir() 就是 CARGO_MANIFEST_DIR/../plugins，
+    // notify 的事件路径按监听根原样前缀拼出，所以这里也用同一种构造才等价于现场
+
+    fn plugins_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../plugins")
+    }
+
+    /// 嵌套子目录里的文件（入口引出的子模块）必须归到所属插件的 id
+    #[test]
+    fn nested_submodule_paths_fold_to_their_plugin_id() {
+        let root = plugins_root();
+        let paths = vec![
+            root.join("zz.a").join("nested").join("leaf.js"),
+            root.join("com.pet.astock")
+                .join("sources")
+                .join("eastmoney.js"),
+        ];
+        assert_eq!(
+            plugin_ids_from_paths(&root, &paths),
+            vec!["zz.a".to_string(), "com.pet.astock".to_string()]
+        );
+    }
+
+    /// 第一层目录名过不去 id 词表的（大写、下划线、过短、带空格）一律丢弃
+    #[test]
+    fn invalid_directory_names_are_dropped() {
+        let root = plugins_root();
+        let paths = vec![
+            root.join("BadDir").join("index.js"),
+            root.join("a_b").join("index.js"),
+            root.join("ab").join("index.js"),
+            root.join("a b").join("index.js"),
+        ];
+        assert!(plugin_ids_from_paths(&root, &paths).is_empty());
+    }
+
+    /// Windows 上一次写入会连发多个事件：同一插件出现多少次都只出一个 id
+    #[test]
+    fn repeated_events_for_one_plugin_collapse_to_one_id() {
+        let root = plugins_root();
+        let entry = root.join("zz.a").join("index.js");
+        let paths = vec![
+            entry.clone(),
+            entry.clone(),
+            entry,
+            root.join("zz.a").join("widget.js"),
+        ];
+        assert_eq!(
+            plugin_ids_from_paths(&root, &paths),
+            vec!["zz.a".to_string()]
+        );
+    }
+
+    /// 一次窗口里动到多个插件时，各自都要出现
+    #[test]
+    fn paths_of_different_plugins_each_appear() {
+        let root = plugins_root();
+        let paths = vec![
+            root.join("zz.a").join("index.js"),
+            root.join("zz.b")
+                .join("nested")
+                .join("deep")
+                .join("leaf.js"),
+        ];
+        assert_eq!(
+            plugin_ids_from_paths(&root, &paths),
+            vec!["zz.a".to_string(), "zz.b".to_string()]
+        );
+    }
+
+    /// 插件目录之外的路径（兄弟目录、用 `..` 爬出去、根自身）一概不产出
+    #[test]
+    fn paths_outside_the_plugins_root_produce_nothing() {
+        let root = plugins_root();
+        let paths = vec![
+            root.parent()
+                .unwrap()
+                .join("src")
+                .join("runtime")
+                .join("plugin-runtime.ts"),
+            root.join("..").join("etc"),
+            root.clone(),
+        ];
+        assert!(plugin_ids_from_paths(&root, &paths).is_empty());
+    }
+
+    /// H2：只有模块文件被覆盖才进 `reloadIds` —— manifest.json 之类的改动 reconcile 重读就够，
+    /// 为它整页换茬会抹掉窗口里的运行状态（宿主的回归脚本正是靠反复重写 manifest 逐项要能力）。
+    #[test]
+    fn only_module_files_make_a_plugin_reload_candidate() {
+        let root = plugins_root();
+        let paths = vec![
+            root.join("zz.a").join("manifest.json"),
+            root.join("zz.b").join("widget.js"),
+            root.join("zz.c").join("views").join("settings.js"),
+            root.join("zz.d").join("sprite.webp"),
+        ];
+        assert_eq!(
+            plugin_ids_from_paths(&root, &paths),
+            vec![
+                "zz.a".to_string(),
+                "zz.b".to_string(),
+                "zz.c".to_string(),
+                "zz.d".to_string()
+            ],
+            "被动过的插件都要报出来（reconcile 与列表刷新用得上）"
+        );
+        assert_eq!(
+            plugin_reload_ids_from_paths(&root, &paths),
+            vec!["zz.b".to_string(), "zz.c".to_string()],
+            "重载集合里只该有模块被覆盖的那两个（嵌套子目录里的也算）"
+        );
+    }
+
+    /// 目录名必须直接满足 id 词表：超过 64 字符的名字同样丢弃
+    /// （防「只取第一段」被绕过成任意长字符串带进事件载荷）
+    #[test]
+    fn overlong_directory_names_are_dropped() {
+        let root = plugins_root();
+        let paths = vec![
+            root.join("a".repeat(65)).join("index.js"),
+            root.join("a".repeat(64)).join("index.js"),
+        ];
+        assert_eq!(plugin_ids_from_paths(&root, &paths), vec!["a".repeat(64)]);
     }
 }

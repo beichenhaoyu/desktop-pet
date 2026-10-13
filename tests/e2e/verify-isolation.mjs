@@ -66,6 +66,36 @@ async function driveConsent(how) {
 const isPetPage = (t) => /localhost:1420\/(src\/)?index\.html$/.test(t.url);
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
+/**
+ * 武装一次「本窗自己发起的整页重载」：location.reload() 不换 CDP target，
+ * 只能靠 Page.loadEventFired 认它。先武装、再触发；返回 false = 这段时间窗口没重载。
+ * 本卡起「覆盖已启用插件的文件 → 承载它的窗口换一茬文档」是产品行为，
+ * 等它必须等真实信号，不能拿固定 sleep 赌异步。
+ */
+const armPageReload = async (timeoutMs = 8_000) => {
+  await c.send("Page.enable");
+  return c.once("Page.loadEventFired", timeoutMs).then(
+    () => true,
+    () => false,
+  );
+};
+
+/** 装/清一个 host:plugins-changed 载荷探针；换过文档后要重新装（新文档没有这个数组） */
+const RESET_CHANGE_SPY = `(async () => {
+  if (!window.__changeSpy) {
+    // 注入代码不经 Vite 转换，裸说明符解析不了；本套件只连 dev 实例（1420），走 dev 服务器可解析的路径
+    const { listen } = await import('/node_modules/@tauri-apps/api/event.js');
+    window.__changeSpy = [];
+    await listen('host:plugins-changed', (e) => window.__changeSpy.push(e.payload ?? null));
+  }
+  window.__changeSpy.length = 0;
+  return true;
+})()`;
+
+/** 探针里是否收到过一条「载荷带得出该插件 id」的广播 */
+const sawChangedId = (id) =>
+  `Array.isArray(window.__changeSpy) && window.__changeSpy.some((p) => Array.isArray(p?.ids) && p.ids.includes(${JSON.stringify(id)}))`;
+
 try {
   await waitForPage(PORT, isPetPage, 60_000);
 } catch {
@@ -298,15 +328,23 @@ try {
   );
   await c.ev(`localStorage.removeItem('host:enabled-plugins'); true`);
   r.group("热安装 / 热移除（不重启宿主，仅靠 plugins 目录 watcher）");
-  // 先造出「有启用记录但目录不存在」的状态：此时不该有任何激活
+  // 先造出「有启用记录但目录不存在」的状态：此时不该有任何激活。
+  // 探针此刻还在跑，目录被移走会让宠物窗整页热重载（本卡的新行为）：先武装
+  // load 事件再删目录，等这次重载真的落地 —— 不等的话它会掀掉下面刚要埋的哨兵。
+  const removalArmed = armPageReload();
   removeFixtures(PLUGINS_DIR);
+  if (await removalArmed) await sleep(600); // 与 reloadAndWait 同口径：等新文档的 reconcile 跑完
   await setEnabled([PROBE_ID]);
   await reloadAndWait(c);
+  // 载荷探针：本卡把广播载荷从 () 换成了 { ids }，用它判「带得出变更的插件 id」。
+  // 装在这里是因为刚 reloadAndWait 过，这段流程直到写完 fixtures 不会再换文档。
+  await c.ev(RESET_CHANGE_SPY);
   // 哨兵：整段测试期间页面一旦被重载，下面的结论就都不成立
   await c.ev(`window.__hotSentinel = "armed"`);
   r.check("仅有启用记录、目录缺失时不激活", false, await c.ev(`(window.__probeActivated ?? 0) >= 1`));
   writeFixtures(PLUGINS_DIR);
   r.check("放入目录后免重启即激活", true, await waitUntil(c, `(window.__probeActivated ?? 0) >= 1`, 20_000));
+  r.check("目录变动的广播带得出变更的插件 id", true, await waitUntil(c, sawChangedId(PROBE_ID), 10_000));
   r.check("widget 容器随之出现", true, await c.ev(`!!document.querySelector('div[data-plugin-id=${JSON.stringify(PROBE_ID)}]')`));
   r.check("期间页面未重载（激活确实来自 watcher）", "armed", await c.ev(`window.__hotSentinel ?? '页面被重载了'`));
 
@@ -317,11 +355,60 @@ try {
   r.check("宿主能给出文件修改时间", true, Number.isInteger(ver.v) && ver.v > 0);
   const badRel = await invoke_("plugin_file_version", { pluginId: PROBE_ID, rel: "../manifest.json" });
   r.check("越出插件目录的路径拿不到", true, !badRel.ok);
-  writeFileSync(
-    join(PLUGINS_DIR, PROBE_ID, "index.js"),
-    `export function activate(ctx) { window.__probeFlavor = 'B'; }\n` +
-      `export function deactivate() { window.__probeDeactivated = (window.__probeDeactivated || 0) + 1; }\n`,
+
+  // 探针换成「入口 + 顶层子模块 + 嵌套子模块」形状，先载入第一版（E1/T1/L1）。
+  // 准备阶段必须不换文档：先把探针停掉再写文件（不承载它的窗口不会重载），写完等
+  // 去抖窗口里的那次广播真的出来（HEAD 上等不到，超时后照常往下走），再手动开回来 ——
+  // 开回来加载到的就是磁盘上的第一版。
+  const pentry = (flavor) => `import { top } from "./top.js";
+import { leaf } from "./nested/leaf.js";
+export function activate() {
+  window.__probeFlavor = ${JSON.stringify(flavor)};
+  window.__probeTop = top;
+  window.__probeLeaf = leaf;
+  window.__probeActivated = (window.__probeActivated || 0) + 1;
+}
+export function deactivate() { window.__probeDeactivated = (window.__probeDeactivated || 0) + 1; }
+`;
+  mkdirSync(join(PLUGINS_DIR, PROBE_ID, "nested"), { recursive: true });
+  await c.ev(`(async () => {
+    const rt = await import('/src/runtime/plugin-runtime.ts');
+    await rt.deactivatePlugin(${JSON.stringify(PROBE_ID)});
+    return true;
+  })()`);
+  // 探针先重置：下面要等的必须是「这次写入」触发的那轮广播，不能拿上一轮的陈旧载荷蒙混
+  await c.ev(RESET_CHANGE_SPY);
+  writeFileSync(join(PLUGINS_DIR, PROBE_ID, "top.js"), `export const top = "T1";\n`);
+  writeFileSync(join(PLUGINS_DIR, PROBE_ID, "nested", "leaf.js"), `export const leaf = "L1";\n`);
+  writeFileSync(join(PLUGINS_DIR, PROBE_ID, "index.js"), pentry("E1"));
+  await waitUntil(c, sawChangedId(PROBE_ID), 4_000);
+  // 万一有迟到的广播把这次显式 activate 打断，新文档的 initRuntime 也会把它装回来 ——
+  // 下面的等待断言只认最终状态，过程性中断不该把整条断言链打断
+  await c.ev(`(async () => {
+    const rt = await import('/src/runtime/plugin-runtime.ts');
+    const ms = await window.__TAURI_INTERNALS__.invoke('plugins_list');
+    await rt.activatePlugin(ms.find((m) => m.id === ${JSON.stringify(PROBE_ID)}));
+    return true;
+  })()`).catch(() => undefined);
+  r.check(
+    "子模块形状的第一版已载入（E1/T1/L1）",
+    true,
+    await waitUntil(c, `window.__probeFlavor === 'E1' && window.__probeTop === 'T1' && window.__probeLeaf === 'L1'`, 15_000),
   );
+
+  // 三种覆盖形状，各只动一个文件、入口其余行一字不动。已激活插件的文件被覆盖时
+  // dev 下承载它的窗口会整页热重载（模块映射表只有换文档才会丢，?v= 管不到子模块），
+  // 断言只等「新值自己出现」，不替产品做任何重载 —— 因此未改动代码上必然红：
+  // 子模块覆盖连事件都不发，入口覆盖也只会命中同一 realm 的旧模块实例。
+  writeFileSync(join(PLUGINS_DIR, PROBE_ID, "top.js"), `export const top = "T2";\n`);
+  r.check("覆盖顶层子模块后免手动重载即生效", true, await waitUntil(c, `window.__probeTop === 'T2'`, 20_000));
+  writeFileSync(join(PLUGINS_DIR, PROBE_ID, "nested", "leaf.js"), `export const leaf = "L2";\n`);
+  r.check("覆盖嵌套子模块后免手动重载即生效", true, await waitUntil(c, `window.__probeLeaf === 'L2'`, 20_000));
+  writeFileSync(join(PLUGINS_DIR, PROBE_ID, "index.js"), pentry("B"));
+  r.check("覆盖入口文件后免手动重载即生效", true, await waitUntil(c, `window.__probeFlavor === 'B'`, 20_000));
+
+  // 上面每条覆盖都可能把文档换了一茬：这条既有断言现在跑在已经落地的新文档上，
+  // 判的仍是「deactivate → activate 之后读到的就是磁盘上的当前代码」。
   const swapped = await c.ev(`(async () => {
     const rt = await import('/src/runtime/plugin-runtime.ts');
     await rt.deactivatePlugin(${JSON.stringify(PROBE_ID)});
@@ -349,8 +436,21 @@ try {
   // 否则下面等的就是上一次的结果，热移除那条路径根本没被等到
   await c.ev(`window.__probeFlavor = null; window.__probeDeactivated = 0; true`);
 
+  // 目录被移走时探针仍活跃：固定版的宠物窗整页热重载（新文档里它不再被装起来）；
+  // HEAD 形状走 watcher → reconcile → deactivate 那条路（deactivate 计数器可观察）。
+  // 两条形状的共同结论必须都成立：插件停了。先武装 load 事件再删目录。
+  const goneArmed = armPageReload();
   removeFixtures(PLUGINS_DIR);
-  r.check("移走目录后自动 deactivate", true, await waitUntil(c, `(window.__probeDeactivated ?? 0) >= 1`, 20_000));
+  const goneByReload = await goneArmed;
+  if (goneByReload) await sleep(600); // 等新文档的 reconcile 跑完
+  const stopped = goneByReload
+    ? await waitUntil(
+        c,
+        `(window.__probeActivated ?? 0) === 0 && document.querySelectorAll('div[data-plugin-id=${JSON.stringify(PROBE_ID)}]').length === 0`,
+        10_000,
+      )
+    : await waitUntil(c, `(window.__probeDeactivated ?? 0) >= 1`, 20_000);
+  r.check("移走目录后自动 deactivate", true, stopped);
   // 容器消失是 deactivate 之后异步拆的，等它真的没了再断言（原来只 sleep 赌一把）
   const removedSelector = `div[data-plugin-id=${JSON.stringify(PROBE_ID)}]`;
   await waitUntil(c, `document.querySelectorAll(${JSON.stringify(removedSelector)}).length === 0`, 10_000);
@@ -1057,7 +1157,16 @@ try {
     await new Promise((res) => setTimeout(res, 500));
     r.check("切过去只留插件面板", "plugin", await sc.ev(`[...document.querySelectorAll('[data-panel]')].filter(p => !p.hidden).map(p => p.dataset.panel).join(',')`));
     r.check("标题换成插件名", "隔离探针", await sc.ev(`document.getElementById('view-title').textContent`));
-    r.check("壳上给了 id 与权限列表", true, await sc.ev(`document.getElementById('plugin-id').textContent === ${JSON.stringify(PROBE_ID)} && document.querySelectorAll('#plugin-perms .perm-chip').length === 0`));
+    // 这一组原先硬编码「权限条数 = 0」，那是**读到过期 manifest** 的假象：上面为了走同意框
+    // 已经往探针的 manifest 里逐项写过 permissions，设置窗重新取列表后条数就不再是 0。
+    // 改成跟磁盘现场逐字对账 —— 既更严（名字与顺序都要一致），也不会再随写文件的顺序随机红。
+    const permsOnDisk = (JSON.parse(readFileSync(join(PLUGINS_DIR, PROBE_ID, "manifest.json"), "utf8")).permissions ?? []).join(",");
+    r.check("壳上给了插件 id", PROBE_ID, await sc.ev(`document.getElementById('plugin-id')?.textContent ?? '(没有该元素)'`));
+    r.check(
+      "权限条与磁盘上的 manifest.permissions 逐字一致（含顺序）",
+      permsOnDisk,
+      await sc.ev(`[...document.querySelectorAll('#plugin-perms .perm-chip')].map((n) => n.textContent).join(',')`),
+    );
     r.check(
       "停用状态下不挂插件页面，并说明原因",
       true,
