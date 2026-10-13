@@ -69,6 +69,8 @@
 - **插件 id 只有一份校验实现**：`src-tauri/src/ids.rs::is_safe_id`（S4）。原先 `commands::plugins`、`services::permission::valid_id`、`services::store` 各写一套，后两套只挡 `..` `/` `\`，`C:` 这类盘符 id 能过 —— id 同时是存储目录名、overlay 标签来源与授权表键，口径必须唯一。**新增带 `pluginId` 的命令一律走 `gate::plugin_capability`**，漏了会被 `src-tauri/src/gate_coverage.rs` 拦下：它从 `lib.rs` 的 `generate_handler!` 反查全部已注册命令，逐条核对是否过了门禁（只走窗口门禁的例外要写进它的 `WINDOW_GATED` 名单并说明理由）
 - Agent watcher 的偏移只在**真的消费掉整行**之后才前进（`complete_line_prefix` 有单测）：以前先写偏移再读，hook 写一半时那批事件永久丢
 
+- **插件样式注入契约暂不收紧**：打包版 CSP 的 `style-src` 保留 `'unsafe-inline'` —— 三个示例插件都用「运行时往自己的 Shadow Root 注入样式表」的写法，且 `tests/e2e/verify-release.mjs` 里有一条断言在替第三方插件作者钉这个契约；真要收紧必须先做 Web Worker 宿主并逐条实测 U-1…U-7。另一类（markup 里的内联 `style=` 属性）已由 M2a 清零，所以这条豁免只覆盖「style 元素」。取舍全文见 [ADR-0004](docs/adr/0004-style-src-unsafe-inline-kept.md)
+
 ## 其余约定
 
 - 标准事件 topic：`ble:heart-rate`、`agent:state`（`running｜needs_input｜completed｜idle`，只在变化时广播）、`agent:event`（细粒度 hook 事件：phase / toolName / detail / steps / title，每次工具调用都发）、`llm:token-usage`、`todo:changed`

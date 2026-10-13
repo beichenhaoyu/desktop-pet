@@ -1,3 +1,4 @@
+│   │   ├── CONVENTIONS.md      # 约定与验收明细（AGENTS.md 瘦身后的细节落点）
 # 架构设计 — Windows 桌面宠物插件化框架
 
 > 本文是技术选型任务的最终方案全文，迁移至本项目作为开发基准。设计经作者确认的四项决策见文末「决策记录」。原始讨论留存在原会话（sess_86051e96，2026-09-06）。
@@ -124,7 +125,8 @@
 │   ├── adr/
 │   │   ├── 0001-agent-hooks-capability-in-plugin-page.md
 │   │   ├── 0002-single-agent-linkage-uninstall-then-install.md
-│   │   └── 0003-session-visibility-on-pet-bubble.md
+│   │   ├── 0003-session-visibility-on-pet-bubble.md
+│   │   └── 0004-style-src-unsafe-inline-kept.md  # 插件样式注入契约为何暂不收紧
 │   └── desktop-pet-优化任务清单.docx   # 外部优化任务清单
 ├── assets/
 │   └── app-icon.png            # 图标母版（generate-app-icon.ps1 的产物）
