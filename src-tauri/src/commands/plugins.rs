@@ -1,11 +1,78 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use serde_json::Value;
 use tauri::{Emitter, Manager};
 
 use crate::ids::is_safe_id;
+
+/// manifest 字段约束的唯一数据源（K4）：与 TS 侧 import 的是同一份磁盘文件
+/// （`src/runtime/plugin-runtime.ts` 读它、`webview` 与这里都不许自带副本）。
+/// 编译期内嵌，打包版无需把 schema 放进 bundle.resources。
+const MANIFEST_SCHEMA_JSON: &str = include_str!("../../../packages/sdk/manifest.schema.json");
+
+/// 首次访问时解析内嵌 schema（编译期文件，解析只做一次）。
+fn manifest_schema() -> &'static Value {
+    static SCHEMA: OnceLock<Value> = OnceLock::new();
+    SCHEMA.get_or_init(|| {
+        serde_json::from_str(MANIFEST_SCHEMA_JSON).expect("manifest.schema.json 不是合法 JSON")
+    })
+}
+
+/// 按 manifest.schema.json 校验 manifest 的字段约束（K4）：
+/// 必填键清单、id 的长度上下限（字符集部分仍归 `ids::is_safe_id` —— 唯一实现，S4）、
+/// permissions 的元素类型与成员资格（`plugin_caps::is_known`）。
+/// 拒绝发生在扫描阶段：坏 manifest 不进列表，只经 `host:plugin-error` 上报。
+fn validate_manifest_fields(manifest: &Value) -> Result<(), String> {
+    let schema = manifest_schema();
+    let required = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .ok_or("manifest.schema.json 缺 required")?;
+    for key in required {
+        let key = key
+            .as_str()
+            .ok_or("manifest.schema.json 的 required 项必须是字符串")?;
+        if manifest.get(key).is_none() {
+            return Err(format!("manifest 缺少 {key}"));
+        }
+    }
+    let id_rule = schema
+        .get("properties")
+        .and_then(|p| p.get("id"))
+        .ok_or("manifest.schema.json 缺 properties.id")?;
+    let id_min = id_rule
+        .get("minLength")
+        .and_then(Value::as_u64)
+        .ok_or("manifest.schema.json 缺 id.minLength")?;
+    let id_max = id_rule
+        .get("maxLength")
+        .and_then(Value::as_u64)
+        .ok_or("manifest.schema.json 缺 id.maxLength")?;
+    let id = manifest
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or("manifest 缺少 id")?;
+    if !(id_min..=id_max).contains(&(id.chars().count() as u64)) || !is_safe_id(id) {
+        return Err(format!("非法插件 id: {id}"));
+    }
+    if let Some(value) = manifest.get("permissions") {
+        let arr = value.as_array().ok_or("permissions 必须是数组")?;
+        for item in arr {
+            // 以前这里对非字符串元素 filter_map 静默丢弃：
+            // 「声明了但类型写错」的能力等于没声明，现场只剩「未在 manifest 声明这些能力」，
+            // 看不出真正原因（K4 修复）。
+            let name = item
+                .as_str()
+                .ok_or_else(|| format!("permissions 元素必须是字符串: {item}"))?;
+            if !crate::plugin_caps::is_known(name) {
+                return Err(format!("未知能力名: {name}"));
+            }
+        }
+    }
+    Ok(())
+}
 
 /// 插件目录根：dev 读仓库根 plugins/；release 读资源目录 plugins/（打包时由 bundle.resources 复制）。
 fn plugins_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -39,12 +106,14 @@ fn collect_manifests(app: &tauri::AppHandle) -> Result<Vec<Value>, String> {
         if !entry.path().join("manifest.json").is_file() {
             continue;
         }
-        let loaded =
-            read_manifest(&dir, &name).and_then(|v| match v.get("id").and_then(Value::as_str) {
+        let loaded = read_manifest(&dir, &name).and_then(|v| {
+            validate_manifest_fields(&v)?;
+            match v.get("id").and_then(Value::as_str) {
                 Some(id) if id == name => Ok(v),
                 Some(id) => Err(format!("manifest.id \"{id}\" 与目录名 \"{name}\" 不一致")),
                 None => Err("manifest 缺少 id".to_string()),
-            });
+            }
+        });
         match loaded {
             Ok(v) => manifests.push(v),
             Err(e) => {
@@ -94,6 +163,7 @@ pub fn installed_plugin_ids(app: &tauri::AppHandle) -> Result<Vec<String>, Strin
 
 /// manifest 声明的能力列表。以磁盘上的 manifest 为唯一事实来源，
 /// 供 permission_request 校验「请求的能力确实声明过」。
+/// 非字符串元素与不在名单里的名字都是明确错误，不再静默丢弃（K4）。
 pub fn declared_capabilities(
     app: &tauri::AppHandle,
     plugin_id: &str,
@@ -102,16 +172,21 @@ pub fn declared_capabilities(
         return Err("invalid plugin id".into());
     }
     let manifest = read_manifest(&plugins_dir(app)?, plugin_id)?;
-    Ok(manifest
-        .get("permissions")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default())
+    let Some(value) = manifest.get("permissions") else {
+        return Ok(Vec::new());
+    };
+    let arr = value.as_array().ok_or("permissions 必须是数组")?;
+    let mut declared = Vec::with_capacity(arr.len());
+    for item in arr {
+        let name = item
+            .as_str()
+            .ok_or_else(|| format!("permissions 元素必须是字符串: {item}"))?;
+        if !crate::plugin_caps::is_known(name) {
+            return Err(format!("未知能力名: {name}"));
+        }
+        declared.push(name.to_string());
+    }
+    Ok(declared)
 }
 
 /// `petplugin://<插件 id>/<相对路径>`：把插件文件从宿主认定的 plugins 目录读给 webview。
@@ -258,6 +333,8 @@ pub fn spawn_plugins_watcher(app: &tauri::AppHandle) -> Result<PluginWatcher, St
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     /// S4：id 规则只剩 `crate::ids::is_safe_id` 一份。这里钉住「本模块确实引用的是那一份」，
     /// 免得日后又在这个文件里长出第二套手写检查。
     /// 只看 `#[cfg(test)]` 之前的代码，否则断言里那些字面量会自我命中。
@@ -275,5 +352,125 @@ mod tests {
                 "plugins.rs 里出现了第二份 id 检查: {banned}"
             );
         }
+    }
+
+    /// K4：schema 的 id 约束（模式串 + 长度上下限）必须与 `ids.rs` 的词表是同一件事 ——
+    /// 改 schema 里 pattern/minLength/maxLength 任一处，这里即红（负向自证用的就是这条）。
+    #[test]
+    fn schema_id_bounds_match_the_ids_vocab() {
+        let id_rule = &manifest_schema()["properties"]["id"];
+        assert_eq!(
+            id_rule["pattern"], "^[a-z0-9][a-z0-9.-]{2,63}$",
+            "schema 的 id 模式串变了 —— 它必须逐字照抄既有前端正则"
+        );
+        let min = id_rule["minLength"]
+            .as_u64()
+            .expect("schema 缺 id.minLength");
+        let max = id_rule["maxLength"]
+            .as_u64()
+            .expect("schema 缺 id.maxLength");
+        assert_eq!(
+            (min, max),
+            (3, 64),
+            "schema 的 id 长度上下限与模式串 {{2,63}} 的展开不一致"
+        );
+        for len in [2u64, 3, 64, 65] {
+            let id = "a".repeat(len as usize);
+            let schema_ok = (min..=max).contains(&len);
+            assert_eq!(
+                schema_ok,
+                is_safe_id(&id),
+                "长度 {len} 处 schema 与 ids.rs 的判定不一致"
+            );
+        }
+    }
+
+    /// K4：`validate_manifest_fields` 按 schema 拒绝 —— 缺必填键、坏 id、坏 permissions。
+    #[test]
+    fn manifest_fields_are_validated_against_the_schema() {
+        let good = || {
+            serde_json::json!({
+                "id": "zz.good",
+                "name": "好插件",
+                "version": "0.0.1",
+                "entry": "index.js",
+                "permissions": ["storage"]
+            })
+        };
+        assert!(
+            validate_manifest_fields(&good()).is_ok(),
+            "合法 manifest 被拒"
+        );
+
+        for key in ["id", "name", "version", "entry"] {
+            let mut m = good();
+            m.as_object_mut().unwrap().remove(key);
+            let err = validate_manifest_fields(&m).unwrap_err();
+            assert!(err.contains(key), "缺 {key} 的报错没带键名: {err}");
+        }
+
+        let mut m = good();
+        m["id"] = serde_json::json!("Todo");
+        assert!(validate_manifest_fields(&m)
+            .unwrap_err()
+            .contains("非法插件 id"));
+        let mut m = good();
+        m["id"] = serde_json::json!("a".repeat(64));
+        assert!(
+            validate_manifest_fields(&m).is_ok(),
+            "64 字符 id 应当合法（上限边界）"
+        );
+        let mut m = good();
+        m["id"] = serde_json::json!("a".repeat(65));
+        assert!(validate_manifest_fields(&m).is_err(), "65 字符 id 应当被拒");
+
+        let mut m = good();
+        m["permissions"] = serde_json::json!(["storage", 42]);
+        let err = validate_manifest_fields(&m).unwrap_err();
+        assert!(
+            err.contains("必须是字符串") && err.contains("42"),
+            "非字符串元素的报错: {err}"
+        );
+        let mut m = good();
+        m["permissions"] = serde_json::json!(["not-a-cap"]);
+        let err = validate_manifest_fields(&m).unwrap_err();
+        assert!(
+            err.contains("未知能力名") && err.contains("not-a-cap"),
+            "未在名单里的能力名报错: {err}"
+        );
+        let mut m = good();
+        m["permissions"] = serde_json::json!("storage");
+        assert!(
+            validate_manifest_fields(&m).is_err(),
+            "permissions 非数组应当被拒"
+        );
+    }
+
+    /// K4：四个在售插件的真 manifest 全部通过新校验 —— 加 apiVersion/minHostVersion
+    /// 是扩接口，不改现有插件也必须兼容。
+    #[test]
+    fn shipped_manifests_pass_the_schema() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).expect("plugins 目录").flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Ok(raw) = std::fs::read_to_string(entry.path().join("manifest.json")) else {
+                continue;
+            };
+            let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+                continue;
+            };
+            // 目录名与 id 的一致归 collect_manifests 判，这里只管字段约束
+            if value.get("id").and_then(Value::as_str) != Some(name.as_str()) {
+                continue;
+            }
+            validate_manifest_fields(&value)
+                .unwrap_or_else(|e| panic!("{name} 的真 manifest 未通过 schema 校验: {e}"));
+            checked += 1;
+        }
+        assert!(
+            checked >= 4,
+            "只校验到 {checked} 个真实插件，扫目录的口径大概坏了"
+        );
     }
 }

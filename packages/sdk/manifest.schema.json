@@ -1,0 +1,44 @@
+{
+  "$comment": "插件 manifest.json 字段约束的唯一数据源（K4）。两个手写消费者读这里的值：TS 侧 src/runtime/plugin-runtime.ts::validateManifest、Rust 侧 src-tauri/src/commands/plugins.rs::validate_manifest_fields。任何约束值在两边再抄一份即视为漂移 —— tests/unit/unit-manifest-schema.mjs 逐条对撞，改这里或改任一边都会变红。",
+  "type": "object",
+  "required": ["id", "name", "version", "entry"],
+  "properties": {
+    "id": {
+      "$comment": "逐字照抄 K4 之前前端既有的那一份正则；minLength/maxLength 是首字符加量词 {2,63} 的展开",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9.-]{2,63}$",
+      "minLength": 3,
+      "maxLength": 64
+    },
+    "name": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "minLength": 1 },
+    "entry": {
+      "$comment": "插件目录内的文件名，不允许子目录",
+      "type": "string",
+      "pattern": "^[\\w.-]+\\.js$"
+    },
+    "widget": {
+      "$comment": "可选；缺省即该插件没有可挂载界面",
+      "type": "string",
+      "pattern": "^[\\w.-]+\\.js$"
+    },
+    "permissions": {
+      "$comment": "元素必须命中 capabilitiesRef 指向的名单；名单本体不许抄进本文件",
+      "type": "array",
+      "items": { "type": "string" },
+      "capabilitiesRef": "./plugin-capabilities.json#capabilities"
+    },
+    "description": { "type": "string" },
+    "apiVersion": {
+      "$comment": "缺省视为 1（老插件不改也能跑）；supported 是宿主认识的版本集合",
+      "type": "integer",
+      "default": 1,
+      "supported": [1]
+    },
+    "minHostVersion": {
+      "$comment": "可选；缺省即不设限。三段以内数字版本，按数值逐段与宿主版本比较",
+      "type": "string",
+      "pattern": "^[0-9]+(\\.[0-9]+){0,2}$"
+    }
+  }
+}

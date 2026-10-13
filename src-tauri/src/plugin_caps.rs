@@ -19,7 +19,7 @@ use std::sync::OnceLock;
 /// 两者由本文件单测与 node 侧一致性测试逐条对撞。
 const CATALOG_JSON: &str = include_str!("../../packages/sdk/plugin-capabilities.json");
 
-/// 能力名的编译期引用点（顺序与 PLUGIN_SDK.md §3 表格一致）。
+/// 能力名的编译期引用点（顺序与 docs/PLUGIN_SDK.md §3 表格一致）。
 /// 只有 9 个名字在 Rust 侧有门禁点；`bus:subscribe` / `pet:react` / `pet:say`
 /// 只在 webview 内判定（桥 + topic ACL），不在这里 —— 它们的名字仍由名单本体定义。
 pub const BUS_PUBLISH: &str = "bus:publish";
@@ -80,16 +80,14 @@ pub fn http_host_key(host: &str) -> String {
     format!("{}{host}", http_host_prefix())
 }
 
-/// 名单本体（解析结果）。生产路径当前不消费全量名单（K4 的 manifest schema
-/// 白名单校验接上后会转去生产路径）；cfg(test) 是为了 clippy 在 `-D warnings`
-/// 下不因「非测试构建里没人用」判 dead_code（§6 的口径：不许用 #[allow] 压）。
-#[cfg(test)]
+/// 名单本体（解析结果）。生产路径的消费点是 `commands::plugins::validate_manifest_fields`
+/// 与 `declared_capabilities` —— manifest 的 permissions 逐个过 `is_known`（K4 接上），
+/// 之前带 `#[cfg(test)]` 的日子结束了。
 pub fn all() -> &'static [String] {
     &catalog().names
 }
 
-/// 名字是否是名单成员（查询函数；当前消费者是本文件的单测）。
-#[cfg(test)]
+/// 名字是否是名单成员（manifest 校验的成员资格判定，K4 起进生产路径）。
 pub fn is_known(name: &str) -> bool {
     all().iter().any(|n| n == name)
 }

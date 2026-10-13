@@ -2,8 +2,13 @@
 // 单插件异常被隔离，不影响宿主；启停清单存在宿主磁盘上（见 services/enabled.rs）。
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
+import manifestSchema from "../../packages/sdk/manifest.schema.json" with { type: "json" };
+// 宿主版本的事实来源：打包/开发都取 tauri.conf.json 的 version（与 Rust 侧
+// env!("CARGO_PKG_VERSION") 同值，由 unit-manifest-schema.mjs 对撞防漂）
+import hostConfig from "../../src-tauri/tauri.conf.json" with { type: "json" };
 import { bus } from "./event-bus";
 import { buildContext, invalidatePermissions } from "./bridge";
+import { CAPABILITIES } from "./plugin-capabilities";
 import { pluginFileUrl, pluginFileVersion } from "./plugin-url";
 import { widgetHost } from "./widget-host";
 import { releaseAll } from "./resources";
@@ -17,6 +22,10 @@ export interface PluginManifest {
   widget?: string;
   permissions?: string[];
   description?: string;
+  /** 插件用的 manifest 接口版本；缺省视为 1（schema 的 default） */
+  apiVersion?: number;
+  /** 最低宿主版本；缺省即不设限 */
+  minHostVersion?: string;
 }
 
 /**
@@ -82,14 +91,80 @@ export async function watchEnabled(): Promise<void> {
   });
 }
 
+/**
+ * manifest 的字段约束全部取自 packages/sdk/manifest.schema.json（K4）：
+ * schema 是唯一数据源，这里只做消费，Rust 侧 `plugins.rs::validate_manifest_fields`
+ * 读的是同一份磁盘文件（include_str! 编译期内嵌）。
+ * 两侧与 schema 的一致性由 `tests/unit/unit-manifest-schema.mjs` 逐条对撞（改任一边即红）。
+ */
+const ID_RULE = manifestSchema.properties.id;
+const ID_RE = new RegExp(ID_RULE.pattern);
+const NAME_RULE = manifestSchema.properties.name;
+const VERSION_RULE = manifestSchema.properties.version;
+const ENTRY_RE = new RegExp(manifestSchema.properties.entry.pattern);
+const WIDGET_RE = new RegExp(manifestSchema.properties.widget.pattern);
+const API_RULE = manifestSchema.properties.apiVersion;
+const MIN_HOST_RE = new RegExp(manifestSchema.properties.minHostVersion.pattern);
+/** 宿主版本（与 Rust 侧 env!("CARGO_PKG_VERSION") 同值，见 package 单测对撞） */
+const HOST_VERSION: string = hostConfig.version;
+
+/** 数值逐段比较（缺失段按 0 补齐） */
+function compareVersions(a: string, b: string): number {
+  const segments = a.split(".");
+  const other = b.split(".");
+  for (let i = 0; i < Math.max(segments.length, other.length); i += 1) {
+    const diff = Number(segments[i] ?? 0) - Number(other[i] ?? 0);
+    if (diff !== 0) return diff > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
 export function validateManifest(m: PluginManifest): string | null {
   if (!m || typeof m !== "object") return "manifest 不是对象";
-  if (!/^[a-z0-9][a-z0-9.-]{2,63}$/.test(m.id ?? "")) return `非法插件 id: ${m.id}`;
-  if (!m.name || typeof m.name !== "string") return "缺少 name";
-  if (!m.version || typeof m.version !== "string") return "缺少 version";
-  if (!/^[\w.-]+\.js$/.test(m.entry ?? "")) return `非法 entry: ${m.entry}`;
-  if (m.widget != null && !/^[\w.-]+\.js$/.test(m.widget)) return `非法 widget: ${m.widget}`;
-  if (m.permissions != null && !Array.isArray(m.permissions)) return "permissions 必须是数组";
+  const raw = m as unknown as Record<string, unknown>;
+  for (const key of manifestSchema.required) {
+    if (raw[key] == null) return `缺少 ${key}`;
+  }
+  if (
+    typeof m.id !== "string" ||
+    m.id.length < ID_RULE.minLength ||
+    m.id.length > ID_RULE.maxLength ||
+    !ID_RE.test(m.id)
+  ) {
+    return `非法插件 id: ${m.id}`;
+  }
+  if (typeof m.name !== "string" || m.name.length < NAME_RULE.minLength) return "缺少 name";
+  if (typeof m.version !== "string" || m.version.length < VERSION_RULE.minLength) {
+    return "缺少 version";
+  }
+  if (typeof m.entry !== "string" || !ENTRY_RE.test(m.entry)) return `非法 entry: ${m.entry}`;
+  if (m.widget != null && (typeof m.widget !== "string" || !WIDGET_RE.test(m.widget))) {
+    return `非法 widget: ${m.widget}`;
+  }
+  if (m.permissions != null) {
+    if (!Array.isArray(m.permissions)) return "permissions 必须是数组";
+    for (const capability of m.permissions) {
+      if (typeof capability !== "string") {
+        return `permissions 元素必须是字符串: ${JSON.stringify(capability)}`;
+      }
+      if (!CAPABILITIES.includes(capability)) return `未知能力名: ${capability}`;
+    }
+  }
+  const apiVersion = m.apiVersion ?? API_RULE.default;
+  if (!Number.isInteger(apiVersion)) {
+    return `非法 apiVersion: ${String(m.apiVersion)}（应为整数）`;
+  }
+  if (!API_RULE.supported.includes(apiVersion)) {
+    return `不支持的 apiVersion: ${apiVersion}（本宿主支持 ${API_RULE.supported.join("、")}）`;
+  }
+  if (m.minHostVersion != null) {
+    if (typeof m.minHostVersion !== "string" || !MIN_HOST_RE.test(m.minHostVersion)) {
+      return `非法 minHostVersion: ${String(m.minHostVersion)}`;
+    }
+    if (compareVersions(m.minHostVersion, HOST_VERSION) > 0) {
+      return `插件要求宿主版本 ≥ ${m.minHostVersion}，当前宿主 ${HOST_VERSION}`;
+    }
+  }
   return null;
 }
 
