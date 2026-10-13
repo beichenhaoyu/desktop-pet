@@ -7,7 +7,7 @@
 
 | 文档 | 看什么 |
 |---|---|
-| [../PLUGIN_SDK.md](../PLUGIN_SDK.md) | API 面：目录结构、生命周期、能力清单（§3）、`ctx`（§4）、widget 约定（§5）、共享资源（§6）、已知边界（§8） |
+| [PLUGIN_SDK.md](PLUGIN_SDK.md) | API 面：目录结构、生命周期、能力清单（§3）、`ctx`（§4）、widget 约定（§5）、共享资源（§6）、已知边界（§8） |
 | 本文 | 交付标准、硬性规则、我们踩过的坑、自检清单 |
 | [../AGENTS.md](../AGENTS.md) | 项目级约定与「验证」小节；`docs/ARCHITECTURE.md` 是宿主设计，写插件一般不用读 |
 
@@ -38,7 +38,7 @@ npm run verify         # 终端 2：宿主回归（147 条）
 4. `tests/e2e/verify-<id>.mjs` + `package.json` 里一条 `verify:<id>`：**真机端到端断言**，不是单元测试。
    照 `tests/e2e/verify-astock.mjs` 的结构写（`attach` / `hostInvoke` / `waitUntil` / `createReport` 来自 `tests/e2e/harness/cdp.mjs`）。
    跑完必须自己收尾：撤销授权（连带清存储）、把插件下线、恢复 `host:enabled-plugins` 原值。
-5. 文档：如果新增了能力或改了约定，同步 `../PLUGIN_SDK.md` 的能力表与本目录的约定条目。
+5. 文档：如果新增了能力或改了约定，同步 `PLUGIN_SDK.md` 的能力表与本目录的约定条目。
 6. 提交：`git add` 只加自己动过的路径（**不要用 `git add -A`**，工作区里有别人的东西），
    提交信息中文、说明「为什么」。**不要 push。**
 

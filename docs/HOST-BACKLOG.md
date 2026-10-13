@@ -95,7 +95,7 @@ MVP 范围：<这一轮只做什么>
   - `src-tauri/src/gate.rs`、`src-tauri/src/commands/agent.rs`、`src-tauri/src/lib.rs`（仅命令注册处）
   - `src/runtime/bridge.ts`、`src/runtime/widget-host.ts`、`src/runtime/topic-acl.ts`
   - `src/settings/main.ts`、`src/settings.html`
-  - `PLUGIN_SDK.md`（§3 能力表加一行）、`AGENTS.md`（改那条约定的含义）
+  - `docs/PLUGIN_SDK.md`（§3 能力表加一行）、`AGENTS.md`（改那条约定的含义）
   - `tests/e2e/verify-isolation.mjs`、`tests/e2e/verify-agent-bridge.mjs`（只做断言迁移，不做功能改动）
   - **不得**动 `plugins/com.pet.agent-bridge/`（归 A9）、`src/main.ts` 与 `src/pet/`（归 B3）、`services/agent.rs` 的收件与归一化、
     `tauri.conf.json`、CSP。
@@ -144,7 +144,7 @@ MVP 范围：<这一轮只做什么>
   `src/runtime/bridge.ts:160-174`（能力校验、压换行、截 200 字）、`src/pet/host.ts`、`src/pet/dialogue.ts:6-24`、
   `src/pet/click-through.ts:107-117`、`src-tauri/src/window/pet.rs:39-51`（`set_pet_hidden`）、`src/pet/game-mode.ts:33-44`。
 - **边界**：`src/main.ts`、`src/pet/host.ts`、`src/pet/dialogue.ts`、`src/styles.css`、`src/runtime/bridge.ts`、
-  `PLUGIN_SDK.md`、`tests/e2e/verify-isolation.mjs`、`tests/e2e/verify-agent-bridge.mjs`（只配合迁移断言，不改插件）。
+  `docs/PLUGIN_SDK.md`、`tests/e2e/verify-isolation.mjs`、`tests/e2e/verify-agent-bridge.mjs`（只配合迁移断言，不改插件）。
   **不得**动 `plugins/`、`src-tauri/`（本卡预期零 Rust 改动）、`tauri.conf.json`、CSP、overlay 机制、状态机优先级队列。
 - **方案约束（已定）**：
   1. 新增显式能力 **`pet:status`**，不复用 `say()` 的第二参数 —— "自动收起"是 `say` 的语义核心，
@@ -199,7 +199,7 @@ MVP 范围：<这一轮只做什么>
   `commands/agent.rs:27-40`（`snapshot`）、`../CONTEXT.md` 的「Agent 联动」与「生命周期」。
 - **边界**：`src-tauri/src/services/agent_hooks.rs`、`services/agent.rs`（**只**许动事件名/适配器表，不许动 watcher 与归一化）、
   `commands/agent.rs`、`src-tauri/src/lib.rs`（命令注册）、`tests/e2e/verify-agent-bridge.mjs`、
-  `PLUGIN_SDK.md`（若把选择器暴露给插件）、`AGENTS.md` 的 Agent 接入约定（改文案不改语义）。
+  `docs/PLUGIN_SDK.md`（若把选择器暴露给插件）、`AGENTS.md` 的 Agent 接入约定（改文案不改语义）。
   **不得**动 `src/`（B3 地盘）、`plugins/`（A9 地盘）、`services/http.rs`、CSP。
 - **方案约束（已定）**：
   1. 适配器形状至少含 `{ id, 显示名, 候选配置文件解析, 事件名→phase 映射, 命令串模板 }`；`qoder` 用现有常量填进去，

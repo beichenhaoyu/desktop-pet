@@ -1,4 +1,4 @@
-# 生成 app-icon.png（1024x1024 透明底）作为 tauri icon 命令的源图
+# 生成 assets/app-icon.png（1024x1024 透明底）作为 tauri icon 命令的源图
 # 用法：powershell -NoProfile -ExecutionPolicy Bypass -File tools/generate-app-icon.ps1
 Add-Type -AssemblyName System.Drawing
 
@@ -33,7 +33,7 @@ $pen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
 $g.DrawArc($pen, 412, 520, 200, 140, 20, 140)
 
 $g.Dispose()
-$out = Join-Path $PSScriptRoot "..\app-icon.png"
+$out = Join-Path $PSScriptRoot "..\assets\app-icon.png"
 $bmp.Save($out, [System.Drawing.Imaging.ImageFormat]::Png)
 $bmp.Dispose()
 Write-Host "generated $out"

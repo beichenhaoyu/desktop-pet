@@ -9,7 +9,7 @@
 //   违规**同步 throw**（src/runtime/topic-acl.ts:43-55）；且 `ctx.host` 只在 settings 区存在
 //   （widget-host.ts:97）。把两面合并等于给插件一把宠物窗里拿不到的钥匙。
 //
-// 行号为 2026-10-12 落笔时的现场；行为口径另见 PLUGIN_SDK.md 与 T01 取证报告
+// 行号为 2026-10-12 落笔时的现场；行为口径另见 docs/PLUGIN_SDK.md 与 T01 取证报告
 // （.dispatch/arch-p2/work/T01/sdk-surface.md）。
 
 import type { StandardTopic } from "./topics.js";
@@ -139,7 +139,7 @@ export interface PluginContext {
   };
 }
 
-/** widget 的三个挂载区（PLUGIN_SDK.md:121-122；宿主调用点 plugin-runtime.ts:185、src/settings/main.ts:245、src/overlay/main.ts:39）。 */
+/** widget 的三个挂载区（docs/PLUGIN_SDK.md:121-122；宿主调用点 plugin-runtime.ts:185、src/settings/main.ts:245、src/overlay/main.ts:39）。 */
 export type WidgetRegion = "badge" | "overlay" | "settings";
 
 /** widget 侧受限总线视图（src/runtime/topic-acl.ts:37-55 的 createScopedBus）。

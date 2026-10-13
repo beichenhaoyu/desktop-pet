@@ -9,7 +9,7 @@
 
 ```
 任务：<插件 id> —— <一句话目标>
-必读：docs/PLUGIN-HANDBOOK.md、PLUGIN_SDK.md（§3 能力、§5 widget）、参考实现 plugins/todo 或 plugins/com.pet.astock
+必读：docs/PLUGIN-HANDBOOK.md、docs/PLUGIN_SDK.md（§3 能力、§5 widget）、参考实现 plugins/todo 或 plugins/com.pet.astock
 边界：只准新增 plugins/<id>/ 与 tests/e2e/verify-<id>.mjs + package.json 一条脚本；
       不得改 src/、src-tauri/、tauri.conf.json、CSP、其他插件目录。需要宿主新能力就停下来提出来。
 能力声明：<列出 permissions，并说明每项用在哪>
@@ -168,7 +168,7 @@ MVP 范围：<这一轮只做什么>
   所以阶段二必须等 B1 的干净解码，并且解析器要写成**校验不通过就判该源失败并下移**：
   段数必须等于 88（新浪 32）、现价/昨收必须是有限正数、`3` 段必须能对上自选列表里的代码。
 
-- **必读**：`D:\test\desktop-pet\docs\PLUGIN-HANDBOOK.md`、`PLUGIN_SDK.md` §3 能力表、
+- **必读**：`D:\test\desktop-pet\docs\PLUGIN-HANDBOOK.md`、`docs/PLUGIN_SDK.md` §3 能力表、
   参考实现 `plugins/com.pet.astock/market.js`（纯函数分层、`parseKlineLine` 的列序注释）与 `throttle.js`（节制范式）。
 - **边界**：只准改 `plugins/com.pet.astock/` 内的 `market.js`、`index.js`、`rules.js`、`widget.js` 与
   `tests/e2e/verify-astock.mjs`。**不得**改 `src/`、`src-tauri/`、`tauri.conf.json`、其他插件目录。
@@ -214,11 +214,11 @@ MVP 范围：<这一轮只做什么>
   **B3**（`pet:status` 常驻行）、**B4**（适配器注册表 + `agent_hooks_switch` + 联动状态宿主持久化）**三张全部放行**后才能开工。
   任一张没过就在插件侧凑合实现 = 必然写出错的近似物，评审直接打回。
 - **必读**：[../CONTEXT.md](../CONTEXT.md)（生命周期四个动作 + 显示三层的定义，本卡的词汇全在那里）、
-  [PLUGIN-HANDBOOK.md](PLUGIN-HANDBOOK.md)、[../PLUGIN_SDK.md](../PLUGIN_SDK.md) §3、
+  [PLUGIN-HANDBOOK.md](PLUGIN-HANDBOOK.md)、[PLUGIN_SDK.md](PLUGIN_SDK.md) §3、
   [adr/0001](adr/0001-agent-hooks-capability-in-plugin-page.md) / [adr/0002](adr/0002-single-agent-linkage-uninstall-then-install.md) /
   [adr/0003](adr/0003-session-visibility-on-pet-bubble.md)、参考实现 `plugins/com.pet.astock/`（纯函数分层 + 串行链的写法）。
 - **边界**：只准动 `plugins/com.pet.agent-bridge/`（四个文件）与 `tests/e2e/verify-agent-bridge.mjs`。
-  **不得**动 `src/`、`src-tauri/`、`tauri.conf.json`、CSP、其他插件目录、`PLUGIN_SDK.md`。
+  **不得**动 `src/`、`src-tauri/`、`tauri.conf.json`、CSP、其他插件目录、`docs/PLUGIN_SDK.md`。
   需要宿主再让一步 —— 停下来提出来，不要绕（尤其不要 `import { invoke }` 直连宿主命令，那是 REVIEW §1 的 P0）。
 - **manifest 变更**：新增 `agent:hooks`、`pet:status`；**删除 `overlay`**（会话卡去掉后它不再持有任何悬浮窗）；
   `pet:say`/`pet:react`/`bus:subscribe`/`bus:publish`/`storage`/`widget` 保留。逐项核对实际用量：
@@ -274,7 +274,7 @@ MVP 范围：<这一轮只做什么>
   - `D:\test\desktop-pet\src-tauri\src\services\http.rs`
   - `D:\test\desktop-pet\src-tauri\Cargo.toml`、`D:\test\desktop-pet\src-tauri\Cargo.lock`
   - `D:\test\desktop-pet\src\runtime\bridge.ts`
-  - `D:\test\desktop-pet\PLUGIN_SDK.md`
+  - `D:\test\desktop-pet\docs\PLUGIN_SDK.md`
   - `D:\test\desktop-pet\scripts\verify.mjs`（或新加 `tests/e2e/verify-http.mjs` + package.json 一条脚本）
   不得改 `tauri.conf.json`、CSP、`plugins/` 下任何文件、其他 Rust service 模块。
 - **为什么必须动本体**：`http.rs:176` 现在是 `body: String::from_utf8_lossy(&buf).into_owned()`。
@@ -292,7 +292,7 @@ MVP 范围：<这一轮只做什么>
   3. 不给请求侧加 `charset` 覆盖参数。两个实测源的 `Content-Type` 都自带 charset，加参数就是多一条
      要过 Rust 校验、要写进 SDK、要被插件误用的面。**真需要覆盖时再提新卡。**
   4. `bridge.ts:178-197` 的 `http.request` 签名与返回结构不变（`{status, contentType, body, truncated}`），
-     插件侧零改动；PLUGIN_SDK.md 第 68/93 行那两处只补一句「body 按响应 `Content-Type` 的 charset 解码，
+     插件侧零改动；docs/PLUGIN_SDK.md 第 68/93 行那两处只补一句「body 按响应 `Content-Type` 的 charset 解码，
      目前支持 UTF-8 与 GBK/GB18030，其余仍按 UTF-8 lossy」。
 - **数据源/实测依据**（2026-10-09，规划方本机实跑）：
   - `https://qt.gtimg.cn/q=sh600000` → `200`，`Content-Type: text/html; charset=GBK`，GBK 解码后 `1` 段是 `浦发银行`；
@@ -351,7 +351,7 @@ MVP 范围：<这一轮只做什么>
 
 复验由规划方独立跑，不是转述提交说明：`cargo test --lib` 70 passed；`npm run verify:http` 21 passed；
 `npm run verify` 147 passed；`npm run verify:release` 12 passed；`npm run verify:astock` **89 passed / 14 failed**。
-边界：两个提交相加只动 `src-tauri/{Cargo.toml,Cargo.lock,services/http.rs}`、`PLUGIN_SDK.md`、`package.json`
+边界：两个提交相加只动 `src-tauri/{Cargo.toml,Cargo.lock,services/http.rs}`、`docs/PLUGIN_SDK.md`、`package.json`
 一条脚本、`tests/e2e/verify-http.mjs`、`plugins/com.pet.astock/{index,market,widget}.js`、`tests/e2e/verify-astock.mjs`；
 `manifest.json` 与 `src/` 零改动、`bridge.ts` 未动（比卡片要求更保守）、`cargo tree -p tauri` 仍 2.12.0。
 `verify-astock.mjs` 断言 69 → 105，**被删除的断言行 0 条**（卡片禁止放宽回归，这条守住了）。

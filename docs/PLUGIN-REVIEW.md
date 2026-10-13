@@ -73,7 +73,7 @@
 | 纯函数有独立单测 | 列序、边界、脏值、空数据 |
 | verify 跑完还原现场 | 撤销授权、插件下线、`host:enabled-plugins` 复原、临时文件删除、自起进程关停 |
 | 涉及新脚本/图片/协议源 → 跑过 `npm run verify:release` | dev 不注入 CSP，测不出来 |
-| 约定/能力有变动时同步了文档 | `../PLUGIN_SDK.md` 能力表、`../AGENTS.md` 约定、`dist/*/更新说明.txt` |
+| 约定/能力有变动时同步了文档 | `PLUGIN_SDK.md` 能力表、`../AGENTS.md` 约定、`dist/*/更新说明.txt` |
 
 ## 6. 代码质量（P2）
 

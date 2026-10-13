@@ -11,7 +11,7 @@
 //
 // 名单来源：AGENTS.md「约定」段的标准事件 topic 五条。刻意不收的：
 // host:fullscreen（宿主窗口事件，不是总线 topic），以及宿主原生注入的 BLE 扩展事件
-// ble:device-found / ble:disconnected / ble:error（PLUGIN_SDK.md 单列，不在五条标准里）。
+// ble:device-found / ble:disconnected / ble:error（docs/PLUGIN_SDK.md 单列，不在五条标准里）。
 export const BLE_HEART_RATE = "ble:heart-rate";
 export const AGENT_STATE = "agent:state";
 export const AGENT_EVENT = "agent:event";
