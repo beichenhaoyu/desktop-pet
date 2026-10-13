@@ -1,0 +1,64 @@
+import { invoke } from "@tauri-apps/api/core";
+import { $ } from "../dom";
+
+/* ---------- 快捷键 ---------- */
+
+const hotkeyStatus = () => $<HTMLElement>("hotkey-status");
+
+export async function renderHotkey(): Promise<void> {
+  const el2 = hotkeyStatus();
+  if (!el2) return;
+  try {
+    const info = await invoke<{ accelerator: string; default: string }>("hotkey_status");
+    el2.replaceChildren(
+      document.createTextNode("当前："),
+      Object.assign(document.createElement("kbd"), { textContent: info.accelerator }),
+      document.createTextNode(info.accelerator === info.default ? "（默认）" : ""),
+    );
+    const input = $<HTMLInputElement>("hotkey-input");
+    if (input && !input.value) input.value = info.accelerator;
+  } catch (e) {
+    el2.textContent = `读取失败：${String(e)}`;
+  }
+}
+
+async function saveHotkey(accelerator: string): Promise<void> {
+  const el2 = hotkeyStatus();
+  try {
+    const saved = await invoke<string>("hotkey_set", { accelerator });
+    const input = $<HTMLInputElement>("hotkey-input");
+    if (input) input.value = saved;
+    await renderHotkey();
+    el2?.classList.remove("error");
+  } catch (e) {
+    if (el2) el2.textContent = `应用失败：${String(e)}`;
+  }
+}
+
+export function wireHotkey(): void {
+  $<HTMLElement>("hotkey-save")?.addEventListener("click", () => {
+    const value = ($<HTMLInputElement>("hotkey-input")?.value ?? "").trim();
+    if (!value) {
+      const el2 = hotkeyStatus();
+      if (el2) el2.textContent = "先输入一个组合键，例如 Ctrl+Alt+P。";
+      return;
+    }
+    void saveHotkey(value);
+  });
+  $<HTMLElement>("hotkey-reset")?.addEventListener("click", () => {
+    void saveHotkey("CommandOrControl+Alt+P");
+  });
+  $<HTMLElement>("hotkey-test")?.addEventListener("click", async () => {
+    const el2 = hotkeyStatus();
+    const value = ($<HTMLInputElement>("hotkey-input")?.value ?? "").trim();
+    if (!value || !el2) return;
+    try {
+      const free = await invoke<boolean>("hotkey_test", { accelerator: value });
+      el2.textContent = free
+        ? `「${value}」可以注册，没被别的应用占用。`
+        : `「${value}」注册失败，多半已被其他程序占用，换一个吧。`;
+    } catch (e) {
+      el2.textContent = `测试失败：${String(e)}`;
+    }
+  });
+}

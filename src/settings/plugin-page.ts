@@ -1,0 +1,145 @@
+import { invoke } from "@tauri-apps/api/core";
+import { validateManifest } from "../runtime/plugin-runtime";
+import { widgetHost } from "../runtime/widget-host";
+import { $, el } from "./dom";
+import { enabledSet } from "./nav";
+import { manifests, mountedFor, selected, setMountedFor } from "./state";
+
+/* ---------- 插件页：壳由宿主给，中间那块由插件自己渲染 ---------- */
+
+export async function detachWidget(): Promise<void> {
+  if (!mountedFor) return;
+  const id = mountedFor;
+  setMountedFor(null);
+  await widgetHost.unmount(id);
+  const box = $<HTMLDivElement>("plugin-settings");
+  box?.replaceChildren();
+}
+
+export async function renderPluginPage(): Promise<void> {
+  const manifest = manifests.find((m) => m.id === selected);
+  const icon = $<HTMLDivElement>("plugin-icon");
+  const name = $<HTMLSpanElement>("plugin-name");
+  const version = $<HTMLSpanElement>("plugin-version");
+  const idLine = $<HTMLDivElement>("plugin-id");
+  const desc = $<HTMLDivElement>("plugin-desc");
+  const perms = $<HTMLDivElement>("plugin-perms");
+  const toggle = $<HTMLInputElement>("plugin-toggle");
+  const toggleLabel = $<HTMLSpanElement>("plugin-toggle-label");
+  const note = $<HTMLParagraphElement>("plugin-note");
+  const box = $<HTMLDivElement>("plugin-settings");
+  if (!manifest || !icon || !name || !version || !idLine || !desc || !perms || !toggle || !box) return;
+
+  const invalid = validateManifest(manifest);
+  icon.textContent = (manifest.name || manifest.id).trim().slice(0, 1).toUpperCase();
+  name.textContent = invalid ? manifest.id : manifest.name;
+  version.textContent = invalid ? "" : `v${manifest.version}`;
+  idLine.textContent = manifest.id;
+  desc.textContent = invalid ? "" : (manifest.description ?? "");
+
+  perms.replaceChildren();
+  if (invalid) {
+    perms.append(el("span", `manifest 无效：${invalid}`, "perm-chip warn"));
+  } else {
+    for (const p of manifest.permissions ?? []) {
+      // 能出网、能落盘的权限标出来，让人一眼看到风险面
+      perms.append(el("span", p, "perm-chip" + (p === "http" || p === "storage" ? " warn" : "")));
+    }
+    if ((manifest.permissions ?? []).length > 0) {
+      const revoke = el("button", "撤销授权", "btn-revoke");
+      revoke.type = "button";
+      revoke.addEventListener("click", () => {
+        // 撤销前的宿主确认条（CONTEXT.md「生命周期」）：默认连带卸载 hook，可以只撤能力。
+        // 卸载复用 agent_hooks_uninstall 的宿主路径（不带 pluginId）——撤销入口在宿主壳里，
+        // 不能指望插件还活着来收自己的 hook。
+        const strip = el("div", undefined, "revoke-confirm");
+        strip.id = "revoke-confirm";
+        const line = el("label", undefined, "row-line");
+        const alsoUninstall = document.createElement("input");
+        alsoUninstall.type = "checkbox";
+        alsoUninstall.id = "revoke-uninstall";
+        alsoUninstall.checked = true;
+        line.append(alsoUninstall, document.createTextNode("同时卸载 Agent hook"));
+        const go = el("button", "确认撤销");
+        go.type = "button";
+        go.id = "revoke-go";
+        const cancel = el("button", "取消");
+        cancel.type = "button";
+        cancel.id = "revoke-cancel";
+        cancel.addEventListener("click", () => strip.remove());
+        go.addEventListener("click", async () => {
+          go.disabled = true;
+          if (alsoUninstall.checked) {
+            try {
+              await invoke("agent_hooks_uninstall");
+            } catch (err) {
+              // 卸载失败不拦住撤权：能力先收回，失败原因留给宿主日志
+              console.error("[settings] 撤销时卸载 hook 失败", err);
+            }
+          }
+          try {
+            await invoke("permission_revoke", { pluginId: manifest.id });
+            revoke.textContent = alsoUninstall.checked ? "已撤销（含卸载 hook）" : "已撤销（仅能力）";
+            revoke.disabled = true;
+          } catch (err) {
+            // 撤销现在是宿主端会失败的命令（门禁、非法 id），不能装成成功
+            revoke.textContent = `撤销失败：${String(err instanceof Error ? err.message : err)}`;
+            go.disabled = false;
+          }
+          strip.remove();
+        });
+        strip.append(line, go, cancel);
+        revoke.after(strip);
+      });
+      perms.append(revoke);
+    }
+  }
+
+  const on = enabledSet().has(manifest.id);
+  toggle.checked = on;
+  toggle.disabled = !!invalid;
+  if (toggleLabel) toggleLabel.textContent = on ? "已启用" : "已停用";
+
+  if (note) note.hidden = true;
+  if (invalid) {
+    await detachWidget();
+    if (note) {
+      note.textContent = "这个插件的 manifest 有问题，未加载。修好后放回插件目录即可。";
+      note.hidden = false;
+    }
+    return;
+  }
+
+  // 内容由插件提供：它自己的 widget.js 挂在 settings 区的独立 Shadow DOM 里
+  if (!on) {
+    await detachWidget();
+    if (note) {
+      note.textContent = "启用后这里才显示插件自己的页面。";
+      note.hidden = false;
+    }
+    return;
+  }
+  if (!manifest.widget) {
+    await detachWidget();
+    if (note) {
+      note.textContent = "这个插件没有提供设置页面。";
+      note.hidden = false;
+    }
+    return;
+  }
+  if (mountedFor !== manifest.id) {
+    await detachWidget();
+    setMountedFor(manifest.id);
+    try {
+      await widgetHost.mount(manifest, "settings", box);
+    } catch (e) {
+      setMountedFor(null);
+      console.error(`[settings] mount widget: ${manifest.id}`, e);
+      if (note) {
+        note.textContent = `插件页面加载失败：${String(e instanceof Error ? e.message : e)}`;
+        note.hidden = false;
+      }
+      return;
+    }
+  }
+}
