@@ -19,9 +19,6 @@ use crate::services::agent::HOOK_PHASES;
 use crate::services::agent_hooks;
 use crate::services::permission::PermissionState;
 
-/// 插件调用本组命令需要的能力名（只在 settings 区 widget 的 `ctx.host.agentHooks` 上可达）
-pub const AGENT_HOOKS_CAP: &str = "agent:hooks";
-
 /// 调用面判定：任何调用都要过设置窗门禁；带 pluginId 的插件路径再加一层能力校验
 fn assert_caller(
     app: &AppHandle,
@@ -32,7 +29,7 @@ fn assert_caller(
     crate::gate::settings(window, what)?;
     if let Some(pid) = plugin_id {
         let perms = app.state::<PermissionState>();
-        crate::gate::plugin_capability(&perms, pid, AGENT_HOOKS_CAP)?;
+        crate::gate::plugin_capability(&perms, pid, crate::plugin_caps::AGENT_HOOKS)?;
     }
     Ok(())
 }

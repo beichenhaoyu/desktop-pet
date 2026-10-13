@@ -7,6 +7,21 @@ import { PET_ACTIONS, petController, type ActionName } from "../pet/host";
 import { claim, release } from "./resources";
 import { register } from "./subscriptions";
 import { assertPublishable, assertSubscribable } from "./topic-acl";
+import {
+  AGENT_HOOKS,
+  BLE_CONNECT,
+  BLE_SCAN,
+  BUS_PUBLISH,
+  BUS_SUBSCRIBE,
+  HTTP,
+  HTTP_HOST_PREFIX,
+  NOTIFY,
+  OVERLAY,
+  PET_REACT,
+  PET_SAY,
+  STORAGE,
+  WIDGET,
+} from "./plugin-capabilities";
 import type { HttpResponse, PluginContext } from "../../packages/sdk";
 
 function requireController() {
@@ -89,18 +104,16 @@ function gated<A extends unknown[], R>(
   };
 }
 
-/** 插件设置页专属能力：查询/安装/卸载本机编码 Agent（Qoder）的 hook 配置（见 ADR-0001） */
-export const AGENT_HOOKS_CAP = "agent:hooks";
-
 /**
- * settings 区 widget 的受控宿主通道。只在 `widget-host.ts` 里当
- * `ctx.host.agentHooks` 注入 —— 这是本卡唯一的新攻击面，别在这里扩大面。
+ * settings 区 widget 的受控宿主通道（能力名 `agent:hooks` 走共享名单，见 plugin-capabilities.ts）。
+ * 只在 `widget-host.ts` 里当 `ctx.host.agentHooks` 注入 —— 这是本卡唯一的新攻击面，
+ * 别在这里扩大面。
  */
 export function createAgentHooksApi(manifest: ManifestLike) {
   return {
-    status: gated(manifest, AGENT_HOOKS_CAP, () => invoke<unknown>("agent_hooks_status", { pluginId: manifest.id })),
-    install: gated(manifest, AGENT_HOOKS_CAP, () => invoke<unknown>("agent_hooks_install", { pluginId: manifest.id })),
-    uninstall: gated(manifest, AGENT_HOOKS_CAP, () => invoke<unknown>("agent_hooks_uninstall", { pluginId: manifest.id })),
+    status: gated(manifest, AGENT_HOOKS, () => invoke<unknown>("agent_hooks_status", { pluginId: manifest.id })),
+    install: gated(manifest, AGENT_HOOKS, () => invoke<unknown>("agent_hooks_install", { pluginId: manifest.id })),
+    uninstall: gated(manifest, AGENT_HOOKS, () => invoke<unknown>("agent_hooks_uninstall", { pluginId: manifest.id })),
   };
 }
 
@@ -116,13 +129,13 @@ export function buildContext(manifest: ManifestLike): PluginContext {
     log: (...args: unknown[]) => console.log(`[${pid}]`, ...args),
 
     bus: {
-      publish: gated(manifest, "bus:publish", (topic: string, payload: unknown) => {
+      publish: gated(manifest, BUS_PUBLISH, (topic: string, payload: unknown) => {
         assertPublishable(pid, topic);
         // 带上 pid：宿主要按它校验 topic 前缀与 bus:publish 授权（见 commands/bus.rs）
         return Promise.resolve(bus.publish(topic, payload, pid));
       }),
       /** 返回退订函数（先 await 才拿到）。停用插件时宿主统一回收，见 runtime/subscriptions.ts */
-      subscribe: gated(manifest, "bus:subscribe", (topic: string, handler: (payload: unknown) => void) => {
+      subscribe: gated(manifest, BUS_SUBSCRIBE, (topic: string, handler: (payload: unknown) => void) => {
         assertSubscribable(pid, topic, manifest.permissions ?? []);
         const off = bus.subscribe(topic, handler);
         return Promise.resolve(register(pid, off));
@@ -130,13 +143,13 @@ export function buildContext(manifest: ManifestLike): PluginContext {
     },
 
     storage: {
-      get: gated(manifest, "storage", (key: string) => storage.get(key) as Promise<unknown>),
-      set: gated(manifest, "storage", (key: string, value: unknown) => storage.set(key, value) as Promise<void>),
-      delete: gated(manifest, "storage", (key: string) => storage.delete(key) as Promise<void>),
+      get: gated(manifest, STORAGE, (key: string) => storage.get(key) as Promise<unknown>),
+      set: gated(manifest, STORAGE, (key: string, value: unknown) => storage.set(key, value) as Promise<void>),
+      delete: gated(manifest, STORAGE, (key: string) => storage.delete(key) as Promise<void>),
     },
 
     ble: {
-      startScan: gated(manifest, "ble:scan", async () => {
+      startScan: gated(manifest, BLE_SCAN, async () => {
         // 先 claim 是对的（并发时不该有两个「开始扫描」），但失败必须对称回滚：
         // 留着幽灵持有者的话，真正在扫的那个 release 时永远返回 false，扫描就停不下来
         claim("ble-scan", pid);
@@ -147,11 +160,11 @@ export function buildContext(manifest: ManifestLike): PluginContext {
           throw err;
         }
       }),
-      stopScan: gated(manifest, "ble:scan", async () => {
+      stopScan: gated(manifest, BLE_SCAN, async () => {
         // 仍有别的插件在扫就不该真的停
         if (release("ble-scan", pid)) await invoke("ble_stop_scan", { pluginId: pid });
       }),
-      connect: gated(manifest, "ble:connect", async (deviceId: string) => {
+      connect: gated(manifest, BLE_CONNECT, async (deviceId: string) => {
         claim("ble", pid);
         try {
           await invoke("ble_connect", { pluginId: pid, deviceId });
@@ -160,30 +173,30 @@ export function buildContext(manifest: ManifestLike): PluginContext {
           throw err;
         }
       }),
-      disconnect: gated(manifest, "ble:connect", async () => {
+      disconnect: gated(manifest, BLE_CONNECT, async () => {
         if (release("ble", pid)) await invoke("ble_disconnect", { pluginId: pid });
       }),
-      connectedDevice: gated(manifest, "ble:connect", () =>
+      connectedDevice: gated(manifest, BLE_CONNECT, () =>
         invoke("ble_connected_device", { pluginId: pid }) as Promise<string | null>,
       ),
     },
 
     // widget 数据下发：以 `${pluginId}:widget` topic 广播，widget.js 自行订阅
     widget: {
-      update: gated(manifest, "widget", (data: unknown) =>
+      update: gated(manifest, WIDGET, (data: unknown) =>
         Promise.resolve(bus.publish(`${pid}:widget`, data, pid)),
       ),
     },
 
     // 影响宠物本体：插播动作 / 弹台词气泡（本体只暴露这两个受控入口，不给 canvas/DOM）
     pet: {
-      react: gated(manifest, "pet:react", async (action: unknown) => {
+      react: gated(manifest, PET_REACT, async (action: unknown) => {
         if (!PET_ACTIONS.includes(action as ActionName)) {
           throw new Error(`[${pid}] 未知宠物动作: ${String(action)}`);
         }
         requireController().react(action as ActionName);
       }),
-      say: gated(manifest, "pet:say", async (text: unknown) => {
+      say: gated(manifest, PET_SAY, async (text: unknown) => {
         const clean = String(text ?? "")
           .replace(/\s*\n\s*/g, " ")
           .trim()
@@ -205,7 +218,7 @@ export function buildContext(manifest: ManifestLike): PluginContext {
         } catch {
           throw new Error(`[${pid}] URL 非法: ${url}`);
         }
-        if (!(await ensurePermissions(manifest, ["http", `http:${host}`]))) {
+        if (!(await ensurePermissions(manifest, [HTTP, `${HTTP_HOST_PREFIX}${host}`]))) {
           throw new Error(`[${pid}] 域名授权被拒绝: ${host}`);
         }
         return invoke<HttpResponse>("http_request", {
@@ -219,7 +232,7 @@ export function buildContext(manifest: ManifestLike): PluginContext {
     },
 
     notify: {
-      show: gated(manifest, "notify", (title: string, body: string) =>
+      show: gated(manifest, NOTIFY, (title: string, body: string) =>
         invoke("notify_show", { pluginId: pid, title, body }) as Promise<void>,
       ),
     },
@@ -227,17 +240,17 @@ export function buildContext(manifest: ManifestLike): PluginContext {
     overlay: {
       // 每个插件一扇自己的悬浮窗（标签 overlay-<id>）：位置、高度、显隐互不影响，
       // 不再是谁先 show 谁定这扇窗
-      show: gated(manifest, "overlay", async (options: { placement?: string; height?: number } = {}) => {
+      show: gated(manifest, OVERLAY, async (options: { placement?: string; height?: number } = {}) => {
         await invoke("overlay_show", {
           pluginId: pid,
           placement: options.placement ?? null,
           height: options.height ?? null,
         });
       }),
-      hide: gated(manifest, "overlay", async () => {
+      hide: gated(manifest, OVERLAY, async () => {
         await invoke("overlay_hide", { pluginId: pid });
       }),
-      destroy: gated(manifest, "overlay", async () => {
+      destroy: gated(manifest, OVERLAY, async () => {
         await invoke("overlay_destroy", { pluginId: pid });
       }),
     },

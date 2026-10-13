@@ -203,7 +203,7 @@ pub async fn ble_start_scan(
     perms: tauri::State<'_, PermissionState>,
     plugin_id: String,
 ) -> Result<(), String> {
-    require_granted(&perms, &plugin_id, "ble:scan")?;
+    require_granted(&perms, &plugin_id, crate::plugin_caps::BLE_SCAN)?;
     init_ble(&state).await?;
 
     // 只重置去重集合：已上报过的设备允许重新上报（设置窗重开后也能刷新列表）。
@@ -286,7 +286,7 @@ pub async fn ble_stop_scan(
     perms: tauri::State<'_, PermissionState>,
     plugin_id: String,
 ) -> Result<(), String> {
-    require_granted(&perms, &plugin_id, "ble:scan")?;
+    require_granted(&perms, &plugin_id, crate::plugin_caps::BLE_SCAN)?;
     state.scanning.store(false, Ordering::SeqCst);
     let core_guard = state.core.lock().await;
     if let Some(core) = core_guard.as_ref() {
@@ -304,7 +304,7 @@ pub async fn ble_connect(
     plugin_id: String,
     device_id: String,
 ) -> Result<(), String> {
-    require_granted(&perms, &plugin_id, "ble:connect")?;
+    require_granted(&perms, &plugin_id, crate::plugin_caps::BLE_CONNECT)?;
     init_ble(&state).await?;
 
     // 一律先摘掉旧连接：同设备重连也必须换下旧通知流，
@@ -382,7 +382,7 @@ pub async fn ble_disconnect(
     perms: tauri::State<'_, PermissionState>,
     plugin_id: String,
 ) -> Result<(), String> {
-    require_granted(&perms, &plugin_id, "ble:connect")?;
+    require_granted(&perms, &plugin_id, crate::plugin_caps::BLE_CONNECT)?;
     let current = state.connected.lock().await.clone();
     match current {
         Some(id) => ble_disconnect_inner(&state, id).await,
@@ -396,7 +396,7 @@ pub async fn ble_connected_device(
     perms: tauri::State<'_, PermissionState>,
     plugin_id: String,
 ) -> Result<Option<String>, String> {
-    require_granted(&perms, &plugin_id, "ble:connect")?;
+    require_granted(&perms, &plugin_id, crate::plugin_caps::BLE_CONNECT)?;
     Ok(state.connected.lock().await.clone())
 }
 

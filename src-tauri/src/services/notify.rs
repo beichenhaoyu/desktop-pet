@@ -11,7 +11,7 @@ pub fn notify_show(
     title: String,
     body: String,
 ) -> Result<(), String> {
-    crate::gate::plugin_capability(&perms, &plugin_id, "notify")?;
+    crate::gate::plugin_capability(&perms, &plugin_id, crate::plugin_caps::NOTIFY)?;
     let title = sanitize(&title, 80);
     let text = sanitize(&body, 240);
     if title.is_empty() && text.is_empty() {

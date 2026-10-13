@@ -202,12 +202,12 @@ fn check_id(plugin_id: &str) -> Result<(), String> {
     }
 }
 
-/// S3：悬浮层是插件的脸面，也得按能力放行。以前只有 JS 桥的 `gated(manifest, "overlay")`
-/// 在挡，绕过桥的插件可以凭空开一扇置顶透明窗，既不消耗配额也不留授权记录。
+/// S3：悬浮层是插件的脸面，也得按能力放行。以前只有 JS 桥 `ctx.overlay` 上的 gated
+/// 一层在挡，绕过桥的插件可以凭空开一扇置顶透明窗，既不消耗配额也不留授权记录。
 /// 同 realm 的插件冒名他人 id 仍拦不住（见 gate.rs）。
 fn check_grant(perms: &PermissionState, plugin_id: &str) -> Result<(), String> {
     check_id(plugin_id)?;
-    crate::gate::plugin_capability(perms, plugin_id, "overlay")
+    crate::gate::plugin_capability(perms, plugin_id, crate::plugin_caps::OVERLAY)
 }
 
 /// 收掉某插件的悬浮层（移出注册表 + 关窗）。

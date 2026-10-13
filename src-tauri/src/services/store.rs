@@ -9,9 +9,6 @@ use tauri::{AppHandle, Manager};
 use super::permission::PermissionState;
 use crate::fsutil::write_atomic;
 
-/// 存储能力名 —— 与 JS 桥 `ctx.storage` 的 gated 用同一个词（见 runtime/bridge.ts）。
-const CAPABILITY: &str = "storage";
-
 /// 插件隔离 JSON 存储：%APPDATA%/<identifier>/plugins/<plugin_id>/store.json
 /// 每个插件只能读写自己的命名空间，宿主按 plugin_id 落盘。
 pub struct StoreState {
@@ -98,7 +95,7 @@ fn resolve(
     store: &StoreState,
     plugin_id: &str,
 ) -> Result<PathBuf, String> {
-    crate::gate::plugin_capability(perms, plugin_id, CAPABILITY)?;
+    crate::gate::plugin_capability(perms, plugin_id, crate::plugin_caps::STORAGE)?;
     store.plugin_file(plugin_id)
 }
 

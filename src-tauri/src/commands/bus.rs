@@ -82,8 +82,8 @@ fn check_publish(
     }
     // `<id>:widget` 是插件给自己界面看的展示数据，桥那边 gated 在 widget 能力上，
     // 所以两条能力任一成立即放行（其余 topic 只认 bus:publish）
-    let allowed = is_granted(id, "bus:publish")
-        || (topic == format!("{id}:widget") && is_granted(id, "widget"));
+    let allowed = is_granted(id, crate::plugin_caps::BUS_PUBLISH)
+        || (topic == format!("{id}:widget") && is_granted(id, crate::plugin_caps::WIDGET));
     if !allowed {
         return Err(format!(
             "未授权 bus:publish：{id} 需要 manifest 声明且已同意"

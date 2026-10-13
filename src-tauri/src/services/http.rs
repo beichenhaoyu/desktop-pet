@@ -78,8 +78,8 @@ fn parse_host(url: &str) -> Result<String, String> {
 }
 
 fn host_allowed(granted: &[String], host: &str) -> bool {
-    let cap = format!("http:{host}");
-    granted.iter().any(|c| c == "http") && granted.iter().any(|c| c == &cap)
+    let cap = crate::plugin_caps::http_host_key(host);
+    granted.iter().any(|c| c == crate::plugin_caps::HTTP) && granted.iter().any(|c| c == &cap)
 }
 
 fn check_granted(

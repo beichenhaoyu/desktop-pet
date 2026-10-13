@@ -4,6 +4,7 @@ mod gate;
 #[cfg(test)]
 mod gate_coverage;
 mod ids;
+mod plugin_caps;
 mod services;
 mod window;
 

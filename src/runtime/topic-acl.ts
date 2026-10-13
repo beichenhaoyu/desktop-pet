@@ -1,6 +1,7 @@
 // topic 命名空间归属：`${pluginId}:xxx` 归该插件所有，其余（ble:heart-rate、host:* 等）归宿主。
 // 插件只能在自己命名空间内发布；跨命名空间订阅必须 manifest 显式声明 bus:subscribe，
 // 且通配订阅不得越过自己的前缀。这里只是防串门的策略层，授权与否仍由 Rust 判定。
+import { BUS_PUBLISH, BUS_SUBSCRIBE } from "./plugin-capabilities";
 
 function isOwn(pluginId: string, topic: string): boolean {
   return topic.startsWith(`${pluginId}:`);
@@ -18,7 +19,7 @@ export function assertSubscribable(pluginId: string, topic: string, permissions:
   if (topic.endsWith("*")) {
     throw new Error(`[${pluginId}] 通配订阅 "${topic}" 越过了自己的命名空间`);
   }
-  if (!permissions.includes("bus:subscribe")) {
+  if (!permissions.includes(BUS_SUBSCRIBE)) {
     throw new Error(`[${pluginId}] 订阅 "${topic}" 需要在 manifest 声明 bus:subscribe`);
   }
 }
@@ -42,7 +43,7 @@ export function createScopedBus(
   return Object.freeze({
     publish: (topic: string, payload: unknown): void => {
       assertPublishable(pluginId, topic);
-      if (!permissions.includes("bus:publish")) {
+      if (!permissions.includes(BUS_PUBLISH)) {
         throw new Error(`[${pluginId}] 发布需要在 manifest 声明 bus:publish`);
       }
       // 带上 pluginId：中继那侧按它校验前缀与 bus:publish 授权（见 commands/bus.rs）

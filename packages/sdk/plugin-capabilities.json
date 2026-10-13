@@ -1,0 +1,17 @@
+{
+  "capabilities": [
+    "bus:publish",
+    "bus:subscribe",
+    "storage",
+    "ble:scan",
+    "ble:connect",
+    "widget",
+    "overlay",
+    "http",
+    "notify",
+    "pet:react",
+    "pet:say",
+    "agent:hooks"
+  ],
+  "httpHostPrefix": "http:"
+}

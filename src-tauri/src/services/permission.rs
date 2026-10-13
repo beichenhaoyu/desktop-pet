@@ -191,9 +191,11 @@ fn undeclared_caps(declared: &[String], requested: &[String]) -> Vec<String> {
     requested
         .iter()
         .filter(|c| {
-            !declared
-                .iter()
-                .any(|d| d == *c || (d == "http" && c.starts_with("http:")))
+            !declared.iter().any(|d| {
+                d == *c
+                    || (d == crate::plugin_caps::HTTP
+                        && c.starts_with(crate::plugin_caps::http_host_prefix()))
+            })
         })
         .cloned()
         .collect()
