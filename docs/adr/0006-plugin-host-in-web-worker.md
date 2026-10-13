@@ -45,22 +45,52 @@ T10 数出的可伪造点里，前 6 条都源于同一个事实：**Worker 里�
 - **渲染层留在宿主 realm**：widget 的容器与 Shadow DOM 由宿主持有（`widget-host.ts`），Worker 只发渲染指令。
   四个插件对主文档 realm 的依赖共 84 处，分级是 **W 可做 6 / 需宿主代理 78 / 做不到 0**——
   也就是说没有哪条必须在 Worker 里做不到的事，但绝大多数要么变成消息、要么留在宿主侧。
-- **宿主必须把调用能力传进 Worker**，而不是让 Worker 自己 `import('@tauri-apps/api')`。
-  机制上有两条（注入 `self.window = self` 之类的 shim / 宿主侧代发），选哪条归 L1 原型定，本 ADR 不预设。
+- **引导形状已由实测定死**（见下一节第 1、2 条）：宿主自己出一个**同源**的 worker 脚本（进 `dist` 的构建产物），
+  由它 `import()` 插件的绝对 petplugin URL；相对说明符由宿主在交给 Worker 之前绝对化。
+  「让 Worker 直接吃 petplugin URL」「blob:/data: 自举」「宿主 fetch 源码再转 blob」这三条在打包版全部走不通，
+  不要再当备选提出。
 
-## 必须真机实测才能定的五条（不许拿静态检查冒充）
+## 实测结论（2026-10-14 凌晨，PM 起实例量的，不是推理）
 
-测法在派单工作区 T10 的 `worker-facts.md` 第 6 节（不入库），这里记五条待实测的坑：
+方法：临时插件 `zz.worker-probe`（零权限，只跑实验并把读数写进 `globalThis.__probe`）经 petplugin:// 进宠物窗 realm，
+外部只用 CDP 读那份副作用 —— 这是本仓判 CSP 的唯一合法姿势（CDP 求值不受 CSP 约束）。
+dev 用 `npm run dev:debug`（无 CSP），打包版用 `tauri build --no-bundle` 的 release exe（CSP 以响应头下发，
+所以读到的 `meta[http-equiv]` 是 null，照实记）。探针与临时资产测完已全部删除。
 
-1. `petplugin:` 协议在 Worker 里的可解析性（**dev 与打包版分开测**——dev 的文档由 Vite 直出，Tauri 没有注入点）。
-2. 打包版 CSP 对建 Worker 的放行链：`worker-src` 缺省时回退到 `script-src`，我们的 `script-src` 里有
-   `petplugin:` 与 `blob:` 吗——这决定 Worker 脚本用 URL 还是 blob 起。
-3. Worker 内相对 `import()` 的基址（插件入口引子模块的写法会受影响）。
-4. `OffscreenCanvas` 与 `transferControlToOffscreen` 在 WebView2 的 module worker 里是否真的可用（W 类那 6 条的前提）。
-5. Worker 里 `localStorage` 是否可用（现状插件源码里用到它的地方是 0 处，所以这条只影响 SDK 承诺的边界）。
+| # | 实验 | dev | 打包版（CSP 生效） |
+|---|---|---|---|
+| A | 直接用 petplugin URL 起 worker | **SecurityError**：脚本与 origin `http://localhost:1420` 不同源 | **同样 SecurityError**（origin 换成 tauri.localhost，规则不变） |
+| B | 同源 blob: 起 module worker | 通过；worker 内 `window`/`document`/`localStorage` 全 undefined，`OffscreenCanvas` 是 function | **被 CSP 拦**：Refused to create worker from 'blob:'，违反 `script-src 'self' http://petplugin.localhost 'sha256-…'` |
+| C | 经典 blob: worker + importScripts 取 petplugin 脚本 | NetworkError（跨源脚本加载失败） | 先被 CSP 拦（同 B 那条 directive） |
+| D | 同源 URL 起 worker | 只有 404 类错误，**没有任何 CSP 报错** | 同样没有 CSP 报错（`'self'` 放行） |
+| E | data: URL 起 worker | 构造成功 | **被 CSP 拦** |
+| F | 页面 realm `fetch` 插件文件 | 200 | **被 CSP 拦**：违反 `connect-src 'self' ipc: http://ipc.localhost` |
+| G | 页面 realm 动态 import 绝对 petplugin URL | 通过（今天的插件就是这么加载的） | 通过 |
+| H | **同源 worker 内部** import 绝对 petplugin URL | —— | **通过，插件文件真的被 Worker 取到并执行了** |
 
-**判据口径**（本仓已踩过的坑，写死在这里）：这五条都得看**页面自身代码的副作用**。
-CDP/DevTools 发起的求值不受 CSP 约束，拿它当证据会得出"CSP 没生效"的假结论。
+由此定下 L1 的形状，一条都不靠猜：
+
+1. **Worker 引导脚本必须是同源资产**（进 `dist` 的构建产物）。A/B/C/E 四条在打包版都走不通：
+   petplugin URL 撞跨源规则，blob:/data: 撞 CSP；D 说明 `'self'` 放行，H 说明同源 worker 里 import petplugin 可用。
+2. **相对说明符要由宿主绝对化**：H 里 `import('./leaf.js')` 解析成 `http://tauri.localhost/leaf.js` → Failed to fetch。
+   插件现有的 `sources/`、`views/settings/` 子模块全是相对引用（astock 一家 26 个文件），
+   所以「放进目录即生效」这条产品承诺要在 Worker 侧靠绝对 URL 维持，不能指望 Worker 自己解析。
+3. **宿主也别想用 fetch 代取插件源码**（F 被 connect-src 拦）。要么把 petplugin 加进 connect-src（那要再过一次 ADR），
+   要么引导脚本用 import 而不是 fetch —— H 已证明 import 这条路通，所以**本波不必改 CSP**。
+4. **Worker 里没有 window/document/localStorage**（B/H 实测 undefined）：真隔离成立，
+   `bridge.ts:121` 那个自报 id 的伪造面随之消失；「迁移前的旧副本」那条退路也彻底没了。
+5. **OffscreenCanvas 在 Worker 里可用**（function），主文档侧 canvas 元素确有 `transferControlToOffscreen`；
+   T10 判为 W 的 6 条画布类依赖可以搬，但画布所有权的交接只能在主文档发起。
+
+还剩两条**本波没测**、留给 L1 原型第一天量的：
+
+- 同源引导脚本用 Vite 的 `?worker` 还是 `new URL('./x', import.meta.url)` 形态 —— 两者都会给文件名带 hash，
+  影响「绝对化」这一步写在哪儿。
+- Worker 里 petplugin 的 cache-busting 查询串（`?v=`）与 H2 的 `no-store` 是否仍够（本次 H 用的是无查询串的固定 URL）。
+
+**判据口径**（本仓踩过的坑，写死）：以上每条都取**页面自身代码的副作用**为准；
+拿 CDP 求值判 CSP 会得出「CSP 没生效」的假结论。
+
 
 ## 被否掉的三条路
 
