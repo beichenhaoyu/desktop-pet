@@ -26,7 +26,10 @@ export async function out(url, opts) {
   const check = () => {
     const now = Date.now();
     if (now < cooldownUntil) {
-      const err = new Error(`限流冷却中，约 ${Math.ceil((cooldownUntil - now) / 1000)} 秒后自动恢复`);
+      // cooldown 是交给上层 catch 判定的标记（本文件与 core.js 都读它），把交出去的形状声明在 Error 类型上
+      const err = /** @type {Error & { cooldown?: boolean }} */ (
+        new Error(`限流冷却中，约 ${Math.ceil((cooldownUntil - now) / 1000)} 秒后自动恢复`)
+      );
       err.cooldown = true;
       throw err;
     }

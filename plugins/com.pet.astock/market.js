@@ -262,7 +262,8 @@ async function trySource(request, source, kind, params) {
       reasons.push(`${host}: ${briefReason(err)}`);
     }
   }
-  const err = new Error(`${source.label}（${reasons.join("；")}）`);
+  // detail 给调用方写日志（每个入口一条），把交出去的形状声明在 Error 类型上
+  const err = /** @type {Error & { detail?: string[] }} */ (new Error(`${source.label}（${reasons.join("；")}）`));
   err.detail = reasons;
   throw err;
 }
@@ -295,7 +296,7 @@ async function fetchFromSources(kind, request, params, preferred) {
       detail.push(err.message);
     }
   }
-  const err = new Error(`${KIND_NAMES[kind]}取数失败：${detail.join("；")}`);
+  const err = /** @type {Error & { detail?: string[] }} */ (new Error(`${KIND_NAMES[kind]}取数失败：${detail.join("；")}`));
   err.detail = detail;
   throw err;
 }

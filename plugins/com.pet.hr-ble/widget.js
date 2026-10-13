@@ -331,7 +331,9 @@ function mountSettings(root, ctx, cleanups) {
     ctx.bus.publish(TOPIC_CMD, { action: "connect", deviceId: id, deviceName: name });
   });
   $(".disconnect").addEventListener("click", () => ctx.bus.publish(TOPIC_CMD, { action: "disconnect" }));
-  panel.querySelectorAll('input[name="hr-mode"]').forEach((radio) => {
+  // 命中的就是上面模板 radios 段里写的 <input type="radio" name="hr-mode">（唯一匹配），
+  // checked/value 是 HTMLInputElement 专有属性，选择器保证这里拿到的一定是它，按此收窄
+  (/** @type {NodeListOf<HTMLInputElement>} */ (panel.querySelectorAll('input[name="hr-mode"]'))).forEach((radio) => {
     radio.addEventListener("change", () => {
       if (radio.checked) ctx.bus.publish(TOPIC_CMD, { action: "mode", value: radio.value });
     });
@@ -356,7 +358,8 @@ function mountSettings(root, ctx, cleanups) {
     ctx.bus.subscribe(TOPIC_WIDGET, (d) => {
       if (!d || typeof d !== "object") return;
       const want = d.mode === "overlay" ? "overlay" : "badge";
-      for (const radio of panel.querySelectorAll('input[name="hr-mode"]')) {
+      // 同上：命中的也是那组 radio（模板里唯一的 input[name="hr-mode"]），收窄到 HTMLInputElement 才可写 checked
+      for (const radio of /** @type {NodeListOf<HTMLInputElement>} */ (panel.querySelectorAll('input[name="hr-mode"]'))) {
         radio.checked = radio.value === want;
       }
       if (d.connected) setStatus(`已连接 ${d.deviceName ?? "设备"}`, "ok");

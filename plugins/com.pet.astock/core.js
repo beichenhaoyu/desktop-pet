@@ -5,7 +5,7 @@ import { TOPIC_CHANGED, TOPIC_QUOTE, TOPIC_STATUS } from "./topics.js";
 import { fetchQuotes, marketSession, progressOf, SOURCE_IDS } from "./market.js";
 import { evalAlerts, markAlerted } from "./rules.js";
 import { cooldownMs, jittered, nextIntervalSec } from "./throttle.js";
-import { recent, today } from "./alerts.js";
+import { fireAlerts, recent, today } from "./alerts.js";
 import { loadPanel, PANEL_TTL_MS, panelAt, panelWanted } from "./panel.js";
 import { gate, out } from "./index.js";
 import {

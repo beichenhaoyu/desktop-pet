@@ -88,6 +88,10 @@ function tencentPrevClose(json, code) {
   return qnum(json?.data?.[code]?.qt?.[code]?.[4]);
 }
 
+/**
+ * @param {any} json
+ * @param {{ code?: string, period?: string, count?: number }} [opts]
+ */
 export function parseTencentKline(json, { code, period = "day", count = MAX_KLINE_BARS } = {}) {
   const rows = tencentSeries(json?.data?.[code], period);
   // 「data 里取不到该代码的数组」= 这个源这次不能用（代码拼错、接口改形状都落在这里）
@@ -165,6 +169,10 @@ export function parseTencentMinuteRows(rows) {
     .filter((r) => r.time && Number.isFinite(r.price));
 }
 
+/**
+ * @param {any} json
+ * @param {{ code?: string }} [opts]
+ */
 export function parseTencentTrend(json, { code } = {}) {
   const rows = json?.data?.[code]?.data?.data;
   if (!Array.isArray(rows)) throw new Error(`响应里没有 ${code} 的分时数组`);
@@ -314,7 +322,11 @@ export function parseTencentQuotes(body) {
   return requireQuoteRows(rows);
 }
 
-/** 腾讯快照 → 内部盘口结构（与东财 parseDepthResponse 同形）。code 是要哪一只 */
+/**
+ * 腾讯快照 → 内部盘口结构（与东财 parseDepthResponse 同形）。code 是要哪一只
+ * @param {any} body
+ * @param {{ code?: string }} [opts]
+ */
 export function parseTencentDepth(body, { code } = {}) {
   const hit = splitQuoteLines(body, "~", "v_").find((r) => r.code === code);
   if (!hit) throw new Error(`响应里没有 ${code} 这一行`);
