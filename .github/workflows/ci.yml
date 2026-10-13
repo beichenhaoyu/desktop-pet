@@ -1,8 +1,9 @@
 # 机器验收底座（E2）。
 #
-# 诚实标注：这条工作流是在本机写就、逐步等价复跑过每条命令的，但**没有在真实 runner 上跑绿过**
-# —— 本机对 GitHub 主站没有可用通路（只有 SSH），推上去之前 runner 差异（rustup 拉 1.98.1、
-# MSVC 版本、WebView2 运行时）仍未证明。第一次真实运行如果红，按「先取证再下结论」修，别直接删步骤。
+# 诚实标注：这条工作流 2026-10-13 起**已在真实 runner 跑绿**（run 38336715370，head 0b67cec，
+# windows-latest，7m37s，含 rustup 按 rust-toolchain.toml 拉 1.98.1、clippy 冷启动、
+# `tauri build --debug --no-bundle` 全链路）。此前"只在本机等价复跑、未证明 runner 差异"
+# 的缺口已闭合。再出现红，按「先取证再下结论」修，别直接删步骤。
 #
 # 只跑零 GUI、零联网的部分。CDP 运行时套件（verify / verify:agent / verify:astock …）
 # 要真实 webview 与桌面会话，属于 A3 的 workflow_dispatch 范畴，不进这条必须绿的门。

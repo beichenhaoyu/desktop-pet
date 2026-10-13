@@ -9,7 +9,7 @@
 |---|---|
 | [PLUGIN_SDK.md](PLUGIN_SDK.md) | API 面：目录结构、生命周期、能力清单（§3）、`ctx`（§4）、widget 约定（§5）、共享资源（§6）、已知边界（§8） |
 | 本文 | 交付标准、硬性规则、我们踩过的坑、自检清单 |
-| [../AGENTS.md](../AGENTS.md) | 项目级约定与「验证」小节；`docs/ARCHITECTURE.md` 是宿主设计，写插件一般不用读 |
+| [../../AGENTS.md](../../AGENTS.md) | 项目级约定与「验证」小节；`docs/architecture/ARCHITECTURE.md` 是宿主设计，写插件一般不用读 |
 
 评审标准见 [PLUGIN-REVIEW.md](PLUGIN-REVIEW.md)，任务池见 [PLUGIN-BACKLOG.md](PLUGIN-BACKLOG.md)。
 

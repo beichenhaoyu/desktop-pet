@@ -1,6 +1,6 @@
 # DesktopPet — 插件驱动的 Windows 桌面宠物
 
-Tauri 2 + TypeScript/Vite 实现的桌面宠物框架：宠物本体只提供窗口、渲染与插件运行时，所有功能（BLE 心率、token 用量、待办等）由插件提供。完整设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，插件开发规范见 [docs/PLUGIN_SDK.md](docs/PLUGIN_SDK.md)；要写插件请从 [docs/PLUGIN-HANDBOOK.md](docs/PLUGIN-HANDBOOK.md) 开始（交付标准与坑清单），验收口径见 [docs/PLUGIN-REVIEW.md](docs/PLUGIN-REVIEW.md)，可接的任务见 [docs/PLUGIN-BACKLOG.md](docs/PLUGIN-BACKLOG.md)（插件域）与 [docs/HOST-BACKLOG.md](docs/HOST-BACKLOG.md)（本体与工程域，含验收证据矩阵）。
+Tauri 2 + TypeScript/Vite 实现的桌面宠物框架：宠物本体只提供窗口、渲染与插件运行时，所有功能（BLE 心率、token 用量、待办等）由插件提供。完整设计见 [docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)，插件开发规范见 [docs/plugin-dev/PLUGIN_SDK.md](docs/plugin-dev/PLUGIN_SDK.md)；要写插件请从 [docs/plugin-dev/PLUGIN-HANDBOOK.md](docs/plugin-dev/PLUGIN-HANDBOOK.md) 开始（交付标准与坑清单），验收口径见 [docs/plugin-dev/PLUGIN-REVIEW.md](docs/plugin-dev/PLUGIN-REVIEW.md)，可接的任务见 [docs/plugin-dev/PLUGIN-BACKLOG.md](docs/plugin-dev/PLUGIN-BACKLOG.md)（插件域）与 [docs/process/HOST-BACKLOG.md](docs/process/HOST-BACKLOG.md)（本体与工程域，含验收证据矩阵）。
 
 ## 功能清单
 

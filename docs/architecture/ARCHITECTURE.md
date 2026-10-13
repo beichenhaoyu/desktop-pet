@@ -135,7 +135,7 @@ export default {
    - `todo`（完整可用）：增删改查 + widget 展示 + `todo:changed` 广播
    - `heart-rate-ble`：扫描展示（无设备时显示广播列表）、连接后 widget 显示实时 BPM
    - `llm-token-usage`：配置 base URL/key（存宿主 store），轮询用量接口，widget 显示当日 token 消耗
-5. **文档与收尾**：ARCHITECTURE.md（本文）、docs/PLUGIN_SDK.md（能力清单表、示例代码、调试方法）、`npm run tauri dev` 验证全流程。
+5. **文档与收尾**：ARCHITECTURE.md（本文）、docs/plugin-dev/PLUGIN_SDK.md（能力清单表、示例代码、调试方法）、`npm run tauri dev` 验证全流程。
 
 ## 七、验收标准
 

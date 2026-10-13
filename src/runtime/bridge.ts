@@ -1,5 +1,5 @@
 // PetAPI 能力桥：按 manifest 权限逐项校验，未授权时触发同意框，拒绝默认。
-// 进程内插件不是硬安全边界，这里是策略层（见 ARCHITECTURE.md 信任模型）。
+// 进程内插件不是硬安全边界，这里是策略层（见 docs/architecture/ARCHITECTURE.md 信任模型）。
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { bus } from "./event-bus";

@@ -4,16 +4,16 @@
 
 ## 当前状态
 
-- **阶段**：框架与插件运行时已落地并有运行时回归（2026-09-29）。按 [docs/CODE-REVIEW.md](docs/CODE-REVIEW.md) 的 45 条评审意见做完一波修复（2026-10-08）：P0/P1/P2 里成立的部分全部落地并有断言，评审自身的两条误判记在「约定」末尾。
+- **阶段**：框架与插件运行时已落地并有运行时回归（2026-09-29）。按 [docs/process/CODE-REVIEW.md](docs/process/CODE-REVIEW.md) 的 45 条评审意见做完一波修复（2026-10-08）：P0/P1/P2 里成立的部分全部落地并有断言，评审自身的两条误判记在「约定」末尾。
 - **已完成**：宠物窗（Petdex 图集九状态 + 状态机 + 呼吸/轻摆渲染层 + 点击穿透）、Petdex 桌宠资源安装（设置窗按名字下载、默认 `deepseek`）、插件运行时、Rust 能力服务（ble / store / http / notify / 权限同意框 / Agent hook 收件）、设置窗（分区导航 + 插件搜索 + 桌宠形象 + 全局快捷键 + 开机自启 + Agent hook + 游戏模式）、按插件分开的透明 overlay 悬浮窗、心率蓝牙 / Agent 桥 / 待办 / A股盯盘四个示例插件。
 - **未完成**：`llm-token-usage` 示例插件（用户已明确暂缓）。
-- **评审波次（2026-10-08）**：[docs/CODE-REVIEW.md](docs/CODE-REVIEW.md) 的 45 条已逐条核过并修掉可复现的部分。两条不成立，别再照着"修"：P0 #1（Tauri 2 的 `Window::emit` 走 `manager().emit`，本来就向全部 webview 广播，跨窗总线一直是通的，`verify:todo` 的桌面卡片就是它的运行时证据）；P2 #32（`request()` 里 includes 与优先级判断的先后没有可观察差异 —— 会打断的请求根本不进队列）。
-- 完整设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；插件 API 见 [docs/PLUGIN_SDK.md](docs/PLUGIN_SDK.md)。
+- **评审波次（2026-10-08）**：[docs/process/CODE-REVIEW.md](docs/process/CODE-REVIEW.md) 的 45 条已逐条核过并修掉可复现的部分。两条不成立，别再照着"修"：P0 #1（Tauri 2 的 `Window::emit` 走 `manager().emit`，本来就向全部 webview 广播，跨窗总线一直是通的，`verify:todo` 的桌面卡片就是它的运行时证据）；P2 #32（`request()` 里 includes 与优先级判断的先后没有可观察差异 —— 会打断的请求根本不进队列）。
+- 完整设计见 [docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)；插件 API 见 [docs/plugin-dev/PLUGIN_SDK.md](docs/plugin-dev/PLUGIN_SDK.md)。
 - **协作分工（2026-10-11 起，全项目）**：本会话任**项目经理**——需求拆分、规划、派单、验收；**实现一律交给外部敏捷开发模型**，本会话不接自己的卡（发布/工程类 `S` 卡除外）。四份文档是这条流水线的接口：
-  [docs/PLUGIN-HANDBOOK.md](docs/PLUGIN-HANDBOOK.md)（接活者的交付标准与坑清单）、
-  [docs/PLUGIN-REVIEW.md](docs/PLUGIN-REVIEW.md)（评审口径，含「先取证再下结论」与两次误判先例）、
-  [docs/PLUGIN-BACKLOG.md](docs/PLUGIN-BACKLOG.md)（插件域任务卡、派单模板、需要宿主新能力才能做的提案区、已否决项）、
-  [docs/HOST-BACKLOG.md](docs/HOST-BACKLOG.md)（本体/构建发布/文档域的派单模板、状态板、**验收证据矩阵**：哪类改动必须跑哪个 verify 套件与其断言下限）。
+  [docs/plugin-dev/PLUGIN-HANDBOOK.md](docs/plugin-dev/PLUGIN-HANDBOOK.md)（接活者的交付标准与坑清单）、
+  [docs/plugin-dev/PLUGIN-REVIEW.md](docs/plugin-dev/PLUGIN-REVIEW.md)（评审口径，含「先取证再下结论」与两次误判先例）、
+  [docs/plugin-dev/PLUGIN-BACKLOG.md](docs/plugin-dev/PLUGIN-BACKLOG.md)（插件域任务卡、派单模板、需要宿主新能力才能做的提案区、已否决项）、
+  [docs/process/HOST-BACKLOG.md](docs/process/HOST-BACKLOG.md)（本体/构建发布/文档域的派单模板、状态板、**验收证据矩阵**：哪类改动必须跑哪个 verify 套件与其断言下限）。
   派单时复制对应 BACKLOG §0 的模板（插件用 PLUGIN-BACKLOG，本体/工程用 HOST-BACKLOG）；
   评审时按 REVIEW §7 的格式输出，「已核不成立」一节必须写，**断言只许变严不许变松**。
   规划方不凭「看起来缺」自行开需求卡，**候选插件 A1–A7 已被用户否决（2026-10-10）**：不要主动提"再加个 XX 插件"，新需求等用户直接提。
@@ -52,7 +52,7 @@
 2. **插件运行时** ✅
 3. **Rust 能力服务** ✅（store / http 白名单代理 / notify / BLE / 权限同意框均已实现）
 4. **三个示例插件**：`heart-rate-ble` ✅、`todo` ✅（纯插件、零本体改动）；`llm-token-usage` 暂缓（用户决定）
-5. **文档收尾**：[docs/PLUGIN_SDK.md](docs/PLUGIN_SDK.md) ✅
+5. **文档收尾**：[docs/plugin-dev/PLUGIN_SDK.md](docs/plugin-dev/PLUGIN_SDK.md) ✅
 6. **桌宠形象改由 Petdex 提供**：九状态图集渲染 ✅ + 设置窗按名字安装 + 默认形象 `deepseek`（本波次）
 
 ## 验收标准
@@ -78,7 +78,7 @@
 - 宿主窗口事件（不是总线 topic，插件收不到）：`host:fullscreen`（`{active,title}`，最近 3 次采样的多数票）
 - Agent 会话状态：`Stop` 之后 2 秒内到达的 pre/post 算迟到事件，不再把会话打回 running（否则卡片会挂着「正在执行」直到 90 秒 TTL 过期）；新一轮的 user-prompt/session-start 立刻作废该宽限期
 - topic 归属：`<插件id>:` 前缀归该插件。插件只能**发布**自己前缀；订阅他人/宿主 topic 需声明 `bus:subscribe`，且**不允许通配**越过自己的前缀
-- 能力名见 docs/PLUGIN_SDK.md 第 3 节；新增能力时要同时更新桥、Rust 校验与那份表格
+- 能力名见 docs/plugin-dev/PLUGIN_SDK.md 第 3 节；新增能力时要同时更新桥、Rust 校验与那份表格
 - 共享资源（BLE 会话、BLE 扫描）按插件持有者计数，释放只对真正的持有者生效；overlay 悬浮窗**按插件各开一扇**（标签 `overlay-<id>`，页面按标签认归属），摆放/尺寸/显隐互不影响 —— 早先共用一扇窗导致「后打开的卡片显示不出来」，改成按插件分开后两扇可同时存在
 - 插件存储位置：`%APPDATA%/com.desktoppet.pet/plugins/<id>`（插件间隔离，撤销授权会连带清目录）
 - 首批插件目录：`plugins/com.pet.hr-ble`（已做）、`plugins/com.pet.agent-bridge`（已做：订阅宿主 `agent:state` 把编码 Agent 的会话状态转成宠物反应）、`plugins/todo`（已做：id 就叫 `todo`，这样标准 topic `todo:changed` 落在它自己的命名空间里）、`plugins/com.pet.astock`（已做：A股盯盘，出网走宿主 http 代理按域名授权，数据源东方财富公开接口；自选+提醒+badge/overlay，插件页另有分时/K线/五档面板。**2026-10-09 K线与分时已加腾讯后端**：`market.js` 的 `MARKET_SOURCES` 源注册表，每个源一套自己的列序映射（腾讯是「开收高低」，与东财同序不同实现），先试上一次成功的源、一个源内部再主入口→两个后备入口；快照与五档仍只有东财一条，等阶段二。**2026-10-10 阶段二落地**：四个 kind 都有多源，快照/五档为「东财 → 腾讯 `qt.gtimg.cn` → 新浪 `hq.sinajs.cn`」，新浪只兜价格、不供五档与涨跌停）、`plugins/llm-token-usage`（暂缓）

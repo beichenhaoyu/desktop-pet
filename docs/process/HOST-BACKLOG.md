@@ -2,8 +2,8 @@
 
 维护：项目经理（负责拆需求、派单、验收）。开发由外部敏捷模型接卡，本文件是接口。
 
-插件域的卡片在 [PLUGIN-BACKLOG.md](PLUGIN-BACKLOG.md)（`A` 候选插件、`B` 需要宿主新能力的提案），
-评审口径在 [PLUGIN-REVIEW.md](PLUGIN-REVIEW.md)，接活者的交付标准在 [PLUGIN-HANDBOOK.md](PLUGIN-HANDBOOK.md)。
+插件域的卡片在 [PLUGIN-BACKLOG.md](../plugin-dev/PLUGIN-BACKLOG.md)（`A` 候选插件、`B` 需要宿主新能力的提案），
+评审口径在 [PLUGIN-REVIEW.md](../plugin-dev/PLUGIN-REVIEW.md)，接活者的交付标准在 [PLUGIN-HANDBOOK.md](../plugin-dev/PLUGIN-HANDBOOK.md)。
 **本文件只收非插件域**：本体（`src/`、`src-tauri/`）、构建与发布、文档与工程约定。
 
 编号规则：本体功能/缺陷卡续用 `B`（下一张 `B2`）；工程与发布卡用 `S`。
@@ -13,8 +13,8 @@
 ```
 任务：<Bn|Sn> —— <一句话目标>
 类型：本体缺陷 / 本体功能 / 工程发布 / 文档        ← 决定下面哪条边界生效
-必读：AGENTS.md（技术决策表 + 约定，选型不许重议）、docs/ARCHITECTURE.md、
-      docs/PLUGIN-HANDBOOK.md（若动到插件协议）、被点到的模块源码
+必读：AGENTS.md（技术决策表 + 约定，选型不许重议）、docs/architecture/ARCHITECTURE.md、
+      docs/plugin-dev/PLUGIN-HANDBOOK.md（若动到插件协议）、被点到的模块源码
 边界：只准动这些文件 —— <逐个列出，白名单制>
       不得改 tauri.conf.json 的 CSP、不得加/删 Cargo 依赖（除非卡片明列）、
       不得动 plugins/ 下其他插件目录、不得 git push。
@@ -34,7 +34,7 @@ MVP 范围：<这一轮只做什么>
 | S1 | 发布 0.2.0 便携包 | 工程发布 | **搁置**（用户 2026-10-11 定的口径：等 B2/B3/B4/A9 落地后一起出包，省一次重编与一轮 `verify:release`；版本号改动与文档提交同样压到那时） | — | — | — |
 | B2 | `agent:hooks` 受控能力：钩子配置从设置窗移交到插件页 | 本体功能 + 安全边界 | **已放行**（第二轮返工后 PM 全量重跑：cargo 72、`verify` **189/0**、`verify:agent` 53、`verify:release` 12、build 0；三条打回问题都修在脚本侧，根因见卡 §10 与提交说明） | — | `7b9b558` | — |
 | A9a | agent 桥：把 hook 装/卸入口接到自己的插件页（**补 B2 留下的空窗**） | 插件 | **已放行**（`.dispatch/A股盯盘质量加固/cards/A9a-插件页承接hook入口.md`；PM 重跑 `verify:agent` 53→**71**、`verify` 189 不变、cargo 72、build 0；HEAD 的 54 条断言标题逐条核对仍全在） | B2（已满足） | `f3be069` | — |
-| B3 | 本体气泡常驻状态行 + 节点台词分层 | 本体功能 | **已写执行卡**（`.dispatch/A股盯盘质量加固/cards/B3-气泡常驻状态行.md`，**批次 4**；T04 已回，几何结论见 adr/0003 修订） | ~~T04~~ 已解 | — | — |
+| B3 | 本体气泡常驻状态行 + 节点台词分层 | 本体功能 | **已写执行卡**（`.dispatch/A股盯盘质量加固/cards/B3-气泡常驻状态行.md`，**批次 4**；T04 已回，几何结论见 ../adr/0003 修订） | ~~T04~~ 已解 | — | — |
 | B4 | Agent 适配器注册表 + 单联动事务（卸旧装新） | 本体功能 | 待排（**批次 5**）；T03 的两条缺陷已并入方案约束第 8 条 | B2（已满足） | — | — |
 | A10 | A股封板判定改用交易所涨跌停价 | 插件缺陷 | **已放行**（`.dispatch/A股盯盘质量加固/cards/A10-封板判定与权重注释.md`，批次 2；单测 397 条、6 处变异抽查全杀掉、`verify:astock` 的 10 条红与它无关） | — | `1cd4b5b` | — |
 | A11 | `verify:astock` 源归属断言改回源无关（回归套件的测试缺陷） | 工程/回归 | **已放行**（第二轮：PM 现场复现 **154 passed / 0 failed**，且是在**与执行者不同的网络形态**下——PM 这轮 preflight 七台主机全"可达"、新浪 5100ms 通了，而执行者那轮新浪不可达；判定层靠 `attempted` 的尝试记录把"东财 API 失败→下移腾讯"判成绿，预算档位自动放宽到 [3,12]。变异抽查 4/4 全杀掉） | B2（已满足） | 本次提交 | — |
@@ -46,7 +46,7 @@ MVP 范围：<这一轮只做什么>
 2. **B3 的 60 字上限与气泡几何矛盾，必须先由 T04 定行数**。实测：气泡 `max-width` 就是立绘宽 266px，扣掉左右各 12px 内边距后内容宽 242px，12px 字号下约 **20 个汉字一行**；常驻行若给 60 字就是 **3 行 = 73.6px**，而头顶到窗口上沿只有 **47px**（`--pet-bubble-bottom` 让气泡底边落在 y=55）—— 顶边会到 -18.8px，**必然被裁**，而 B3 自己的验收第 153 行就要求"没有溢出宠物窗上沿"。若常驻行与台词还要同时可见，余量更不够。所以 B3 的字数上限与"两行是否共存"要等 T04 的取证结论一并定，不先写执行卡。
    **已解（2026-10-12）**：T04 回传后定为「常驻行 1 行 + 与台词共享一个槽」，60 字作废、改为 20 字输入上限 + 渲染态几何判据，
    同屏两层被几何否掉（要它就得加高窗口，那是另一个决定）。数字、被否掉的三条路与理由记在
-   [adr/0003](adr/0003-session-visibility-on-pet-bubble.md) 的「修订」一节，B3 的卡片照修订后的口径写。
+   [adr/0003](../adr/0003-session-visibility-on-pet-bubble.md) 的「修订」一节，B3 的卡片照修订后的口径写。
 3. 另外：所有需要跑 `npm run verify*` 的卡实际上**互斥**（CDP 端口 9223 固定 + 单实例锁 + 会起 GUI），排批时按串行处理，不与只读取证卡混在同一批。
 4. **A9 已拆成 A9a / A9b（2026-10-12，B2 放行当天发现的真空窗）**：B2 按 ADR-0001 删掉了宿主设置窗那张
    「Agent 事件接入」卡片，但 agent 桥还没有自己的 hook 装/卸入口 —— 于是**从 B2 落地到 A9 落地之间，界面上没有任何地方能安装或卸载 hook**
@@ -55,8 +55,8 @@ MVP 范围：<这一轮只做什么>
    这也是"删入口"类改动的通用规矩：**卡片删除必须和替代入口同批或更晚**，下一波别再分开派。
 
 状态词表沿用 PLUGIN-BACKLOG：`待排` / `已派` / `进行中` / `待评审` / `已放行` / `搁置`。
-术语与决策见 [../CONTEXT.md](../CONTEXT.md) 与 [adr/0001](adr/0001-agent-hooks-capability-in-plugin-page.md)、
-[adr/0002](adr/0002-single-agent-linkage-uninstall-then-install.md)、[adr/0003](adr/0003-session-visibility-on-pet-bubble.md)。
+术语与决策见 [../../CONTEXT.md](../../CONTEXT.md) 与 [adr/0001](../adr/0001-agent-hooks-capability-in-plugin-page.md)、
+[adr/0002](../adr/0002-single-agent-linkage-uninstall-then-install.md)、[adr/0003](../adr/0003-session-visibility-on-pet-bubble.md)。
 
 ## 2. 卡片
 
@@ -82,8 +82,8 @@ MVP 范围：<这一轮只做什么>
 
 - **任务**：让插件自己的设置页能查询/安装/卸载 Agent hook；「宠物设置」里那张「Agent 事件接入」卡片整体删除。
 - **任务类型**：本体功能 **+ 安全边界变更**（本项目第一次把能改别人应用配置的能力开给插件，先读
-  [adr/0001](adr/0001-agent-hooks-capability-in-plugin-page.md)，验收按它核对，不要自己重新论证）。
-- **必读**：[../CONTEXT.md](../CONTEXT.md)（「生命周期」四个动作的定义）、AGENTS.md「跨会话生效的系统级开关一律只认设置窗」那条约定、
+  [adr/0001](../adr/0001-agent-hooks-capability-in-plugin-page.md)，验收按它核对，不要自己重新论证）。
+- **必读**：[../../CONTEXT.md](../../CONTEXT.md)（「生命周期」四个动作的定义）、AGENTS.md「跨会话生效的系统级开关一律只认设置窗」那条约定、
   `src-tauri/src/gate.rs`（含头注释里的信任模型说明）、`src-tauri/src/commands/agent.rs`、
   `src-tauri/src/services/agent_hooks.rs:1-130`、`src/runtime/bridge.ts:42-95`（`ensurePermissions`/`gated`）、
   `src/runtime/widget-host.ts:86-90`（widget ctx 现在只有 `ScopedBus`）、`src/runtime/topic-acl.ts`。
@@ -95,7 +95,7 @@ MVP 范围：<这一轮只做什么>
   - `src-tauri/src/gate.rs`、`src-tauri/src/commands/agent.rs`、`src-tauri/src/lib.rs`（仅命令注册处）
   - `src/runtime/bridge.ts`、`src/runtime/widget-host.ts`、`src/runtime/topic-acl.ts`
   - `src/settings/main.ts`、`src/settings.html`
-  - `docs/PLUGIN_SDK.md`（§3 能力表加一行）、`AGENTS.md`（改那条约定的含义）
+  - `docs/plugin-dev/PLUGIN_SDK.md`（§3 能力表加一行）、`AGENTS.md`（改那条约定的含义）
   - `tests/e2e/verify-isolation.mjs`、`tests/e2e/verify-agent-bridge.mjs`（只做断言迁移，不做功能改动）
   - **不得**动 `plugins/com.pet.agent-bridge/`（归 A9）、`src/main.ts` 与 `src/pet/`（归 B3）、`services/agent.rs` 的收件与归一化、
     `tauri.conf.json`、CSP。
@@ -138,13 +138,13 @@ MVP 范围：<这一轮只做什么>
 
 - **任务**：气泡除了 3.6 秒自动收起的一次性台词，还要能挂一行**常驻**状态文字（随事件刷新、不定时消失）；
   常驻行存在期间宿主的随机自言自语让路。
-- **任务类型**：本体功能。先看 [adr/0003](adr/0003-session-visibility-on-pet-bubble.md)，那里记了为什么不选"只播报节点"和"两行容器"。
+- **任务类型**：本体功能。先看 [adr/0003](../adr/0003-session-visibility-on-pet-bubble.md)，那里记了为什么不选"只播报节点"和"两行容器"。
 - **必读**：`src/main.ts:15`、`:50-57`（`syncLayout` 写 CSS 变量）、`:61-67`（`say()`：`textContent` + 3600ms 收起）、
   `src/styles.css:43-84`（`max-width:var(--pet-size)` ≈ 立绘 266px、`::after` 尾巴、`pointer-events:none`）、
   `src/runtime/bridge.ts:160-174`（能力校验、压换行、截 200 字）、`src/pet/host.ts`、`src/pet/dialogue.ts:6-24`、
   `src/pet/click-through.ts:107-117`、`src-tauri/src/window/pet.rs:39-51`（`set_pet_hidden`）、`src/pet/game-mode.ts:33-44`。
 - **边界**：`src/main.ts`、`src/pet/host.ts`、`src/pet/dialogue.ts`、`src/styles.css`、`src/runtime/bridge.ts`、
-  `docs/PLUGIN_SDK.md`、`tests/e2e/verify-isolation.mjs`、`tests/e2e/verify-agent-bridge.mjs`（只配合迁移断言，不改插件）。
+  `docs/plugin-dev/PLUGIN_SDK.md`、`tests/e2e/verify-isolation.mjs`、`tests/e2e/verify-agent-bridge.mjs`（只配合迁移断言，不改插件）。
   **不得**动 `plugins/`、`src-tauri/`（本卡预期零 Rust 改动）、`tauri.conf.json`、CSP、overlay 机制、状态机优先级队列。
 - **方案约束（已定）**：
   1. 新增显式能力 **`pet:status`**，不复用 `say()` 的第二参数 —— "自动收起"是 `say` 的语义核心，
@@ -159,7 +159,7 @@ MVP 范围：<这一轮只做什么>
      真字体折行差 1 字就会退回被裁，验收必须读 `getBoundingClientRect()`。
   5. 常驻行存在期间 `dialogue.ts` 的随机台词与 `wake` 自语**跳过本次**（不是排队到后面补播），常驻行清除后自然恢复。
   6. 节点台词与常驻行**共享一个气泡槽**（台词优先占用，收起后常驻行回位）—— 不是同屏两行，理由与数字见
-     [adr/0003](adr/0003-session-visibility-on-pet-bubble.md) 的「修订」一节。
+     [adr/0003](../adr/0003-session-visibility-on-pet-bubble.md) 的「修订」一节。
      "分层"指的是**状态分层不是位置分层**：台词收起不能顺带清掉常驻行。
      实现上要么单元素 + 常驻文本状态机，要么拆两个元素由 CSS 保证不叠加 —— 验收只认断言，不认写法。
   7. 游戏模式：常驻行随宠物窗整体隐藏，恢复显示时若仍持有就**要重新出现**，不许"回来后发现没状态"。
@@ -183,7 +183,7 @@ MVP 范围：<这一轮只做什么>
 - **任务**：把 `candidate_files` 里硬编的 `.qoder`/`.qoder-cn` 变成「一个 Agent 一个适配器」的注册表，
   提供一条事务式的"当前联动只有一个 Agent"切换命令；`qoder` 行为一字不变，`zcode`/`codex`/`dsh` 只留槽位。
 - **任务类型**：本体功能。**范围是用户 2026-10-11 拍的**：本轮不许接线任何新 Agent，理由见
-  [adr/0002](adr/0002-single-agent-linkage-uninstall-then-install.md) 和下面的实测现状 —— 猜出来的事件名映射比不做更糟。
+  [adr/0002](../adr/0002-single-agent-linkage-uninstall-then-install.md) 和下面的实测现状 —— 猜出来的事件名映射比不做更糟。
 - **规划方已实测的现状（接活者不要重复取证）**：
 
   | Agent | 本机现状 | 结论 |
@@ -196,10 +196,10 @@ MVP 范围：<这一轮只做什么>
 - **必读**：`src-tauri/src/services/agent_hooks.rs`（`candidate_files:162-177`、`strip_managed:31`、`append_managed:68`、
   `install_in_text:118`、`uninstall_in_text:126`、`backup_once:179`、原子写 `:192-208`）、
   `src-tauri/src/services/agent.rs:34-47`（`HOOK_PHASES` 的 `(事件名, phase)` 形状）、
-  `commands/agent.rs:27-40`（`snapshot`）、`../CONTEXT.md` 的「Agent 联动」与「生命周期」。
+  `commands/agent.rs:27-40`（`snapshot`）、`../../CONTEXT.md` 的「Agent 联动」与「生命周期」。
 - **边界**：`src-tauri/src/services/agent_hooks.rs`、`services/agent.rs`（**只**许动事件名/适配器表，不许动 watcher 与归一化）、
   `commands/agent.rs`、`src-tauri/src/lib.rs`（命令注册）、`tests/e2e/verify-agent-bridge.mjs`、
-  `docs/PLUGIN_SDK.md`（若把选择器暴露给插件）、`AGENTS.md` 的 Agent 接入约定（改文案不改语义）。
+  `docs/plugin-dev/PLUGIN_SDK.md`（若把选择器暴露给插件）、`AGENTS.md` 的 Agent 接入约定（改文案不改语义）。
   **不得**动 `src/`（B3 地盘）、`plugins/`（A9 地盘）、`services/http.rs`、CSP。
 - **方案约束（已定）**：
   1. 适配器形状至少含 `{ id, 显示名, 候选配置文件解析, 事件名→phase 映射, 命令串模板 }`；`qoder` 用现有常量填进去，

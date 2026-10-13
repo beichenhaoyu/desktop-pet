@@ -20,7 +20,7 @@ const todoTopics = await import(new URL("../../plugins/todo/topics.js", import.m
 const EXPECTED = ["ble:heart-rate", "agent:state", "agent:event", "llm:token-usage", "todo:changed"];
 
 /** 宿主原生注入、但不在五条标准名单里的 BLE 事件（src/runtime/plugin-runtime.ts:244-247 的 listen 清单；
- * docs/PLUGIN_SDK.md:111 把它们单列为标准事件名）。**钉死**在此：在这两个之外，插件源码里新增任何
+ * docs/plugin-dev/PLUGIN_SDK.md:111 把它们单列为标准事件名）。**钉死**在此：在这两个之外，插件源码里新增任何
  * 冒号 topic 都会红 —— 到时要么收进 topics.js，要么带着出处把名字加到这份清单（PM 裁决）。 */
 const HOST_EXTRA_ALLOWED = Object.freeze(["ble:device-found", "ble:disconnected"]);
 

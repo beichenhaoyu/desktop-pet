@@ -7,7 +7,7 @@
 // 的一致由 tests/unit/unit-capabilities.mjs 双向钉住。
 import catalog from "../../packages/sdk/plugin-capabilities.json" with { type: "json" };
 
-/** 名单本体（冻结；顺序与 docs/PLUGIN_SDK.md §3 表格一致）。 */
+/** 名单本体（冻结；顺序与 docs/plugin-dev/PLUGIN_SDK.md §3 表格一致）。 */
 export const CAPABILITIES: readonly string[] = Object.freeze([...catalog.capabilities]);
 
 /** `http:<host>` 域名键的前缀（前缀型能力的元信息，与 Rust 侧同源）。 */
