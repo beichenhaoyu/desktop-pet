@@ -127,7 +127,8 @@
 │   │   ├── 0001-agent-hooks-capability-in-plugin-page.md
 │   │   ├── 0002-single-agent-linkage-uninstall-then-install.md
 │   │   ├── 0003-session-visibility-on-pet-bubble.md
-│   │   └── 0004-style-src-unsafe-inline-kept.md  # 插件样式注入契约为何暂不收紧
+│   │   ├── 0004-style-src-unsafe-inline-kept.md  # 插件样式注入契约为何暂不收紧
+│   │   └── 0005-command-layering-thin-command-bodies.md  # 命令留在能力域、命令体收成薄层
 │   └── desktop-pet-优化任务清单.docx   # 外部优化任务清单
 ├── assets/
 │   └── app-icon.png            # 图标母版（generate-app-icon.ps1 的产物）

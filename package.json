@@ -12,6 +12,7 @@
     "dev:debug": "node tools/dev-debug.mjs",
     "lint": "biome lint .",
     "check:docs": "node tools/check-docs.mjs",
+    "check:shape": "node tools/check-command-shape.mjs",
     "unit:astock": "node --test --test-concurrency=1 tests/unit/unit-market.mjs tests/unit/unit-aux.mjs",
     "unit:runtime": "node --import ./tests/unit/ts-loader.mjs --test tests/unit/unit-runtime.mjs",
     "unit:plugins": "node --test tests/unit/unit-plugins.mjs",

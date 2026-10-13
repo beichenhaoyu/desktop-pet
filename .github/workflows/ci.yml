@@ -66,6 +66,9 @@ jobs:
       - name: 文档与磁盘实况一致性（R7）
         run: npm run check:docs
 
+      - name: 命令体形状门禁（ADR-0005 / 清单 A1）
+        run: npm run check:shape
+
       - name: Rust 格式检查
         working-directory: src-tauri
         run: cargo fmt --all -- --check
