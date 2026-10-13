@@ -246,14 +246,14 @@ MVP 范围：<这一轮只做什么>
 |---|---|---|
 | `src/pet/`（状态机、图集切片、点击穿透、气泡） | `npm run verify` + `npm run verify:skin`（动了形象/协议）+ `verify:game`（动了显隐） | verify **189** / skin 26 / game 15 |
 | `src/runtime/`（插件运行时、bridge、widget 宿主、订阅回收） | `npm run verify` | **189** |
-| `src-tauri/`（Rust 能力服务、gate、fsutil、hotkeys） | `cargo test --lib` + `npm run verify` + 对应 `verify:<域>` | cargo **111** / verify **234**（S/Q/C1 之后。verify 的条数随同意框是否真弹在 215~234 间浮动，**下限按 215**） |
+| `src-tauri/`（Rust 能力服务、gate、fsutil、hotkeys） | `cargo test --lib` + `npm run verify` + 对应 `verify:<域>` | cargo **121** / verify **234**（S/Q/C1 之后。verify 的条数随同意框是否真弹在 215~234 间浮动，**下限按 215**；2026-10-13 实测 219 即落在该区间内） |
 | `http` 能力 / charset 解码 / 重定向 | `npm run verify:http` | 21 |
 | Agent hook 链路 | `npm run verify:agent` | **72**（A9a 加了插件页端到端组；当批实测 `cargo` 72 / `verify` 189。本波只改了 overlay/bus 门禁那条采样路径，verify:agent 72/72 复跑过） |
 | 待办链路 | `npm run verify:todo` | 30（C1 后复跑 30/30） |
 | A股插件 | `npm run verify:astock` | **154**（A11 后是源无关断言：PM 与执行者在**两种不同网络形态**下各实测 0 红。套件开头的 preflight 行会告诉你当轮是哪一种形态） |
 | `plugins/com.pet.astock` 的纯函数（三源解析 / 节流 / 提醒判定 / 五档数据 / 源判定层） | `npm run unit:astock`（常驻单测，零 GUI、零联网、秒级） | market **247** / aux **186**（含 A11 的 `sourceBranch` 组 36 条；Q2 起跑在 `node --test`，读 `ℹ tests 433 / fail 0` 与 `ASSERTIONS` 分组计数） |
-| `src/` 运行时纯逻辑（状态机、topic ACL、总线、插件 URL、manifest 校验、资源回收） | `npm run unit:runtime`（离线，靠 `tests/unit/ts-loader.mjs` 转译 .ts） | runtime **107**（Q3 + C1 的启停清单迁移；`npm run unit` 合计 **593**） |
-| 插件纯函数（`plugins/todo/todo-txt.js`；hr-ble 的 BPM 解析在 Rust，归 cargo test） | `npm run unit:plugins` | plugins **53**（Q4；`npm run unit` 合计 **593**） |
+| `src/` 运行时纯逻辑（状态机、topic ACL、总线、插件 URL、manifest 校验、资源回收） | `npm run unit:runtime`（离线，靠 `tests/unit/ts-loader.mjs` 转译 .ts） | runtime **107**（Q3 + C1 的启停清单迁移；`npm run unit` 合计 **811**） |
+| 插件纯函数（`plugins/todo/todo-txt.js`；hr-ble 的 BPM 解析在 Rust，归 cargo test） | `npm run unit:plugins` | plugins **53**（Q4；`npm run unit` 合计 **811**） |
 | 任何新增脚本 / 协议源 / CSP / 打包相关 | `npm run verify:release` | 12 |
 | Cargo 依赖变动 | `cargo tree -p tauri` 必须仍是 **2.12.0**，且 `npm run verify:release` | — |
 
