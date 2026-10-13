@@ -1,0 +1,301 @@
+// tools/check-docs.mjs — 文档与磁盘一致性门禁（优化清单第 32 项；卡 R7 交付物）
+//
+// 六条规则（规则口径见 .dispatch/arch-p2/work/T04/check-docs-rules.md 与卡 R7 §3）：
+//   R-A 正式文档里的 md 相对链接可达（http(s):/mailto:/纯 #片段 除外）
+//   R-B ARCHITECTURE.md §4 树对 src-tauri/src/services/ 的覆盖双向成立
+//   R-C README「目录速览」的 plugins/ 行点名四个插件 id
+//   R-D 正式文档里的路径形反引号引用（七前缀）在磁盘上存在
+//   R-E md 链接文字若是 .md 路径，其文件名必须与目标文件名一致
+//   R-F AGENTS.md 字节数 ≤ 6000（上限由 PM 定，勿改回 5000）
+//
+// 退出码语义：任何一条规则为假 → process.exitCode = 1（CI 只认退出码，不打退出码等于没门禁）。
+// 末尾固定打一行 `RESULT rules=6 failing=K`；--json 输出同样一份汇总的 JSON 形态。
+//
+// 例外全部是显式的常量表（EXEMPT_*），每条带出处与理由；口径论证见
+// .dispatch/arch-p2/work/R7/exemptions.md。不许用"看起来不像路径"这类模糊启发式。
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
+const linesOf = (rel) => read(rel).split(/\r?\n/);
+const existsRel = (rel) => fs.existsSync(path.join(ROOT, rel.replace(/\/+$/, '')));
+
+// ---- 15 份正式文档口径（卡 §3）：11 份固定 + docs/adr/*.md 全量。不扩面 ----
+const BASE_DOCS = [
+  'AGENTS.md',
+  'README.md',
+  'CONTEXT.md',
+  'docs/architecture/ARCHITECTURE.md',
+  'docs/process/CONVENTIONS.md',
+  'docs/process/CODE-REVIEW.md',
+  'docs/process/HOST-BACKLOG.md',
+  'docs/plugin-dev/PLUGIN_SDK.md',
+  'docs/plugin-dev/PLUGIN-HANDBOOK.md',
+  'docs/plugin-dev/PLUGIN-REVIEW.md',
+  'docs/plugin-dev/PLUGIN-BACKLOG.md',
+];
+function docList() {
+  const adrDir = path.join(ROOT, 'docs', 'adr');
+  const adr = fs
+    .readdirSync(adrDir, { withFileTypes: true })
+    .filter((e) => e.isFile() && e.name.endsWith('.md'))
+    .map((e) => `docs/adr/${e.name}`)
+    .sort();
+  return [...BASE_DOCS, ...adr];
+}
+
+// ===== 显式例外表（每条带出处；论证见 work/R7/exemptions.md）=====
+// 形状级例外（判定前先过滤，不是"看着不像"的启发式，而是钉死的形态分类）：
+//   - 反引号里含 < > { } * 的是模板/占位写法（如 `plugins/<id>/index.js`、`verify-*.mjs`），
+//     机器无法也不该对占位求存在性；
+//   - 含 `://` 的是协议/URL 写法（如 `petplugin://…`、`https://petdex.dev/…`）；
+//   - `src-tauri/target/` 下是构建产物树（不进版本库，卡 §3 把 src-tauri/target/ 列为排除项）：
+//     判"存在"与否取决于本机是否构建过，不是文档漂移，CI 上必须稳定跳过。
+const PLACEHOLDER_SHAPE = /[<>{}*]/;
+const EXEMPT_PREFIXES = [{ prefix: 'src-tauri/target/', reason: '构建产物树，不入版本库（卡 §3 排除项）' }];
+// 全局 token 例外（在任何正式文档里出现都算合法）：
+const EXEMPT_TOKENS = new Map([
+  ['src/lib/pet-states.ts', '上游仓库 crafter-station/petdex 的源码路径：README.md:104 致谢一节照搬映射出处，本仓按设计不带这些文件'],
+  ['src/lib/sprite-atlas.ts', '同上（上游仓库源码路径，README.md:104）'],
+  ['packages/petdex-cli/src/hooks/bubble-runner.ts', '同上（上游仓库源码路径，README.md:104）'],
+  ['plugins/llm-token-usage', '示例插件按用户决定暂缓、目录未建（2026-10-10 决定；CONVENTIONS.md:83 已标注「暂缓」，AGENTS.md 明说未做）'],
+]);
+// 按 (文档, token) 精确豁免：A01 拆分（2026-10-12）把 services/agent.rs、services/skins.rs 拆成
+// 目录（agent/、skins/）之前写下的「文件:行号」坐标引用，保留原坐标（文档冻结期不改，PM 决定是改形态还是留记录）。
+const EXEMPT_FILE_TOKENS = [
+  {
+    file: 'docs/process/CODE-REVIEW.md',
+    token: 'src-tauri/src/services/agent.rs',
+    reason: '2026-10-08 评审记录的行号坐标；agent.rs 已由 A01 拆成 agent/ 目录（HOOK_PHASES 现居 agent/phases.rs）',
+  },
+  {
+    file: 'docs/process/CODE-REVIEW.md',
+    token: 'src-tauri/src/services/skins.rs',
+    reason: '2026-10-08 评审记录的行号坐标；skins.rs 已由 A01 拆成 skins/ 目录',
+  },
+  {
+    file: 'docs/process/HOST-BACKLOG.md',
+    token: 'src-tauri/src/services/agent.rs',
+    reason: '任务卡 A2 的「必读」坐标（写于 A01 拆分前；同一任务的边界句沿用同形态）',
+  },
+];
+
+// ---- R-A：md 相对链接可达 ----
+// 解析锚点两个都试：仓库书写的「根相对」惯例（R5 link-check 口径）+ markdown 标准的
+// 「文档目录相对」（T04 link-check A 节口径）。磁盘上 55 条路径链接里 26 条只有文档目录
+// 能命中、7 条只有根能命中，两边并集才与卡 §3 的「真」一致。
+function ruleA(docs) {
+  const failures = [];
+  const RE = /\[([^\]]*)\]\(([^()\s]+)\)/g;
+  let checked = 0;
+  let external = 0;
+  for (const doc of docs) {
+    const docAbs = path.join(ROOT, doc);
+    for (const [i, line] of linesOf(doc).entries()) {
+      for (const m of line.matchAll(RE)) {
+        const target = m[2];
+        if (/^[a-z][a-z0-9+.-]*:/i.test(target)) {
+          external += 1;
+          continue;
+        }
+        if (target.startsWith('#')) continue;
+        checked += 1;
+        let t = target.replace(/[?#].*$/, '');
+        try {
+          t = decodeURIComponent(t);
+        } catch {
+          // 含非法转义（如裸 %）的按原文判
+        }
+        const ok =
+          fs.existsSync(path.resolve(ROOT, t)) || fs.existsSync(path.resolve(path.dirname(docAbs), t));
+        if (!ok) failures.push(`${doc}:${i + 1} [${m[1]}](${target}) 目标不存在`);
+      }
+    }
+  }
+  return { name: 'R-A', ok: failures.length === 0, failures, detail: `links=${checked} external=${external} broken=${failures.length}` };
+}
+
+// ---- R-B：§4 树对 services/ 的覆盖（双向）----
+// 树解析口径同 work/R6/check-tree.mjs：只取「## 四、目录结构」下第一个代码块，
+// 按 4 字符一级的树形前缀还原相对路径，`#` 注释与纯说明行不参与。
+function ruleB() {
+  try {
+    const ls = linesOf('docs/architecture/ARCHITECTURE.md');
+    const start = ls.findIndex((l) => /^##\s*四、目录结构/.test(l));
+    if (start < 0) throw new Error('找不到「## 四、目录结构」');
+    const open = ls.findIndex((l, i) => i > start && /^```/.test(l));
+    if (open < 0) throw new Error('§4 下没有代码块');
+    const close = ls.findIndex((l, i) => i > open && /^```/.test(l));
+    if (close < 0) throw new Error('§4 代码块没有闭合');
+    const stack = [];
+    const docNames = new Set();
+    for (const raw of ls.slice(open + 1, close)) {
+      const m = raw.match(/^([│\s]*)(?:├──|└──)\s(.+)$/u);
+      if (!m) continue;
+      if (m[1].length % 4 !== 0) throw new Error(`缩进不是 4 的倍数: ${JSON.stringify(raw)}`);
+      const depth = m[1].length / 4;
+      let name = m[2].split('#')[0].trim();
+      if (!name || name.startsWith('#')) continue;
+      const isDir = name.endsWith('/');
+      name = name.replace(/\/*$/, '');
+      stack.length = depth;
+      stack.push(name);
+      if (stack.length === 4 && stack[0] === 'src-tauri' && stack[1] === 'src' && stack[2] === 'services') {
+        docNames.add(`${stack[3]}${isDir ? '/' : ''}`);
+      }
+    }
+    const diskNames = fs
+      .readdirSync(path.join(ROOT, 'src-tauri', 'src', 'services'), { withFileTypes: true })
+      .filter((e) => e.name !== 'mod.rs' && !e.name.endsWith('.tests.rs'))
+      .map((e) => `${e.name}${e.isDirectory() ? '/' : ''}`)
+      .sort();
+    const diskSet = new Set(diskNames);
+    const failures = [];
+    for (const n of diskNames) if (!docNames.has(n)) failures.push(`磁盘有、§4 树未点名: src-tauri/src/services/${n}`);
+    for (const n of docNames) if (!diskSet.has(n)) failures.push(`§4 树点名、磁盘没有: src-tauri/src/services/${n}`);
+    return { name: 'R-B', ok: failures.length === 0, failures, detail: `disk=${diskNames.length} doc=${docNames.size}` };
+  } catch (err) {
+    return { name: 'R-B', ok: false, failures: [`§4 树解析失败: ${err.message}`], detail: 'parse-error' };
+  }
+}
+
+// ---- R-C：README「目录速览」plugins/ 行点名四个插件 ----
+const PLUGIN_IDS = ['com.pet.hr-ble', 'com.pet.agent-bridge', 'todo', 'com.pet.astock'];
+function ruleC() {
+  const ls = linesOf('README.md');
+  const start = ls.findIndex((l) => /^##\s*目录速览/.test(l));
+  if (start < 0) {
+    return { name: 'R-C', ok: false, failures: ['README.md 找不到「## 目录速览」小节'], detail: `ids=0/${PLUGIN_IDS.length}` };
+  }
+  let end = ls.findIndex((l, i) => i > start && /^##\s/.test(l));
+  if (end < 0) end = ls.length;
+  const hit = ls.slice(start + 1, end).findIndex((l) => /^\s*-\s*`plugins\/`/.test(l));
+  if (hit < 0) {
+    return { name: 'R-C', ok: false, failures: ['速览里找不到以 `plugins/` 开头的条目行'], detail: `ids=0/${PLUGIN_IDS.length}` };
+  }
+  const lineNo = start + 1 + hit + 1;
+  const line = ls[lineNo - 1];
+  const failures = [];
+  for (const id of PLUGIN_IDS) {
+    if (!line.includes(id)) failures.push(`README.md:${lineNo} 速览行未点名插件 id: ${id}`);
+  }
+  return { name: 'R-C', ok: failures.length === 0, failures, detail: `ids=${PLUGIN_IDS.length - failures.length}/${PLUGIN_IDS.length}` };
+}
+
+// ---- R-D：路径形反引号引用必须在磁盘上存在 ----
+// 判定形状（卡 §3）：按正斜杠归一后，首段恰好是以下七个仓库顶层目录之一。
+// 端点片段（stock/get 等）与 ~ / %VAR% 机器路径会因首段不在这七项里自然出界 —— 不是启发式，
+// 是"首段必须在仓库根真实存在"的机械判定；`services/…`、`commands/…` 这类短形源码引用
+// 同理出界（卡 §6：按仓库内路径处理即可，不得当断链）。
+const PREFIXES = ['src', 'src-tauri', 'plugins', 'docs', 'packages', 'tests', 'tools'];
+function normalizeRef(raw) {
+  let t = raw.trim().replace(/\\/g, '/');
+  t = t.split('::')[0]; // cdp.mjs::openSettingsInvoker → cdp.mjs
+  t = t.replace(/:(\d.*)$/, ''); // http.rs:36-44, 89-90 → http.rs
+  t = t.replace(/^\.\//, '');
+  t = t.replace(/[.,;，。、]+$/, '');
+  return t;
+}
+function ruleD(docs) {
+  const failures = [];
+  const RE = /`([^`\n]+)`/g;
+  let checked = 0;
+  let exempted = 0;
+  for (const doc of docs) {
+    for (const [i, line] of linesOf(doc).entries()) {
+      for (const m of line.matchAll(RE)) {
+        const raw = m[1].trim();
+        const t = normalizeRef(raw);
+        if (!t.includes('/')) continue;
+        if (!PREFIXES.includes(t.split('/')[0])) continue;
+        if (PLACEHOLDER_SHAPE.test(raw) || raw.includes('://')) {
+          exempted += 1;
+          continue; // 模板占位 / 协议写法
+        }
+        if (EXEMPT_PREFIXES.some((e) => t.startsWith(e.prefix))) {
+          exempted += 1;
+          continue;
+        }
+        if (EXEMPT_TOKENS.has(t)) {
+          exempted += 1;
+          continue;
+        }
+        if (EXEMPT_FILE_TOKENS.some((e) => e.file === doc && e.token === t)) {
+          exempted += 1;
+          continue;
+        }
+        checked += 1;
+        if (!existsRel(t)) failures.push(`${doc}:${i + 1} \`${raw}\` → ${t} 磁盘上没有`);
+      }
+    }
+  }
+  return { name: 'R-D', ok: failures.length === 0, failures, detail: `checked=${checked} exempted=${exempted} broken=${failures.length}` };
+}
+
+// ---- R-E：链接文字与目标文件名一致 ----
+function ruleE(docs) {
+  const failures = [];
+  const RE = /\[([^\]]*)\]\(([^()\s]+)\)/g;
+  let pairs = 0;
+  for (const doc of docs) {
+    for (const [i, line] of linesOf(doc).entries()) {
+      for (const m of line.matchAll(RE)) {
+        const text = m[1].trim();
+        const target = m[2];
+        if (/^[a-z][a-z0-9+.-]*:/i.test(target)) continue;
+        if (!/\.md$/i.test(text)) continue;
+        pairs += 1;
+        const nameOf = (s) => s.replace(/[?#].*$/, '').replace(/\\/g, '/').split('/').pop();
+        if (nameOf(text) !== nameOf(target)) failures.push(`${doc}:${i + 1} 文字「${text}」与目标「${target}」文件名不一致`);
+      }
+    }
+  }
+  return { name: 'R-E', ok: failures.length === 0, failures, detail: `pairs=${pairs} mismatched=${failures.length}` };
+}
+
+// ---- R-F：AGENTS.md 字节预算 ----
+const AGENTS_LIMIT = 6000; // 清单原文 5KB 与「技术决策」整节 2982 字节物理冲突，PM 拍板 6000（勿改回）
+function ruleF() {
+  const size = fs.statSync(path.join(ROOT, 'AGENTS.md')).size;
+  const failures = size > AGENTS_LIMIT ? [`AGENTS.md = ${size} 字节，超上限 ${AGENTS_LIMIT}`] : [];
+  return { name: 'R-F', ok: failures.length === 0, failures, detail: `bytes=${size} limit=${AGENTS_LIMIT}` };
+}
+
+// ---- 跑 ----
+function safeRule(name, fn) {
+  try {
+    return fn();
+  } catch (err) {
+    return { name, ok: false, failures: [`规则执行抛错: ${err.message}`], detail: 'crash' };
+  }
+}
+const jsonMode = process.argv.includes('--json') || process.env.npm_config_json === 'true';
+const docs = docList();
+const results = [
+  safeRule('R-A', () => ruleA(docs)),
+  safeRule('R-B', () => ruleB()),
+  safeRule('R-C', () => ruleC()),
+  safeRule('R-D', () => ruleD(docs)),
+  safeRule('R-E', () => ruleE(docs)),
+  safeRule('R-F', () => ruleF()),
+];
+const failing = results.filter((r) => !r.ok).length;
+
+if (jsonMode) {
+  console.log(
+    JSON.stringify(
+      { rules: results.length, failing, results: results.map((r) => ({ name: r.name, ok: r.ok, detail: r.detail, failures: r.failures })) },
+      null,
+      2,
+    ),
+  );
+} else {
+  for (const r of results) {
+    console.log(`[${r.name}] ${r.ok ? 'ok' : 'FAIL'} ${r.detail}`);
+    for (const f of r.failures) console.log(`  - ${f}`);
+  }
+  console.log(`RESULT rules=${results.length} failing=${failing}`);
+}
+if (failing > 0) process.exitCode = 1;

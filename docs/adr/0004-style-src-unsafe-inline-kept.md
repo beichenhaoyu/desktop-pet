@@ -45,7 +45,7 @@ CSSOM 的逐属性赋值（`el.style.x = …`、`setProperty`）不在它的检�
 ## 后果
 
 - `style-src` 保持 `'self' 'unsafe-inline'`；**markup 内联样式已经清零**，所以属性这一类今后再出现就是回归，
-  由 `verify-isolation` 的外链样式断言与 `tools/check-docs`（R7）一起拦。
+  由 `verify-isolation` 的外链样式断言与 `tools/check-docs.mjs`（R7）一起拦。
 - 要收紧时的正确顺序：先做 Web Worker 宿主（清单 L1/L2）→ 宿主与插件统一改用构造式样式表 →
   真机验证 U 组事项 → 再把 `verify-release.mjs:103` 那条断言**反过来**（判 style 元素被拦）并删掉 `'unsafe-inline'`。
   顺序反了就会出现"插件全裸样式"的发布事故。

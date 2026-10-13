@@ -63,6 +63,9 @@ jobs:
       - name: 离线常驻单测（astock 解析层 + 判定层 + 前端运行时）
         run: npm run unit
 
+      - name: 文档与磁盘实况一致性（R7）
+        run: npm run check:docs
+
       - name: Rust 格式检查
         working-directory: src-tauri
         run: cargo fmt --all -- --check
