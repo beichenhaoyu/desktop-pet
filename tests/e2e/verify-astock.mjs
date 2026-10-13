@@ -435,10 +435,23 @@ try {
   // 两侧都有档才比大小；任一侧无档时改判「该侧必须整侧无价」，并把当轮形态写进 r.info
   const hasBid = bidPrices.length > 0;
   const hasAsk = askPrices.length > 0;
-  if (hasBid && hasAsk) {
-    r.check("买一 ≤ 现价 ≤ 卖一（两侧都有档时）", true, bidPrices[0] <= pnl.depth.price && pnl.depth.price <= askPrices[0]);
+  r.info("盘口三价与高低", `现价 ${pnl.depth?.price} / 买一 ${hasBid ? bidPrices[0] : "—"} / 卖一 ${hasAsk ? askPrices[0] : "—"} / 低 ${pnl.depth?.low} / 高 ${pnl.depth?.high}`);
+  // 现价与当日高低：交易所定义，任何时刻都成立。缺项那一支不许静默跳过 —— 判「缺的必须是 null」，
+  // 0 / -1 / NaN 冒充高低正是逐字段错位的样子。
+  if (Number.isFinite(pnl.depth?.price) && Number.isFinite(pnl.depth?.low) && Number.isFinite(pnl.depth?.high)) {
+    r.check("现价落在当日高低区间内", true, pnl.depth.price >= pnl.depth.low && pnl.depth.price <= pnl.depth.high);
   } else {
-    r.info("盘口形态（时段守卫：任一侧无档）", `买档 ${bidPrices.length} / 卖档 ${askPrices.length} 个有价档，price=${pnl.depth.price}`);
+    r.check("现价或高低缺项时：缺的那一项必须是 null（禁 0 / -1 / NaN 冒充）", true,
+      [pnl.depth?.price, pnl.depth?.low, pnl.depth?.high].every((v) => v === null));
+  }
+  // 「买一 ≤ 现价 ≤ 卖一」在真实快照上**不成立**：东财这条详情里 f43（最新价）与 f19/f39（盘口第一档）
+  // 来自不同时刻的聚合，2026-10-13 盘中对 600519 连采 10 次有 3 次「现价 > 卖一」，越界幅度恰好一个
+  // 最小变动价位（0.01）。改成容一个 tick 的双向越界上限：错位一档会差出几十倍，仍然当场红。
+  if (hasBid && hasAsk) {
+    const TICK = 0.01;
+    r.check("现价不越买一/卖一（允许快照滞后一个最小变动价位）", true,
+      bidPrices[0] - pnl.depth.price <= TICK && pnl.depth.price - askPrices[0] <= TICK);
+  } else {
     r.check("任一侧无档时：该侧五档必须整侧无价（无价必无量见上一条）", true,
       (hasBid || (pnl.depth?.bids ?? []).every((l) => l.price === null)) &&
         (hasAsk || (pnl.depth?.asks ?? []).every((l) => l.price === null)));
