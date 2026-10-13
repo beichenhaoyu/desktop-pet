@@ -961,6 +961,39 @@ try {
   r.info("探针内 eval", bare.csp);
   r.check("widget 注入 <style> 生效", true, bare.styleApplied);
 
+  r.group("启动错误条的样式来自外链 CSS");
+  // 内联样式搬进 src/boot-error.css 后，#err-overlay 的样式只能来自那条 link。
+  // dev 不注入 CSP，这里判「样式真的到位」；打包版的 CSP 放行归 verify-release.mjs。
+  const overlay0 = await c.ev(`(() => {
+    const el = document.getElementById('err-overlay');
+    if (!el) return null;
+    const cs = getComputedStyle(el);
+    return { position: cs.position, zIndex: cs.zIndex, display: cs.display };
+  })()`);
+  r.check("错误条存在，position 来自外链样式（fixed）", true, overlay0?.position === "fixed");
+  r.check("z-index 保持契约值 99", "99", overlay0?.zIndex);
+  r.check("静止态由外链样式隐藏（display:none）", "none", overlay0?.display);
+  // boot-error.ts 的 CSSOM 赋值不受 style-src 约束：触发一次合成 error，
+  // 它写内联 display:block 覆盖外链的 display:none —— 错误条应带着探针文本可见
+  const noiseBefore = c.noise.length;
+  const shown = await c.ev(`(() => {
+    window.dispatchEvent(new ErrorEvent('error', { message: 'm2a-probe' }));
+    const el = document.getElementById('err-overlay');
+    if (!el) return null;
+    return { display: getComputedStyle(el).display, text: el.textContent ?? '' };
+  })()`);
+  await sleep(500);
+  r.check("触发 error 后错误条可见且文本含探针串", true, shown?.display !== "none" && String(shown?.text).includes("m2a-probe"));
+  r.check("触发期间没有新增 console 错误", noiseBefore, c.noise.length);
+  // 复原：移除内联 style，隐藏重新只由样式表负责，不留痕迹给后续断言
+  await c.ev(`(() => {
+    const el = document.getElementById('err-overlay');
+    if (!el) return false;
+    el.removeAttribute('style');
+    el.textContent = '';
+    return true;
+  })()`);
+
   r.group("设置窗：分区导航、搜索、快捷键与自启");
   // 用 hostInvoke 而不是裸 evaluate：被拒时页面外的 exceptionDetails 只剩
   // "Uncaught (in promise)"，拿不到宿主给的中文原因，断言就没法校验「为什么被拒」

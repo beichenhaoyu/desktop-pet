@@ -1,0 +1,20 @@
+/* 启动兜底错误条（#err-overlay）的样式。
+   原为 index.html 第 12 行的内联 style 属性，M2a 逐条原样搬来 ——
+   让 markup 内联样式清零后，style-src 的「属性来源」不再有存在必要。
+   数值是对外契约（verify-isolation 的断言在对撞），勿顺手"改进"。 */
+#err-overlay {
+  display: none;
+  position: fixed;
+  left: 6px;
+  top: 6px;
+  right: 6px;
+  z-index: 99;
+  pointer-events: none;
+  background: rgba(140,20,20,.92);
+  color: #fff;
+  font: 11px/1.5 Consolas,monospace;
+  padding: 6px 8px;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
