@@ -241,21 +241,42 @@ pub async fn permission_request(
     if !is_safe_id(&plugin_id) {
         return Err("invalid plugin id".into());
     }
-    // 磁盘 manifest 是声明能力的唯一事实来源：未声明的能力直接拒绝，不弹框。
-    // 例外：http 能力按「插件 × 域名」逐个授权，故 http:<host> 视为被 http 覆盖
     let declared = crate::commands::plugins::declared_capabilities(&app, &plugin_id)?;
-    let undeclared = undeclared_caps(&declared, &capabilities);
-    if !undeclared.is_empty() {
-        return Err(format!(
-            "{} 未在 manifest 声明这些能力: {}",
-            plugin_id,
-            undeclared.join(", ")
-        ));
-    }
+    ensure_declared(&plugin_id, &declared, &capabilities)?;
     if capabilities.iter().all(|c| state.is_granted(&plugin_id, c)) {
         return Ok(true);
     }
+    ask_user(app, &state, plugin_id, plugin_name, capabilities).await
+}
 
+/// 「未声明就不许申请」这条规则单独成函数（ADR-0005）。
+/// 磁盘 manifest 是声明能力的唯一事实来源，未声明直接拒绝、不弹框；
+/// 例外口径照旧：http:<host> 视为被 http 覆盖，判定收在 undeclared_caps 里。
+fn ensure_declared(
+    plugin_id: &str,
+    declared: &[String],
+    requested: &[String],
+) -> Result<(), String> {
+    let undeclared = undeclared_caps(declared, requested);
+    if undeclared.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{} 未在 manifest 声明这些能力: {}",
+        plugin_id,
+        undeclared.join(", ")
+    ))
+}
+
+/// 弹同意框并阻塞等答复：登记挂起项、开窗、装关窗看门狗、超时与清理都住在这里，
+/// 命令体只留一次委托（ADR-0005）。
+async fn ask_user(
+    app: AppHandle,
+    state: &tauri::State<'_, PermissionState>,
+    plugin_id: String,
+    plugin_name: String,
+    capabilities: Vec<String>,
+) -> Result<bool, String> {
     let req_id = format!("r{}", uuid::Uuid::new_v4().simple());
     let (tx, rx) = oneshot::channel::<bool>();
     state
@@ -316,16 +337,17 @@ pub async fn permission_request(
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .remove(&req_id);
-    match answer {
-        Ok(Ok(true)) => {
-            state.grant(&plugin_id, &capabilities);
-            Ok(true)
-        }
-        _ => {
-            drop(pending);
-            Ok(false)
-        }
+    if consent_outcome(answer.ok().and_then(|r| r.ok())) {
+        state.grant(&plugin_id, &capabilities);
+        return Ok(true);
     }
+    drop(pending);
+    Ok(false)
+}
+
+/// 同意框的答复只有「明确答了是」才算授权：超时、通道断开、窗口被直接关掉一律按拒绝收口。
+fn consent_outcome(answered: Option<bool>) -> bool {
+    matches!(answered, Some(true))
 }
 
 /// 同意框只能由它自己的窗口应答：req_id 会从窗口 label 泄露，

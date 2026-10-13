@@ -3,7 +3,10 @@ use std::path::PathBuf;
 
 use serde_json::{json, Value};
 
-use super::local::{now_ms, set_active};
+use super::catalog::DEFAULT_SLUG;
+use super::local::{
+    active_pointer, clear_active, now_ms, plan_active_after_removal, remove_skin_dir, set_active,
+};
 
 use super::*;
 
@@ -158,4 +161,82 @@ fn active_pointer_ignores_garbage() {
     set_active(&dir, "deepseek").unwrap();
     assert_eq!(active_pointer(&dir).as_deref(), Some("deepseek"));
     fs::remove_dir_all(&dir).ok();
+}
+
+/* ============ ADR-0005：删除形象的规则从命令体抽出来，逐条点名钉住 ============ */
+
+#[test]
+fn plan_active_after_removal_keeps_pointer_when_other_skin_deleted() {
+    let remaining = vec!["deepseek".to_string(), "todo".to_string()];
+    assert_eq!(
+        plan_active_after_removal("todo", Some("deepseek"), DEFAULT_SLUG, &remaining),
+        None,
+        "删的不是当前形象时指针不该动"
+    );
+}
+
+#[test]
+fn plan_active_after_removal_falls_back_to_default_when_default_still_installed() {
+    let remaining = vec!["aaa".to_string(), DEFAULT_SLUG.to_string()];
+    assert_eq!(
+        plan_active_after_removal(DEFAULT_SLUG, Some(DEFAULT_SLUG), DEFAULT_SLUG, &remaining)
+            .and_then(|x| x),
+        // 删的就是当前形象：回落到默认（它还在）
+        Some(DEFAULT_SLUG.to_string()),
+        "默认形象还在列表里就该回落到它"
+    );
+    let without_default = vec!["zzz".to_string(), "aaa".to_string()];
+    assert_eq!(
+        plan_active_after_removal("aaa", Some("aaa"), DEFAULT_SLUG, &without_default)
+            .and_then(|x| x),
+        Some("zzz".to_string()),
+        "默认不在了就取列表第一个（installed 已按 slug 排序）"
+    );
+}
+
+#[test]
+fn plan_active_after_removal_clears_pointer_when_nothing_left() {
+    assert_eq!(
+        plan_active_after_removal("only", Some("only"), DEFAULT_SLUG, &[]),
+        Some(None),
+        "一个形象都不剩时清掉指针，而不是指向不存在的目录"
+    );
+}
+
+#[test]
+fn remove_skin_dir_is_idempotent_and_only_touches_direct_children() {
+    let root = std::env::temp_dir().join(format!("pet-skins-rm-{}", now_ms()));
+    fs::create_dir_all(root.join("deepseek")).unwrap();
+    assert_eq!(
+        remove_skin_dir(&root, "deepseek"),
+        Ok(true),
+        "第一次真的删掉了"
+    );
+    assert_eq!(
+        remove_skin_dir(&root, "deepseek"),
+        Ok(false),
+        "再来一次当删过了"
+    );
+    // 越界的 slug 由 skin_dir 的字符白名单挡下（含 `/` 与 `..`）
+    assert!(
+        remove_skin_dir(&root, "../escape").is_err(),
+        "相对逃逸的 slug 必须报错"
+    );
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn clear_active_is_ok_when_pointer_missing_and_removes_it_when_present() {
+    let root = std::env::temp_dir().join(format!("pet-skins-clear-{}", now_ms()));
+    fs::create_dir_all(&root).unwrap();
+    assert_eq!(
+        clear_active(&root),
+        Ok(()),
+        "指针本来不在就当清过了（幂等）"
+    );
+    set_active(&root, "deepseek").unwrap();
+    assert_eq!(active_pointer(&root).as_deref(), Some("deepseek"));
+    assert_eq!(clear_active(&root), Ok(()));
+    assert_eq!(active_pointer(&root), None, "清过之后读不到指针");
+    fs::remove_dir_all(&root).ok();
 }

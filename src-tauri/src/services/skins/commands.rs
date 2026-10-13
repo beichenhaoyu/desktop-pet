@@ -1,11 +1,10 @@
-use std::fs;
-
 use tauri::{AppHandle, Emitter};
 
 use super::catalog::DEFAULT_SLUG;
 use super::download::install_blocking;
 use super::local::{
-    active_pointer, installed, read_meta, set_active, skin_dir, skins_root, SkinInfo,
+    active_pointer, clear_active, installed, plan_active_after_removal, read_meta, remove_skin_dir,
+    set_active, skin_dir, skins_root, SkinInfo,
 };
 
 /* ================= IPC 命令 ================= */
@@ -65,25 +64,16 @@ pub fn pet_skin_use(
 pub fn pet_skin_remove(app: AppHandle, window: tauri::Window, slug: String) -> Result<(), String> {
     only_settings(&window)?;
     let root = skins_root(&app)?;
-    let dir = skin_dir(&root, &slug)?;
-    if !dir.is_dir() {
-        return Ok(()); // 幂等：不在就当删过了
-    }
-    // 只允许删 skins 根目录的直接子目录，别被构造出来的路径带到别处
-    if dir.parent() != Some(root.as_path()) {
-        return Err("非法的形象目录".into());
-    }
-    fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
-    if active_pointer(&root).as_deref() == Some(slug.as_str()) {
-        // 删的正是当前形象：回落到默认（还在）或列表里的第一个
-        let fallback = read_meta(&skin_dir(&root, DEFAULT_SLUG)?)
-            .map(|i| i.slug)
-            .or_else(|| installed(&app).first().map(|i| i.slug.clone()));
-        match fallback {
-            Some(next) => set_active(&root, &next)?,
-            None => {
-                let _ = fs::remove_file(root.join("active.json"));
-            }
+    let active = active_pointer(&root);
+    let _ = remove_skin_dir(&root, &slug)?;
+    // 删除之后重新取列表：回落对象必须是「还在的那些」里的
+    let remaining: Vec<String> = installed(&app).iter().map(|i| i.slug.clone()).collect();
+    if let Some(next) =
+        plan_active_after_removal(&slug, active.as_deref(), DEFAULT_SLUG, &remaining)
+    {
+        match next {
+            Some(slug) => set_active(&root, &slug)?,
+            None => clear_active(&root)?,
         }
         let _ = app.emit("pet:skin-changed", ());
     }

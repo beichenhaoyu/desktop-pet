@@ -144,7 +144,13 @@ pub fn plugin_file_version(
         return Err("invalid plugin file".into());
     }
     let path = plugins_dir(&app)?.join(&plugin_id).join(&rel);
-    let meta = std::fs::metadata(&path).map_err(|e| format!("读取 {path:?} 失败: {e}"))?;
+    file_modified_millis(&path)
+}
+
+/// 读文件的 mtime 并折算成 epoch 毫秒（ADR-0005：IO 不住在命令体里）。
+/// mtime 早于 epoch（老文件系统 / 时钟回拨）时按 0 计，不能让 cache-busting 拿到负数。
+fn file_modified_millis(path: &std::path::Path) -> Result<u64, String> {
+    let meta = std::fs::metadata(path).map_err(|e| format!("读取 {path:?} 失败: {e}"))?;
     let modified = meta.modified().map_err(|e| e.to_string())?;
     Ok(modified
         .duration_since(std::time::UNIX_EPOCH)
@@ -402,11 +408,11 @@ pub fn spawn_plugins_watcher(app: &tauri::AppHandle) -> Result<PluginWatcher, St
                 std::mem::take(&mut state.paths)
             };
             let ids = plugin_ids_from_paths(&root, &paths);
-            let reloadIds = plugin_reload_ids_from_paths(&root, &paths);
+            let reload_ids = plugin_reload_ids_from_paths(&root, &paths);
             crate::services::permission::prune_orphan_grants(&sink);
             let _ = sink.emit(
                 "host:plugins-changed",
-                serde_json::json!({ "ids": ids, "reloadIds": reloadIds }),
+                serde_json::json!({ "ids": ids, "reloadIds": reload_ids }),
             );
         });
     })
@@ -687,5 +693,25 @@ mod tests {
             root.join("a".repeat(64)).join("index.js"),
         ];
         assert_eq!(plugin_ids_from_paths(&root, &paths), vec!["a".repeat(64)]);
+    }
+
+    /// ADR-0005：mtime 的读法从命令体抽出来后，它自己必须可离线钉住
+    #[test]
+    fn file_version_reads_epoch_millis_and_errors_on_missing_file() {
+        let dir = std::env::temp_dir().join(format!("pet-file-version-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("index.js");
+        std::fs::write(&f, b"export const v = 1").unwrap();
+        let got = file_modified_millis(&f).unwrap();
+        assert!(
+            got > 1_700_000_000_000,
+            "epoch 毫秒应落在 2023 年之后，实得 {got}"
+        );
+        let err = file_modified_millis(&dir.join("没有这个文件.js")).unwrap_err();
+        assert!(
+            err.starts_with("读取 "),
+            "错误文案要带路径便于排查，实得 {err}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

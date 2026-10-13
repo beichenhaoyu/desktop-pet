@@ -105,3 +105,22 @@ fn hr_characteristic_lookup_uses_the_service_uuid() {
     );
     assert_ne!(HR_MEASUREMENT, HR_SERVICE);
 }
+
+/// ADR-0005：心率判定从命令体的 `||` 拆成两个条件，四种组合都要钉住 ——
+/// 尤其是「有特征值但没有服务」和反过来那两种，它们以前共用一条错误文案，看不出漏了哪半边
+#[test]
+fn heart_rate_requires_both_characteristic_and_service() {
+    assert!(
+        !device_lacks_heart_rate(true, true),
+        "特征值与服务都在 = 合格设备，不该拒绝"
+    );
+    assert!(
+        device_lacks_heart_rate(false, true),
+        "只声明了 0x180D 服务、没有 0x2A37 特征值 → 拒"
+    );
+    assert!(
+        device_lacks_heart_rate(true, false),
+        "只找到特征值、服务枚举里没有 0x180D → 拒"
+    );
+    assert!(device_lacks_heart_rate(false, false), "两者都没有 → 拒");
+}

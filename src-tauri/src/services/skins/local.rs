@@ -127,3 +127,47 @@ pub(super) fn installed(app: &AppHandle) -> Vec<SkinInfo> {
     out.sort_by(|a, b| a.slug.cmp(&b.slug));
     out
 }
+
+/// 删掉当前形象之后，指针该指向哪儿（ADR-0005：这条规则住在服务里，命令体只委托一次）。
+/// `None` = 删的不是当前形象，指针不用动；`Some(None)` = 没有可用形象了，清掉指针；
+/// `Some(Some(slug))` = 回落到默认形象（它还在）或列表里的第一个。
+pub fn plan_active_after_removal(
+    removed: &str,
+    active: Option<&str>,
+    default_slug: &str,
+    remaining: &[String],
+) -> Option<Option<String>> {
+    if active != Some(removed) {
+        return None;
+    }
+    let keep = |slug: &str| {
+        remaining
+            .iter()
+            .any(|s| s == slug)
+            .then(|| slug.to_string())
+    };
+    Some(keep(default_slug).or_else(|| remaining.first().cloned()))
+}
+
+/// 删除形象目录：幂等（目录本来不在就当删过了），且只允许删 root 的直接子目录 ——
+/// 命令体里不许出现 IO，越界防护与删除动作一起收在这里。
+pub fn remove_skin_dir(root: &Path, slug: &str) -> Result<bool, String> {
+    let dir = skin_dir(root, slug)?;
+    if dir.parent() != Some(root) {
+        return Err("非法的形象目录".into());
+    }
+    if !dir.is_dir() {
+        return Ok(false);
+    }
+    fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// 清掉当前形象指针（没有可用形象时）。
+pub fn clear_active(root: &Path) -> Result<(), String> {
+    match fs::remove_file(root.join("active.json")) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}

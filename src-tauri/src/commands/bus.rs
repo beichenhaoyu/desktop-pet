@@ -23,18 +23,12 @@ pub fn bus_publish(
     plugin_id: Option<String>,
 ) -> Result<(), String> {
     let label = window.label().to_string();
-    // 悬浮窗的归属只认宿主注册表：那条 label 是开窗时宿主自己定的，页面伪造不了，
-    // 所以这一路不接受客户端自报的 plugin_id
-    let owner = crate::window::overlay::owner_of_label(&label).or_else(|| {
-        if relaying_from(&label) {
-            plugin_id
-        } else {
-            None
-        }
-    });
-    let installed: HashSet<String> = crate::commands::plugins::installed_plugin_ids(&app)
-        .map(|ids| ids.into_iter().collect())
-        .unwrap_or_default();
+    let owner = resolve_owner(
+        &label,
+        plugin_id,
+        crate::window::overlay::owner_of_label(&label),
+    );
+    let installed = installed_id_set(&app);
     check_publish(&label, owner.as_deref(), &topic, &installed, &|id, cap| {
         perms.is_granted(id, cap)
     })?;
@@ -47,6 +41,30 @@ pub fn bus_publish(
         serde_json::json!({ "origin": label, "topic": topic, "payload": payload }),
     );
     Ok(())
+}
+
+/// 归属解析（ADR-0005：分支从命令体里抽出来，好让「谁的 id 算数」这条规则可离线钉住）。
+/// 悬浮窗的归属只认宿主注册表：那条 label 是开窗时宿主自己定的，页面伪造不了，
+/// 所以这一路不接受客户端自报的 plugin_id；其余中继窗口才用自报值。
+fn resolve_owner(
+    label: &str,
+    self_reported: Option<String>,
+    overlay_owner: Option<String>,
+) -> Option<String> {
+    overlay_owner.or_else(|| {
+        if relaying_from(label) {
+            self_reported
+        } else {
+            None
+        }
+    })
+}
+
+/// 已安装插件 id 的集合。读磁盘这件事收在这里，命令体只拿结果。
+fn installed_id_set(app: &AppHandle) -> HashSet<String> {
+    crate::commands::plugins::installed_plugin_ids(app)
+        .map(|ids| ids.into_iter().collect())
+        .unwrap_or_default()
 }
 
 /// 只有这三类窗口能往总线灌数据：宠物窗（运行时与插件同 realm）、
@@ -249,5 +267,38 @@ mod tests {
         assert!(guard
             .0
             .contains_key(&format!("cap{}:widget", MAX_RETAINED + 9)));
+    }
+
+    /// ADR-0005：归属解析从命令体抽出来之后，「谁的 plugin_id 算数」必须逐条钉住
+    #[test]
+    fn overlay_owner_registry_wins_over_self_reported_id() {
+        let got = resolve_owner(
+            "overlay-com.pet.todo",
+            Some("com.pet.astock".to_string()),
+            Some("com.pet.todo".to_string()),
+        );
+        assert_eq!(
+            got.as_deref(),
+            Some("com.pet.todo"),
+            "注册表说是谁就是谁，自报值作废"
+        );
+    }
+
+    #[test]
+    fn self_reported_id_is_only_accepted_for_relaying_windows() {
+        assert_eq!(
+            resolve_owner("settings", Some("com.pet.todo".to_string()), None).as_deref(),
+            Some("com.pet.todo"),
+            "设置窗与宠物窗是插件运行时的宿主，自报 id 在这两路有效"
+        );
+        assert_eq!(
+            resolve_owner("pet", Some("com.pet.todo".to_string()), None).as_deref(),
+            Some("com.pet.todo")
+        );
+        assert_eq!(
+            resolve_owner("consent-r1", Some("com.pet.todo".to_string()), None),
+            None,
+            "同意框一类窗口既不中继，自报 id 也不该被采纳"
+        );
     }
 }

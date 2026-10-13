@@ -250,30 +250,47 @@ pub async fn overlay_show(
             window.label()
         ));
     }
-    // 只为确实装着的插件开窗：凭空的 id 会留下一扇没人认领、也没人能收掉的窗
-    // （插件之间的越权仍拦不住，那是自报 plugin_id 的固有问题，见 gate.rs 与 R2）
-    let installed = crate::commands::plugins::installed_plugin_ids(&app)
-        .map(|ids| ids.contains(&plugin_id))
-        .unwrap_or(false);
-    if !installed {
-        return Err(format!("插件 {plugin_id} 没有安装，不能开悬浮层"));
-    }
-    let placement = if placement.as_deref() == Some("above-pet") {
+    require_installed(&app, &plugin_id)?;
+    mark_wanted(&plugin_id, resolve_placement(placement.as_deref()));
+    ensure_window(&app, &plugin_id, height.unwrap_or(DEFAULT_HEIGHT))?;
+    apply_visibility(&app, &plugin_id);
+    Ok(())
+}
+
+/// placement 的取值规则（ADR-0005：规则抽成纯函数好离线钉住）——
+/// 只有显式的 "above-pet" 才贴宠物头顶，`None` 与任何未知写法都走角落，不做模糊匹配。
+fn resolve_placement(requested: Option<&str>) -> u8 {
+    if requested == Some("above-pet") {
         PLACEMENT_ABOVE_PET
     } else {
         PLACEMENT_CORNER
-    };
+    }
+}
+
+/// 只为确实装着的插件开窗：凭空的 id 会留下一扇没人认领、也没人能收掉的窗
+/// （插件之间的越权仍拦不住，那是自报 plugin_id 的固有问题，见 gate.rs 与 R2）
+fn require_installed(app: &AppHandle, plugin_id: &str) -> Result<(), String> {
+    let installed = crate::commands::plugins::installed_plugin_ids(app)
+        .map(|ids| ids.iter().any(|id| id == plugin_id))
+        .unwrap_or(false);
+    if installed {
+        Ok(())
+    } else {
+        Err(format!("插件 {plugin_id} 没有安装，不能开悬浮层"))
+    }
+}
+
+/// 记下「这个插件想要一扇什么位置的窗」。新建的状态一律 `visible: false`，
+/// 由 `apply_visibility` 按当前压制状态决定要不要真的显示出来。
+fn mark_wanted(plugin_id: &str, placement: u8) {
     table().lock().unwrap_or_else(|p| p.into_inner()).insert(
-        plugin_id.clone(),
+        plugin_id.to_string(),
         OverlayState {
             placement,
             wanted: true,
             visible: false,
         },
     );
-    ensure_window(&app, &plugin_id, height.unwrap_or(DEFAULT_HEIGHT))?;
-    apply_visibility(&app, &plugin_id);
-    Ok(())
 }
 
 #[tauri::command]
@@ -386,7 +403,10 @@ pub fn start_follow_timer(app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{caller_may_act_for, overlay_label, table, OverlayState};
+    use super::{
+        caller_may_act_for, mark_wanted, overlay_label, resolve_placement, table, OverlayState,
+        PLACEMENT_ABOVE_PET, PLACEMENT_CORNER,
+    };
 
     #[test]
     fn dots_and_hyphens_do_not_share_a_label() {
@@ -429,5 +449,41 @@ mod tests {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(&id);
+    }
+
+    /// ADR-0005：placement 取值规则抽出命令体后逐条钉住——只有显式 "above-pet" 贴头顶
+    #[test]
+    fn placement_only_honours_the_exact_above_pet_keyword() {
+        assert_eq!(resolve_placement(Some("above-pet")), PLACEMENT_ABOVE_PET);
+        assert_eq!(resolve_placement(None), PLACEMENT_CORNER, "不传就走角落");
+        assert_eq!(
+            resolve_placement(Some("Above-Pet")),
+            PLACEMENT_CORNER,
+            "大小写不凑对"
+        );
+        assert_eq!(
+            resolve_placement(Some("")),
+            PLACEMENT_CORNER,
+            "空串按未知处理"
+        );
+    }
+
+    #[test]
+    fn mark_wanted_records_placement_and_starts_unseen() {
+        let id = "zz.shape-probe";
+        mark_wanted(id, PLACEMENT_ABOVE_PET);
+        let state = table()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(id)
+            .cloned();
+        table().lock().unwrap_or_else(|p| p.into_inner()).remove(id);
+        let state = state.expect("mark_wanted 该留下一条状态");
+        assert_eq!(state.placement, PLACEMENT_ABOVE_PET, "位置要按传进来的记");
+        assert!(state.wanted, "调用即表示这个插件想要一扇窗");
+        assert!(
+            !state.visible,
+            "可见性交给 apply_visibility，不在这里预先置真"
+        );
     }
 }

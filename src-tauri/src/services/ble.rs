@@ -205,30 +205,38 @@ pub async fn ble_start_scan(
 ) -> Result<(), String> {
     require_granted(&perms, &plugin_id, crate::plugin_caps::BLE_SCAN)?;
     init_ble(&state).await?;
-
-    // 只重置去重集合：已上报过的设备允许重新上报（设置窗重开后也能刷新列表）。
-    // peripherals 是句柄缓存，不能跟着一起清 —— 清掉之后 UI 里那行设备还在，
-    // 点「连接」就必然报「未在扫描结果中」，同一次运行里连不上刚才那台设备。
-    {
-        let mut core_guard = state.core.lock().await;
-        if let Some(core) = core_guard.as_mut() {
-            core.seen.clear();
-        }
-    }
-
-    {
-        let core_guard = state.core.lock().await;
-        let core = core_guard.as_ref().ok_or("BLE init failed")?;
-        core.adapter
-            .start_scan(ScanFilter::default())
-            .await
-            .map_err(|e| format!("启动扫描失败: {e}"))?;
-    }
-
+    reset_seen(&state).await;
+    begin_adapter_scan(&state).await?;
     if state.scanning.swap(true, Ordering::SeqCst) {
-        return Ok(()); // 扫描已在进行
+        return Ok(()); // 扫描已在进行，不重复起泵
     }
-    let scanning = state.scanning.clone();
+    spawn_scan_pump(app, state.scanning.clone());
+    Ok(())
+}
+
+/// 只重置去重集合：已上报过的设备允许重新上报（设置窗重开后也能刷新列表）。
+/// peripherals 是句柄缓存，不能跟着一起清 —— 清掉之后 UI 里那行设备还在，
+/// 点「连接」就必然报「未在扫描结果中」，同一次运行里连不上刚才那台设备。
+async fn reset_seen(state: &tauri::State<'_, BleState>) {
+    let mut core_guard = state.core.lock().await;
+    if let Some(core) = core_guard.as_mut() {
+        core.seen.clear();
+    }
+}
+
+async fn begin_adapter_scan(state: &tauri::State<'_, BleState>) -> Result<(), String> {
+    let core_guard = state.core.lock().await;
+    let core = core_guard.as_ref().ok_or("BLE init failed")?;
+    core.adapter
+        .start_scan(ScanFilter::default())
+        .await
+        .map_err(|e| format!("启动扫描失败: {e}"))
+}
+
+/// 设备上报泵（ADR-0005：从命令体里搬出来，命令只负责「要不要起这一路」）。
+/// 锁内只借一次 adapter 句柄；peripherals / properties 都是 WinRT 往返，
+/// 占着 core 锁会让连接路径全程排队。
+fn spawn_scan_pump(app: AppHandle, scanning: Arc<AtomicBool>) {
     tauri::async_runtime::spawn(async move {
         while scanning.load(Ordering::SeqCst) {
             // 锁内只借一次 adapter 句柄； peripherals / properties 都是 WinRT 往返，
@@ -277,7 +285,6 @@ pub async fn ble_start_scan(
             tokio::time::sleep(Duration::from_millis(800)).await;
         }
     });
-    Ok(())
 }
 
 #[tauri::command]
@@ -306,34 +313,22 @@ pub async fn ble_connect(
 ) -> Result<(), String> {
     require_granted(&perms, &plugin_id, crate::plugin_caps::BLE_CONNECT)?;
     init_ble(&state).await?;
-
-    // 一律先摘掉旧连接：同设备重连也必须换下旧通知流，
-    // 否则两条流同时广播心率，且旧句柄被覆盖后再也没人 abort
-    if let Some(old) = state.connected.lock().await.clone() {
-        let _ = ble_disconnect_inner(&state, old).await;
+    drop_old_connection(&state).await;
+    let peripheral = lookup_peripheral(&state, &device_id).await?;
+    connect_and_discover(&peripheral).await?;
+    if device_lacks_heart_rate(
+        find_hr_char(&peripheral).is_some(),
+        has_hr_service(&peripheral),
+    ) {
+        let _ = peripheral.disconnect().await;
+        return Err("该设备没有标准心率服务 (0x180D)".into());
     }
+    start_notify_pump(app, &state, peripheral, device_id).await;
+    Ok(())
+}
 
-    let peripheral = {
-        let mut core_guard = state.core.lock().await;
-        let core = core_guard.as_mut().ok_or("BLE init failed")?;
-        match core.peripherals.get(&device_id).cloned() {
-            Some(p) => p,
-            // 缓存没命中就现问适配器一次：btleplug 自己保留已发现的设备。
-            // 不能把「再扫一遍」当成重连的前置条件，否则断开后立刻重连就会失败。
-            None => {
-                let found = core
-                    .adapter
-                    .peripherals()
-                    .await
-                    .map_err(|e| format!("查询已发现设备失败: {e}"))?
-                    .into_iter()
-                    .find(|p| format!("{}", p.id()) == device_id)
-                    .ok_or_else(|| format!("设备 {device_id} 未被适配器发现，请重新扫描"))?;
-                core.peripherals.insert(device_id.clone(), found.clone());
-                found
-            }
-        }
-    };
+/// 连上并枚举服务：两段的错误文案都在这里定，命令体只管调用（ADR-0005）。
+async fn connect_and_discover(peripheral: &Peripheral) -> Result<(), String> {
     peripheral
         .connect()
         .await
@@ -341,19 +336,61 @@ pub async fn ble_connect(
     peripheral
         .discover_services()
         .await
-        .map_err(|e| format!("发现服务失败: {e}"))?;
-    if find_hr_char(&peripheral).is_none()
-        || !peripheral.services().iter().any(|s| s.uuid == HR_SERVICE)
-    {
-        let _ = peripheral.disconnect().await;
-        return Err("该设备没有标准心率服务 (0x180D)".into());
-    }
+        .map_err(|e| format!("发现服务失败: {e}"))
+}
 
+/// 一律先摘掉旧连接：同设备重连也必须换下旧通知流，
+/// 否则两条流同时广播心率，且旧句柄被覆盖后再也没人 abort
+async fn drop_old_connection(state: &tauri::State<'_, BleState>) {
+    if let Some(old) = state.connected.lock().await.clone() {
+        let _ = ble_disconnect_inner(state, old).await;
+    }
+}
+
+/// 取外设句柄：缓存没命中就现问适配器一次（btleplug 自己保留已发现的设备）。
+/// 不能把「再扫一遍」当成重连的前置条件，否则断开后立刻重连就会失败。
+async fn lookup_peripheral(
+    state: &tauri::State<'_, BleState>,
+    device_id: &str,
+) -> Result<Peripheral, String> {
+    let mut core_guard = state.core.lock().await;
+    let core = core_guard.as_mut().ok_or("BLE init failed")?;
+    if let Some(p) = core.peripherals.get(device_id).cloned() {
+        return Ok(p);
+    }
+    let found = core
+        .adapter
+        .peripherals()
+        .await
+        .map_err(|e| format!("查询已发现设备失败: {e}"))?
+        .into_iter()
+        .find(|p| format!("{}", p.id()) == device_id)
+        .ok_or_else(|| format!("设备 {device_id} 未被适配器发现，请重新扫描"))?;
+    core.peripherals
+        .insert(device_id.to_string(), found.clone());
+    Ok(found)
+}
+
+/// 心率判定拆成两个条件（ADR-0005：分支条件要能在单测里逐条组合，
+/// 而 Peripheral 在离线测试里构造不出来，所以判定只吃两个布尔）。
+fn device_lacks_heart_rate(has_char: bool, has_service: bool) -> bool {
+    !(has_char && has_service)
+}
+
+fn has_hr_service(peripheral: &Peripheral) -> bool {
+    peripheral.services().iter().any(|s| s.uuid == HR_SERVICE)
+}
+
+async fn start_notify_pump(
+    app: AppHandle,
+    state: &tauri::State<'_, BleState>,
+    peripheral: Peripheral,
+    device_id: String,
+) {
     *state.connected.lock().await = Some(device_id.clone());
     let gen = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
     let task = tauri::async_runtime::spawn(notify_pump(app, peripheral, device_id, gen));
     *state.notify_task.lock().await = Some((gen, task));
-    Ok(())
 }
 
 async fn ble_disconnect_inner(state: &BleState, device_id: String) -> Result<(), String> {

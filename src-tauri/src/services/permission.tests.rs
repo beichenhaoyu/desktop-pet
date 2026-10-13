@@ -251,3 +251,40 @@ fn the_http_widening_does_not_leak_to_other_capabilities() {
         caps(&["http:other.com"])
     );
 }
+
+/// ADR-0005：同意框的答复口径。「明确答了是」才算授权，其余三种一律按拒绝收口 ——
+/// 以前这条写在命令体的 match 里，超时/断链/关窗三种形状混在一起，看不出少没少
+#[test]
+fn only_an_explicit_yes_grants_consent() {
+    assert!(consent_outcome(Some(true)), "用户按了允许");
+    assert!(!consent_outcome(Some(false)), "用户按了拒绝");
+    assert!(
+        !consent_outcome(None),
+        "60s 超时、通道断开、窗口被关掉都归这一档"
+    );
+}
+
+/// ADR-0005：「未在 manifest 声明就不许申请」的文案与判定分开后，
+/// 未声明项必须逐个出现在错误里（设置窗要照着它告诉用户缺哪条）
+#[test]
+fn ensure_declared_names_every_undeclared_capability() {
+    let declared = caps(&["storage", "http"]);
+    assert_eq!(
+        ensure_declared("com.pet.x", &declared, &caps(&["storage"])),
+        Ok(())
+    );
+    let err = ensure_declared("com.pet.x", &declared, &caps(&["ble:scan", "notify"])).unwrap_err();
+    assert!(
+        err.starts_with("com.pet.x 未在 manifest 声明这些能力: "),
+        "实得 {err}"
+    );
+    assert!(
+        err.contains("ble:scan") && err.contains("notify"),
+        "两条都要点名，实得 {err}"
+    );
+    // http:<host> 被 http 覆盖这条口径不能被抽函数抽丢
+    assert_eq!(
+        ensure_declared("com.pet.x", &declared, &caps(&["http:example.com"])),
+        Ok(())
+    );
+}
