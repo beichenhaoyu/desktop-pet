@@ -13,5 +13,6 @@
     "pet:say",
     "agent:hooks"
   ],
-  "httpHostPrefix": "http:"
+  "httpHostPrefix": "http:",
+  "riskFlags": ["http", "storage", "agent:hooks"]
 }

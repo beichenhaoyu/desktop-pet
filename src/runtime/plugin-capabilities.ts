@@ -20,6 +20,14 @@ function define(name: string): string {
   return name;
 }
 
+/** 风险面名单（冻结）：会改动用户外部环境/数据的能力，设置页据此给权限条标险。
+ *
+ *  判据就是这三个名字（`http` 可出网、`storage` 可落盘、`agent:hooks` 可改用户外部配置），
+ *  顺序与 docs/plugin-dev/PLUGIN_SDK.md §3 表格的「风险面」列一致。每个名字都过 define()：
+ *  不在 CAPABILITIES 里就**当场 throw**（不是 console.warn）——名单是唯一来源，误写拼法要在加载期就炸。
+ */
+export const RISK_FLAGS: readonly string[] = Object.freeze([...catalog.riskFlags].map(define));
+
 export const BUS_PUBLISH = define("bus:publish");
 export const BUS_SUBSCRIBE = define("bus:subscribe");
 export const STORAGE = define("storage");

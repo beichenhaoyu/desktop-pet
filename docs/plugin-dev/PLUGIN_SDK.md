@@ -58,20 +58,20 @@ export async function deactivate() { /* 停用/移除时调用 */ }
 
 未声明的能力调用会被**宿主直接拒绝**（不是弹框），所以 `permissions` 要写全。
 
-| 能力名 | 授予的 API | 说明 |
-|---|---|---|
-| `bus:publish` | `ctx.bus.publish` | 只能发布 `<自己的 id>:` 前缀的 topic |
-| `bus:subscribe` | `ctx.bus.subscribe` | **用了这个 API 就要声明**（不声明会在激活时被拒）。声明之后，订阅自己前缀仍然不需要额外授权，只有订别人/宿主的 topic 才再走一层 ACL |
-| `storage` | `ctx.storage.*` | 每插件独立 JSON 存储，宿主按 id 隔离落盘 |
-| `ble:scan` | `ctx.ble.startScan/stopScan` | 蓝牙扫描 |
-| `ble:connect` | `ctx.ble.connect/disconnect/connectedDevice` | 连接与订阅通知 |
-| `widget` | `ctx.widget.update` | 向自己的 widget 推数据（走 `<id>:widget` topic） |
-| `overlay` | `ctx.overlay.show(opts?)` / `hide` / `destroy` | **本插件专属**的透明悬浮窗（窗口标签 `overlay-<你的 id>`）。`show({ placement: "above-pet", height: 104 })` 让它贴着宠物头顶并跟随拖动；不传就是桌面左上角 |
-| `http` | `ctx.http.request` | 出站请求，**按域名逐个再授权**（`http:<host>`，键不带默认端口：`https://x.com` 的键是 `x.com`）。`body` 按响应 Content-Type 的 charset 解码：目前支持 UTF-8 与 GBK/GB2312/GB18030（新浪、腾讯行情这类 GBK 接口能直接拿到中文），其余 charset 与不带 charset 的响应仍按 UTF-8 lossy 解 |
-| `notify` | `ctx.notify.show` | 系统通知 |
-| `pet:react` | `ctx.pet.react` | 让宠物插播一个状态，参数只能是 petdex 的九个状态之一：`idle` `running-right` `running-left` `waving` `jumping` `failed` `waiting` `running` `review`（其余名字会被桥拒绝） |
-| `pet:say` | `ctx.pet.say` | 让宠物弹一句台词 |
-| `agent:hooks` | `ctx.host.agentHooks.{status,install,uninstall}` | 查询/安装/卸载本机编码 Agent（Qoder）的 hook 配置（`~/.qoder*/settings.json` 里自家 `--pet-hook` 条目，增删只动自己的）。**只在插件设置页（`settings` 区 widget）可用**：`badge` / `overlay` 区与宠物窗里没有 `ctx.host`。首次调用弹同意框；这是本项目第一个"能改用户其他应用配置"的能力，边界见 ADR-0001 |
+| 能力名 | 授予的 API | 说明 | 风险面 |
+|---|---|---|---|
+| `bus:publish` | `ctx.bus.publish` | 只能发布 `<自己的 id>:` 前缀的 topic | — |
+| `bus:subscribe` | `ctx.bus.subscribe` | **用了这个 API 就要声明**（不声明会在激活时被拒）。声明之后，订阅自己前缀仍然不需要额外授权，只有订别人/宿主的 topic 才再走一层 ACL | — |
+| `storage` | `ctx.storage.*` | 每插件独立 JSON 存储，宿主按 id 隔离落盘 | 风险 |
+| `ble:scan` | `ctx.ble.startScan/stopScan` | 蓝牙扫描 | — |
+| `ble:connect` | `ctx.ble.connect/disconnect/connectedDevice` | 连接与订阅通知 | — |
+| `widget` | `ctx.widget.update` | 向自己的 widget 推数据（走 `<id>:widget` topic） | — |
+| `overlay` | `ctx.overlay.show(opts?)` / `hide` / `destroy` | **本插件专属**的透明悬浮窗（窗口标签 `overlay-<你的 id>`）。`show({ placement: "above-pet", height: 104 })` 让它贴着宠物头顶并跟随拖动；不传就是桌面左上角 | — |
+| `http` | `ctx.http.request` | 出站请求，**按域名逐个再授权**（`http:<host>`，键不带默认端口：`https://x.com` 的键是 `x.com`）。`body` 按响应 Content-Type 的 charset 解码：目前支持 UTF-8 与 GBK/GB2312/GB18030（新浪、腾讯行情这类 GBK 接口能直接拿到中文），其余 charset 与不带 charset 的响应仍按 UTF-8 lossy 解 | 风险 |
+| `notify` | `ctx.notify.show` | 系统通知 | — |
+| `pet:react` | `ctx.pet.react` | 让宠物插播一个状态，参数只能是 petdex 的九个状态之一：`idle` `running-right` `running-left` `waving` `jumping` `failed` `waiting` `running` `review`（其余名字会被桥拒绝） | — |
+| `pet:say` | `ctx.pet.say` | 让宠物弹一句台词 | — |
+| `agent:hooks` | `ctx.host.agentHooks.{status,install,uninstall}` | 查询/安装/卸载本机编码 Agent（Qoder）的 hook 配置（`~/.qoder*/settings.json` 里自家 `--pet-hook` 条目，增删只动自己的）。**只在插件设置页（`settings` 区 widget）可用**：`badge` / `overlay` 区与宠物窗里没有 `ctx.host`。首次调用弹同意框；这是本项目第一个"能改用户其他应用配置"的能力，边界见 ADR-0001 | 风险 |
 
 ## 4. ctx API
 

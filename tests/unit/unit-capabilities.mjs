@@ -454,3 +454,37 @@ group("反向钉住·四个插件 manifest");
   }
   eq("四份 manifest 的 permissions 并集恰好覆盖 12 名（无漏网）", sorted(union).length, 12);
 }
+
+/* ============ 风险面元数据：riskFlags 是名单的子集，TS 与 JSON 逐字相等 ============ */
+// S2：宿主设置页的「风险权限标险」口径不能再是 plugin-page.ts 里的硬编码字面量，
+// 必须回到名单本体的 riskFlags 上。判据（PM 定死，不许扩也不许缩）就是这三个名字。
+group("风险面元数据 riskFlags");
+
+/** 卡片 §3 定死的三名（顺序照此写，与 PLUGIN_SDK.md §3 表格的「风险面」列一致） */
+const EXPECTED_RISK = ["http", "storage", "agent:hooks"];
+
+check("plugin-capabilities.json 有 riskFlags 数组", Array.isArray(capsFile.riskFlags), `实际 ${JSON.stringify(capsFile.riskFlags)}`);
+eq("riskFlags 恰好 3 个名字", Array.isArray(capsFile.riskFlags) ? capsFile.riskFlags.length : -1, 3);
+eq("riskFlags 无重复项", new Set(capsFile.riskFlags ?? []).size, 3);
+// 顺序敏感：写成 ["storage","http",…] 或改词都红（逐字 + 逐序）
+deep("riskFlags 顺序与内容逐字等于既定三名", [...(capsFile.riskFlags ?? [])], EXPECTED_RISK);
+check(
+  "riskFlags 每个名字都在 capabilities 里（子集）",
+  (capsFile.riskFlags ?? []).every((n) => capsFile.capabilities.includes(n)),
+  `riskFlags=${JSON.stringify(capsFile.riskFlags)}`,
+);
+// 三个名字逐条落到真实能力上（防拼成 hooks / agent_hooks 这类错拼）
+for (const r of EXPECTED_RISK) {
+  check(`风险名 "${r}" 是名单里的能力（不是错拼）`, capsFile.capabilities.includes(r), "不在 capsFile.capabilities 里");
+}
+
+// TS 侧：RISK_FLAGS 冻结，且与 JSON 的 riskFlags 逐字逐序相等（改任一边都红）
+check("TS 模块导出 RISK_FLAGS 数组", Array.isArray(capsMod.RISK_FLAGS), `实际 ${JSON.stringify(capsMod.RISK_FLAGS)}`);
+deep("RISK_FLAGS 与 JSON 的 riskFlags 逐字逐序相等", [...(capsMod.RISK_FLAGS ?? [])], [...(capsFile.riskFlags ?? [])]);
+check("RISK_FLAGS 已冻结", capsMod.RISK_FLAGS !== undefined && Object.isFrozen(capsMod.RISK_FLAGS));
+deep("RISK_FLAGS 集合等于既定三名", sorted(capsMod.RISK_FLAGS ?? []), sorted(EXPECTED_RISK));
+
+// 消费点：设置页的标险必须回到共享常量，不能再有裸字面量判断
+const pluginPageSrc = readFileSync(new URL("../../src/settings/plugin-page.ts", import.meta.url), "utf8");
+check('plugin-page.ts 不再出现 `p === "http"` 硬编码', !pluginPageSrc.includes('p === "http"'), "还留着字面量判定");
+check("plugin-page.ts 消费共享的 RISK_FLAGS", pluginPageSrc.includes("RISK_FLAGS"), "没 import/使用 RISK_FLAGS");

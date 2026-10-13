@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { RISK_FLAGS } from "../runtime/plugin-capabilities";
 import { validateManifest } from "../runtime/plugin-runtime";
 import { widgetHost } from "../runtime/widget-host";
 import { $, el } from "./dom";
@@ -42,8 +43,9 @@ export async function renderPluginPage(): Promise<void> {
     perms.append(el("span", `manifest 无效：${invalid}`, "perm-chip warn"));
   } else {
     for (const p of manifest.permissions ?? []) {
-      // 能出网、能落盘的权限标出来，让人一眼看到风险面
-      perms.append(el("span", p, "perm-chip" + (p === "http" || p === "storage" ? " warn" : "")));
+      // 风险面口径来自共享名单（RISK_FLAGS：可出网/可落盘/可改用户外部配置），
+      // 不再在调用点硬编码名字 —— 名单里加一条同样有副作用的能力就自动被标险
+      perms.append(el("span", p, "perm-chip" + (RISK_FLAGS.includes(p) ? " warn" : "")));
     }
     if ((manifest.permissions ?? []).length > 0) {
       const revoke = el("button", "撤销授权", "btn-revoke");
