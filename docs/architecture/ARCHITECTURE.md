@@ -48,30 +48,99 @@
 
 ```
 （仓库根目录，即本项目根）
-├── src-tauri/
+├── src-tauri/                  # Tauri 2 宿主（Rust）：窗口/托盘/单实例/自启 + 原生能力服务
 │   ├── src/
-│   │   ├── lib.rs / main.rs
-│   │   ├── commands/        # IPC 命令: ble_*, store_*, http_proxy, notify, pet_skin_*
-│   │   ├── services/{ble.rs, store.rs, http.rs, permission.rs, skins.rs}
-│   │   └── window/{pet.rs, tray.rs}
-│   └── tauri.conf.json      # 透明置顶窗配置
-├── src/
-│   ├── pet/                 # Petdex 图集切片与九状态规格 + 播放器 + 状态机 + 皮肤解析
-│   ├── runtime/
-│   │   ├── plugin-runtime.ts   # 发现/加载/启停/卸载
-│   │   ├── bridge.ts           # 面向插件的 PetAPI（能力校验在此）
-│   │   ├── event-bus.ts
-│   │   └── widget-host.ts      # Shadow DOM 插槽
-│   ├── settings/            # 设置窗: 插件开关、权限管理、桌宠形象安装
-│   └── main.ts
-├── plugins/                 # 运行时插件目录（每个: manifest.json + index.js）
-│   ├── com.pet.hr-ble/
-│   └── com.pet.agent-bridge/
+│   │   ├── lib.rs              # 应用装配：命令注册、托盘、建窗、setup 钩子
+│   │   ├── main.rs             # 二进制入口（release 下不弹控制台）
+│   │   ├── gate.rs             # 窗口来源门禁：命令按发起窗口判定能不能改宿主
+│   │   ├── gate_coverage.rs    # 门禁覆盖面自检：按已注册命令反查谁没过闸
+│   │   ├── ids.rs              # 插件 id 的唯一校验实现（同一个 id 又是存储目录名）
+│   │   ├── fsutil.rs           # 落盘公共工具：tmp+pid+rename 原子写
+│   │   ├── plugin_caps.rs      # 能力名单的宿主侧入口（与前端读同一份 json）
+│   │   ├── commands/           # IPC 命令面，按域分文件
+│   │   │   ├── plugins.rs      # 插件清单/启停/撤销授权 + 形象与 overlay 命令
+│   │   │   ├── bus.rs          # bus_publish：origin 由宿主按发起窗口判定
+│   │   │   └── agent.rs        # Agent hook 的状态/安装/卸载
+│   │   ├── services/           # 原生能力服务：12 个功能模块
+│   │   │   ├── ble.rs          # btleplug 广播监听 + GATT 0x180D/2A37 心率
+│   │   │   ├── store.rs        # 插件隔离存储（%APPDATA%/com.desktoppet.pet/plugins/<id>）
+│   │   │   ├── http.rs         # 白名单域名的受控 HTTP 代理
+│   │   │   ├── notify.rs       # 系统通知（同样过授权表）
+│   │   │   ├── permission.rs   # 授权记录 + 首次调用的同意对话框
+│   │   │   ├── enabled.rs      # 插件启停清单（宿主磁盘上的唯一事实来源）
+│   │   │   ├── autostart.rs    # 开机自启（官方插件读写 HKCU 的 Run 键）
+│   │   │   ├── hotkeys.rs      # 全局快捷键唤出插件页
+│   │   │   ├── fullscreen.rs   # 前台全屏探测（游戏模式的传感部分）
+│   │   │   ├── agent_hooks.rs  # Qoder hook 配置的安装与卸载
+│   │   │   ├── agent/          # hook 收件目录、事件归一化与会话状态机
+│   │   │   └── skins/          # Petdex 图集下载/解析/磁盘布局 + petskin:// 协议
+│   │   └── window/             # 窗口层
+│   │       ├── pet.rs          # 宠物窗：透明/置顶/拖拽/点击穿透
+│   │       ├── overlay.rs      # 悬浮窗：按插件各开一扇（标签 overlay-<id>）
+│   │       └── tray.rs         # 托盘菜单
+│   └── tauri.conf.json         # 窗口、权限与插件配置
+├── src/                        # WebView 前端（TypeScript + Vite，不引重框架）
+│   ├── index.html              # 宠物窗入口
+│   ├── settings.html           # 设置窗入口
+│   ├── overlay.html            # 插件悬浮窗入口
+│   ├── consent.html            # 权限同意框入口
+│   ├── main.ts                 # 宠物窗启动：状态机 + 序列帧播放器 + 渲染循环
+│   ├── boot-error.ts           # 启动期兜底错误条（独立模块，CSP 不许内联脚本）
+│   ├── styles.css              # 页面通用样式
+│   ├── vite-env.d.ts           # Vite 类型声明
+│   ├── pet/                    # 宠物本体：图集切片与九状态规格 + 播放器 + 状态机 + 皮肤解析 + 点击穿透/台词/游戏模式
+│   ├── runtime/                # 插件运行时：发现与启停 + 能力桥 + 事件总线与 topic 归属 + widget 宿主
+│   ├── settings/               # 设置窗：侧栏导航 + 插件页壳 + 形象/快捷键/自启/游戏模式分节
+│   ├── overlay/                # 悬浮窗页：每扇只挂自己那个插件的 overlay widget
+│   └── consent/                # 同意框页：展示插件身份与申请的能力
+├── plugins/                    # 运行时插件目录（每个：manifest.json + index.js，磁盘加载）
+│   ├── com.pet.hr-ble/         # 心率蓝牙广播：扫描/连接/实时 BPM
+│   ├── com.pet.agent-bridge/   # Agent 桥：订阅宿主 agent:state 转成宠物反应
+│   ├── todo/                   # 待办事项：增删改勾 + 桌面卡片 + 到期提醒
+│   ├── com.pet.astock/         # A股盯盘：自选/提醒/badge/overlay + 分时/K线/五档
+│   └── # 暂缓：llm-token-usage/ 目录未创建（用户 2026-10-10 决定，勿按存在处理）
+├── packages/
+│   └── sdk/                    # 插件 SDK：类型声明 + schema + 名单，全部是单一事实源
+│       ├── index.d.ts          # 插件 ctx / PetAPI 的类型声明
+│       ├── topics.d.ts         # 标准 topic 的类型声明
+│       ├── topics.js           # 运行时 topic 常量
+│       ├── manifest.schema.json      # 插件 manifest 的 JSON Schema
+│       └── plugin-capabilities.json  # 能力名单（Rust 侧与 TS 侧共读同一份）
+├── tests/
+│   ├── unit/                   # node:test 单测（运行时、能力、manifest schema、行情源等）
+│   └── e2e/                    # verify-*.mjs 端到端断言 + harness/（CDP 与夹具）
+├── tools/                      # dev-debug.mjs（供断言脚本连 CDP）、generate-app-icon.ps1
 ├── docs/
-│   ├── ARCHITECTURE.md      # 本架构文档
-│   └── PLUGIN_SDK.md        # 插件开发指南
-├── AGENTS.md
-└── package.json
+│   ├── architecture/
+│   │   └── ARCHITECTURE.md     # 本架构文档
+│   ├── plugin-dev/
+│   │   ├── PLUGIN_SDK.md       # 插件开发指南：manifest、能力表、示例
+│   │   ├── PLUGIN-HANDBOOK.md  # 接活者的交付标准与坑清单
+│   │   ├── PLUGIN-REVIEW.md    # 插件评审口径
+│   │   └── PLUGIN-BACKLOG.md   # 插件域任务卡、派单模板、已否决项
+│   ├── process/
+│   │   ├── CODE-REVIEW.md      # 本体评审意见与结论
+│   │   └── HOST-BACKLOG.md     # 本体/构建/文档域任务卡与验收证据矩阵
+│   ├── adr/
+│   │   ├── 0001-agent-hooks-capability-in-plugin-page.md
+│   │   ├── 0002-single-agent-linkage-uninstall-then-install.md
+│   │   └── 0003-session-visibility-on-pet-bubble.md
+│   └── desktop-pet-优化任务清单.docx   # 外部优化任务清单
+├── assets/
+│   └── app-icon.png            # 图标母版（generate-app-icon.ps1 的产物）
+├── .github/
+│   └── workflows/ci.yml        # CI：lint + 单测
+├── release-package/            # 便携包产物（exe + 旁边的 plugins/ + 更新说明），不进版本库
+├── AGENTS.md                   # 项目状态、决策与协作约定（主入口）
+├── CONTEXT.md                  # 上下文速览
+├── README.md
+├── package.json
+├── tsconfig.json               # 主工程 tsconfig
+├── tsconfig.plugins.json       # 插件侧 checkJs 用
+├── vite.config.ts
+└── biome.jsonc                 # 格式化/lint 配置
+
+# 约定：目录内的 mod.rs 与 *.tests.rs 不进本树（模块装配与内联单测，不是独立模块）。
 ```
 
 ## 五、核心设计

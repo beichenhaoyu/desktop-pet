@@ -77,10 +77,17 @@ npm run verify:release # 验打包产物的 CSP，每波次收尾手工跑一次
 
 ## 目录速览
 
-- `src/pet/` 宠物渲染：Petdex 图集切片加载（含程序生成兜底）+ 播放器 + 九状态状态机 + 皮肤解析
-- `src/runtime/` 插件运行时（manifest 校验、能力桥、事件总线、widget 宿主）
-- `src-tauri/` Rust 宿主：窗口/托盘/单实例 + BLE/存储/权限/overlay 服务
-- `plugins/` 示例插件（心率蓝牙、Agent 桥）
+- `src/pet/` 宠物本体：Petdex 图集切片与九状态规格 + 序列帧播放器 + 状态机 + 皮肤解析 + 点击穿透/台词/游戏模式
+- `src/runtime/` 插件运行时：manifest 发现与启停、能力桥（校验在此）、事件总线与 topic 归属、widget 宿主
+- `src/settings/` 设置窗：侧栏导航（宠物设置 + 每插件一条）、插件页壳、形象/快捷键/自启/游戏模式分节
+- `src/overlay/` 与 `src/consent/` 悬浮窗页（按插件各开一扇）与权限同意框页
+- `src-tauri/` Rust 宿主：窗口（宠物/悬浮/托盘）、单实例、自启，加原生能力服务（BLE/存储/HTTP 代理/通知/权限/启停/快捷键/全屏/hook/形象）
+- `packages/sdk/` 插件 SDK：类型声明、manifest schema、能力与 topic 名单（单一事实源）
+- `plugins/` 示例插件：`com.pet.hr-ble`（心率蓝牙）、`com.pet.agent-bridge`（Agent 桥）、`todo`（待办）、`com.pet.astock`（A股盯盘）
+- `tests/unit/` 与 `tests/e2e/` 单测与 `verify-*.mjs` 端到端断言
+- `tools/` 开发辅助：`dev-debug.mjs`（供断言脚本连 CDP）、图标生成脚本
+- `docs/` 文档：`docs/architecture/`（本架构）、`docs/plugin-dev/`（SDK 与插件流程）、`docs/process/`（评审与派单）、`docs/adr/`（决策记录）
+- `release-package/` 便携包产物（不进版本库；插件是磁盘加载，改 `plugins/` 不需要重编本体）
 
 ## 更换桌宠形象
 
