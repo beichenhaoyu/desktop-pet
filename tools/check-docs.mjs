@@ -1,15 +1,17 @@
 // tools/check-docs.mjs — 文档与磁盘一致性门禁（优化清单第 32 项；卡 R7 交付物）
 //
-// 六条规则（规则口径见 .dispatch/arch-p2/work/T04/check-docs-rules.md 与卡 R7 §3）：
+// 七条规则（R-A…R-F 口径见 .dispatch/arch-p2/work/T04/check-docs-rules.md 与卡 R7 §3；R-G 见卡 R8 §2）：
 //   R-A 正式文档里的 md 相对链接可达（http(s):/mailto:/纯 #片段 除外）
 //   R-B ARCHITECTURE.md §4 树对 src-tauri/src/services/ 的覆盖双向成立
 //   R-C README「目录速览」的 plugins/ 行点名四个插件 id
 //   R-D 正式文档里的路径形反引号引用（七前缀）在磁盘上存在
 //   R-E md 链接文字若是 .md 路径，其文件名必须与目标文件名一致
 //   R-F AGENTS.md 字节数 ≤ 6000（上限由 PM 定，勿改回 5000）
+//   R-G §4 树全量双向核对：树还原出的每条相对路径逐条 existsSync（树有、磁盘无 → 红）；
+//       磁盘顶层目录与领域成员（目录级口径）必须在树里（磁盘有、树无 → 红）
 //
 // 退出码语义：任何一条规则为假 → process.exitCode = 1（CI 只认退出码，不打退出码等于没门禁）。
-// 末尾固定打一行 `RESULT rules=6 failing=K`；--json 输出同样一份汇总的 JSON 形态。
+// 末尾固定打一行 `RESULT rules=7 failing=K`；--json 输出同样一份汇总的 JSON 形态。
 //
 // 例外全部是显式的常量表（EXEMPT_*），每条带出处与理由；口径论证见
 // .dispatch/arch-p2/work/R7/exemptions.md。不许用"看起来不像路径"这类模糊启发式。
@@ -54,7 +56,15 @@ function docList() {
 //   - `src-tauri/target/` 下是构建产物树（不进版本库，卡 §3 把 src-tauri/target/ 列为排除项）：
 //     判"存在"与否取决于本机是否构建过，不是文档漂移，CI 上必须稳定跳过。
 const PLACEHOLDER_SHAPE = /[<>{}*]/;
-const EXEMPT_PREFIXES = [{ prefix: 'src-tauri/target/', reason: '构建产物树，不入版本库（卡 §3 排除项）' }];
+const EXEMPT_PREFIXES = [
+  { prefix: 'src-tauri/target/', reason: '构建产物树，不入版本库（卡 §3 排除项）' },
+  {
+    prefix: 'release-package/',
+    reason:
+      '本地打包产物（.gitignore 覆盖），存在与否取决于本机是否打过包；CI 全新 checkout 必然没有，' +
+      'R-G 正向面必须稳定跳过（口径同 src-tauri/target/；卡 R8 §6 把它列在「不进文档的目录」里）',
+  },
+];
 // 全局 token 例外（在任何正式文档里出现都算合法）：
 const EXEMPT_TOKENS = new Map([
   ['src/lib/pet-states.ts', '上游仓库 crafter-station/petdex 的源码路径：README.md:104 致谢一节照搬映射出处，本仓按设计不带这些文件'],
@@ -275,6 +285,125 @@ function ruleF() {
   return { name: 'R-F', ok: failures.length === 0, failures, detail: `bytes=${size} limit=${AGENTS_LIMIT}` };
 }
 
+// ---- R-G：§4 树全量核对（卡 R8）----
+// 树还原口径与 work/R6/check-tree.mjs 一致：只取「## 四、目录结构」下第一个代码块，
+// 按 4 字符一级的树形前缀还原完整相对路径；`#` 之后的注释不参与，纯说明行（名字以 # 开头）跳过。
+// 本规则与 ruleB 分工：ruleB 的 services 双向核对原样保留，R-G 负责全树（反向面随卡 R8 §2 口径）。
+function parseArchTree() {
+  const ls = linesOf('docs/architecture/ARCHITECTURE.md');
+  const start = ls.findIndex((l) => /^##\s*四、目录结构/.test(l));
+  if (start < 0) throw new Error('找不到「## 四、目录结构」');
+  const open = ls.findIndex((l, i) => i > start && /^```/.test(l));
+  if (open < 0) throw new Error('§4 下没有代码块');
+  const close = ls.findIndex((l, i) => i > open && /^```/.test(l));
+  if (close < 0) throw new Error('§4 代码块没有闭合');
+  const found = [];
+  const stack = [];
+  for (const raw of ls.slice(open + 1, close)) {
+    const m = raw.match(/^([│\s]*)(?:├──|└──)\s(.+)$/u);
+    if (!m) continue;
+    if (m[1].length % 4 !== 0) throw new Error(`缩进不是 4 的倍数: ${JSON.stringify(raw)}`);
+    let name = m[2].split('#')[0].trim();
+    if (!name || name.startsWith('#')) continue;
+    const isDir = name.endsWith('/');
+    name = name.replace(/\/*$/, '');
+    stack.length = m[1].length / 4;
+    found.push(`${[...stack, name].join('/')}${isDir ? '/' : ''}`);
+    stack.push(name);
+  }
+  return found;
+}
+
+// R-G 反向面的纳管口径（卡 R8 §2，目录级）：白名单 = 必须在 §4 树里出现的顶层模块；
+// 排除表 = 产物/临时/流水线目录（每条带理由）。磁盘上的顶层目录必须命中二者之一，
+// 都不中标 → 红（不许用"遍历全部子目录"的写法，也不许新顶层目录静默漏过）。
+const TOP_CHECKED = ['src', 'src-tauri', 'plugins', 'packages', 'tests', 'tools', 'docs', 'assets', '.github', 'public'];
+const TOP_EXCLUDED = new Map([
+  ['dist', 'Vite 构建产物（.gitignore 覆盖），存在与否取决于本机是否构建过'],
+  ['node_modules', '依赖目录（.gitignore 覆盖）'],
+  ['temp', '临时目录（.gitignore 覆盖）'],
+  ['release-package', '本地打包产物（.gitignore 覆盖），存在与否取决于本机是否打过包'],
+  ['.git', '版本库元数据'],
+  ['.dispatch', '派单流水线工作区（.gitignore 覆盖 .dispatch/**/work/）'],
+  ['.workbuddy', '外部 AI 助手产物（.gitignore 覆盖）'],
+  ['.vscode', '编辑器本地配置（.gitignore 部分覆盖）'],
+]);
+
+function ruleG() {
+  try {
+    const treePaths = parseArchTree();
+    const docSet = new Set(treePaths);
+    const failures = [];
+    let checked = 0;
+    let exempted = 0;
+    for (const rel of treePaths) {
+      const norm = rel.replace(/\/+$/, '');
+      const hit = EXEMPT_PREFIXES.some((e) => {
+        const p = e.prefix.replace(/\/+$/, '');
+        return norm === p || norm.startsWith(`${p}/`);
+      });
+      if (hit || EXEMPT_TOKENS.has(norm)) {
+        exempted += 1;
+        continue;
+      }
+      checked += 1;
+      if (!existsRel(norm)) failures.push(`§4 树有、磁盘没有: ${rel}`);
+    }
+
+    // 反向：磁盘 → 树（顶层目录分类必须覆盖磁盘现状）
+    let reverse = 0;
+    const need = (rel, why) => {
+      reverse += 1;
+      if (!docSet.has(rel)) failures.push(`磁盘有、§4 树未点名: ${rel}（${why}）`);
+    };
+    const topDirs = fs
+      .readdirSync(ROOT, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .sort();
+    for (const d of topDirs) {
+      if (TOP_CHECKED.includes(d)) need(`${d}/`, '顶层模块');
+      else if (!TOP_EXCLUDED.has(d)) failures.push(`顶层目录 ${d}/ 不在白名单也不在显式排除表——分类必须显式维护`);
+    }
+    // 领域成员：src/ 子目录、src-tauri/src 的根模块与 services/window/commands 成员、
+    // plugins/ 每个插件 id、packages/ 与 tests/ 子目录、docs/ 四个子目录（卡 R8 §2 的目录级口径）
+    const dirNames = (rel) =>
+      fs
+        .readdirSync(path.join(ROOT, rel), { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => `${e.name}/`)
+        .sort();
+    for (const d of dirNames('src')) need(`src/${d}`, 'src 子目录');
+    const crateRoot = fs
+      .readdirSync(path.join(ROOT, 'src-tauri', 'src'), { withFileTypes: true })
+      .filter((e) => e.isDirectory() || (e.isFile() && e.name.endsWith('.rs')))
+      .map((e) => `${e.name}${e.isDirectory() ? '/' : ''}`)
+      .sort();
+    for (const m of crateRoot) need(`src-tauri/src/${m}`, 'crate 根模块/子目录');
+    for (const sub of ['services', 'window', 'commands']) {
+      const members = fs
+        .readdirSync(path.join(ROOT, 'src-tauri', 'src', sub), { withFileTypes: true })
+        .filter((e) => e.name !== 'mod.rs' && !e.name.endsWith('.tests.rs'))
+        .map((e) => `${e.name}${e.isDirectory() ? '/' : ''}`)
+        .sort();
+      for (const m of members) need(`src-tauri/src/${sub}/${m}`, `${sub} 成员`);
+    }
+    for (const d of dirNames('plugins')) need(`plugins/${d}`, '插件 id');
+    for (const d of dirNames('packages')) need(`packages/${d}`, 'packages 子目录');
+    for (const d of dirNames('tests')) need(`tests/${d}`, 'tests 子目录');
+    for (const d of dirNames('docs')) need(`docs/${d}`, 'docs 子目录');
+
+    return {
+      name: 'R-G',
+      ok: failures.length === 0,
+      failures,
+      detail: `tree=${treePaths.length} checked=${checked} exempted=${exempted} reverse=${reverse} excl=${TOP_EXCLUDED.size} broken=${failures.length}`,
+    };
+  } catch (err) {
+    return { name: 'R-G', ok: false, failures: [`§4 树解析失败: ${err.message}`], detail: 'parse-error' };
+  }
+}
+
 // ---- 跑 ----
 function safeRule(name, fn) {
   try {
@@ -292,6 +421,7 @@ const results = [
   safeRule('R-D', () => ruleD(docs)),
   safeRule('R-E', () => ruleE(docs)),
   safeRule('R-F', () => ruleF()),
+  safeRule('R-G', () => ruleG()),
 ];
 const failing = results.filter((r) => !r.ok).length;
 

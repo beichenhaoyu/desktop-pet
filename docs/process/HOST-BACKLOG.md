@@ -256,6 +256,7 @@ MVP 范围：<这一轮只做什么>
 | 插件纯函数（`plugins/com.pet.todo/todo-txt.js`；hr-ble 的 BPM 解析在 Rust，归 cargo test） | `npm run unit:plugins` | plugins **53**（Q4；`npm run unit` 合计 **811**） |
 | 任何新增脚本 / 协议源 / CSP / 打包相关 | `npm run verify:release` | 12 |
 | Cargo 依赖变动 | `cargo tree -p tauri` 必须仍是 **2.12.0**，且 `npm run verify:release` | — |
+| 文档与磁盘一致性（改 `ARCHITECTURE.md` §4 目录树、README 目录速览、搬文件/建删模块、改 ADR 链接、动 `AGENTS.md`） | `npm run check:docs`（CI 里 `npm run unit` 之后一步，见 `.github/workflows/ci.yml`） | **rules=7 failing=0**、退出码 0。七条：R-A md 相对链接可达 / R-B §4 树对 `src-tauri/src/services/` 双向（`disk=12 doc=12`）/ R-C 速览点名的插件 id 齐 / R-D 反引号路径 token 存在 / R-E 链接文字与目标名一致 / R-F `AGENTS.md` ≤6000 字节 / R-G **§4 全树双向**（正向逐条 existsSync、反向按顶层目录与领域成员点名，目录级）。R7（`e2e63c7`）交付前六条、R8 补出 R-G：清单 32 项那句「删一个模块而文档未改时 CI 变红」从那一刻起才对**整棵树**成立，此前只对 services 成立。**加规则不许削既有读数**，且新增例外一律进 `EXEMPT_*` 常量表带出处理由 |
 
 **验收纪律**（沿用 PLUGIN-REVIEW §0，此处不复制全文）：跑起来看而不是只读代码；每条问题给 文件:行号 + 触发步骤 +
 期望/实际；**「已核不成立」一节必须写**，附证据，别让下一批助手重复提同一件。

@@ -94,6 +94,7 @@
 │   ├── settings/               # 设置窗：侧栏导航 + 插件页壳 + 形象/快捷键/自启/游戏模式分节
 │   ├── overlay/                # 悬浮窗页：每扇只挂自己那个插件的 overlay widget
 │   └── consent/                # 同意框页：展示插件身份与申请的能力
+├── public/                     # Vite 静态目录：boot-error.css 原样进 dist 根（index.html 按 /boot-error.css 引用）
 ├── plugins/                    # 运行时插件目录（每个：manifest.json + index.js，磁盘加载）
 │   ├── com.pet.hr-ble/         # 心率蓝牙广播：扫描/连接/实时 BPM
 │   ├── com.pet.agent-bridge/   # Agent 桥：订阅宿主 agent:state 转成宠物反应
