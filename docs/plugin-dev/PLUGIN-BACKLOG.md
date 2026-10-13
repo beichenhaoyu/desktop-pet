@@ -9,7 +9,7 @@
 
 ```
 任务：<插件 id> —— <一句话目标>
-必读：docs/plugin-dev/PLUGIN-HANDBOOK.md、docs/plugin-dev/PLUGIN_SDK.md（§3 能力、§5 widget）、参考实现 plugins/todo 或 plugins/com.pet.astock
+必读：docs/plugin-dev/PLUGIN-HANDBOOK.md、docs/plugin-dev/PLUGIN_SDK.md（§3 能力、§5 widget）、参考实现 plugins/com.pet.todo 或 plugins/com.pet.astock
 边界：只准新增 plugins/<id>/ 与 tests/e2e/verify-<id>.mjs + package.json 一条脚本；
       不得改 src/、src-tauri/、tauri.conf.json、CSP、其他插件目录。需要宿主新能力就停下来提出来。
 能力声明：<列出 permissions，并说明每项用在哪>
@@ -81,7 +81,7 @@ MVP 范围：<这一轮只做什么>
 ### A7 `todo` 增强 —— 重复任务与自然语言日期
 - **能力**：沿用现有 `todo` 插件（不新增权限）
 - **范围**：`rec:` 重复规则（每天/每周/工作日）、到期顺延、`+项目` 过滤视图。
-- **约束**：**必须保持 todo.txt 字段兼容**，不能改动已落盘数据的语义；`todo:changed` 的 payload 结构不能破坏性变更
+- **约束**：**必须保持 todo.txt 字段兼容**，不能改动已落盘数据的语义；`com.pet.todo:changed` 的 payload 结构不能破坏性变更
   （别的插件会订）。
 - **验收**：`verify:todo` 现有 30 条必须继续全绿，新增断言覆盖重复展开与时区。
 - **风险点**：这是**改已有插件**，回归面比新插件大；要求作者先跑通原 verify 再动手。
@@ -342,8 +342,8 @@ MVP 范围：<这一轮只做什么>
 ## 4. 现状参照
 
 已放行插件：`com.pet.hr-ble`（蓝牙心率）、`com.pet.agent-bridge`（Agent 会话驱动宠物）、
-`todo`（待办）、`com.pet.astock`（A股盯盘：自选+提醒+badge/overlay+分时/K线/五档+出网节制）。
-新插件的目录结构、纯函数分层、verify 脚本写法优先照 `com.pet.astock` 与 `todo` 抄。
+`com.pet.todo`（待办）、`com.pet.astock`（A股盯盘：自选+提醒+badge/overlay+分时/K线/五档+出网节制）。
+新插件的目录结构、纯函数分层、verify 脚本写法优先照 `com.pet.astock` 与 `com.pet.todo` 抄。
 
 ## 5. 评审记录
 

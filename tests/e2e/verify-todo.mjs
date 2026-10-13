@@ -15,7 +15,10 @@ import {
 } from "./harness/cdp.mjs";
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
-const PID = "todo";
+const PID = "com.pet.todo";
+// 悬浮窗标签不是裸 id：宿主的 overlay_label 把 `.` 编码成 `_`（见 src-tauri/src/window/overlay.rs，
+// 单射设计，防止 `a.b` 与 `a-b` 撞同一个标签）。M5 改名前 id 是 `todo` 没有点，这条区别藏得住。
+const OVERLAY_LABEL = `overlay-${PID.replace(/[.]/g, "_")}`;
 const isPetPage = (t) => /localhost:1420\/(src\/)?index\.html$/.test(t.url);
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 const r = createReport("待办插件（dev）");
@@ -136,7 +139,7 @@ try {
 
   r.group("标准 topic 广播");
   const changed = (await c.ev(`window.__seen.filter(([k]) => k === 'changed').map(([,p]) => p)`)).at(-1);
-  r.check("todo:changed 带未完成数", 2, changed?.open);
+  r.check("com.pet.todo:changed 带未完成数", 2, changed?.open);
   r.check("next 是按 due 排序的那条", true, (changed?.nextDue ?? "") === TODAY);
 
   r.group("界面数据");
@@ -149,11 +152,11 @@ try {
   r.group("桌面卡片：本插件单独一扇窗");
   await send({ action: "config", card: true });
   r.check(
-    "overlay-todo 可见",
+    "overlay-com_pet_todo 可见（标签里的点被宿主编码成下划线）",
     true,
     await waitUntil(
       c,
-      `(async () => (await window.__TAURI_INTERNALS__.invoke('plugin:window|is_visible', { label: 'overlay-${PID}' })) === true)()`,
+      `(async () => (await window.__TAURI_INTERNALS__.invoke('plugin:window|is_visible', { label: "${OVERLAY_LABEL}" })) === true)()`,
       15_000,
     ),
   );
@@ -203,7 +206,7 @@ try {
     true,
     await waitUntil(
       c,
-      `(async () => (await window.__TAURI_INTERNALS__.invoke('plugin:window|is_visible', { label: 'overlay-${PID}' })) === false)()`,
+      `(async () => (await window.__TAURI_INTERNALS__.invoke('plugin:window|is_visible', { label: "${OVERLAY_LABEL}" })) === false)()`,
       12_000,
     ),
   );

@@ -1,7 +1,7 @@
 // 插件内共享的 topic 常量：index.js 与 widget.js 各自 import 同一份。
-// 插件 id 就叫 `todo`，所以 `todo:changed` 落在自己的命名空间里，能直接发布
+// 插件 id 是 `com.pet.todo`，所以 `com.pet.todo:changed` 落在自己的命名空间里，能直接发布
 // （AGENTS.md 把它列为标准 topic，这里正是那个约定）。
-export const PID = "todo";
+export const PID = "com.pet.todo";
 export const TOPIC_CMD = `${PID}:cmd`;
 export const TOPIC_STATUS = `${PID}:status`;
 export const TOPIC_WIDGET = `${PID}:widget`;

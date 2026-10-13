@@ -1,5 +1,5 @@
 {
-  "id": "todo",
+  "id": "com.pet.todo",
   "name": "待办",
   "version": "0.1.0",
   "entry": "index.js",

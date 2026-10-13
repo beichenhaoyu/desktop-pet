@@ -328,25 +328,25 @@ group("topic 前缀归属");
       check(label, false, `意外抛错: ${err.message}`);
     }
   };
-  noThrow("自己前缀的发布放行", () => acl.assertPublishable("todo", "todo:changed"));
-  throws("带通配的发布一律拒", () => acl.assertPublishable("todo", "todo:*"), "只能发布");
-  noThrow("订自己前缀不需要任何授权", () => acl.assertSubscribable("todo", "todo:widget", []));
-  noThrow("自己前缀内的通配可以订", () => acl.assertSubscribable("todo", "todo:*", []));
-  throws("订他人 topic 没声明 bus:subscribe 拒", () => acl.assertSubscribable("todo", "agent:state", []), "需要在 manifest 声明 bus:subscribe");
-  noThrow("声明 bus:subscribe 后能订宿主 topic", () => acl.assertSubscribable("todo", "agent:state", [capsMod.BUS_SUBSCRIBE]));
-  throws("通配越过自己前缀一律拒（即便声明了 bus:subscribe）", () => acl.assertSubscribable("todo", "com.pet.astock:*", [capsMod.BUS_SUBSCRIBE]), "越过了自己的命名空间");
-  throws("裸通配「*」同样拒", () => acl.assertSubscribable("todo", "*", [capsMod.BUS_SUBSCRIBE]), "越过了自己的命名空间");
+  noThrow("自己前缀的发布放行", () => acl.assertPublishable("com.pet.todo", "com.pet.todo:changed"));
+  throws("带通配的发布一律拒", () => acl.assertPublishable("com.pet.todo", "com.pet.todo:*"), "只能发布");
+  noThrow("订自己前缀不需要任何授权", () => acl.assertSubscribable("com.pet.todo", "com.pet.todo:widget", []));
+  noThrow("自己前缀内的通配可以订", () => acl.assertSubscribable("com.pet.todo", "com.pet.todo:*", []));
+  throws("订他人 topic 没声明 bus:subscribe 拒", () => acl.assertSubscribable("com.pet.todo", "agent:state", []), "需要在 manifest 声明 bus:subscribe");
+  noThrow("声明 bus:subscribe 后能订宿主 topic", () => acl.assertSubscribable("com.pet.todo", "agent:state", [capsMod.BUS_SUBSCRIBE]));
+  throws("通配越过自己前缀一律拒（即便声明了 bus:subscribe）", () => acl.assertSubscribable("com.pet.todo", "com.pet.astock:*", [capsMod.BUS_SUBSCRIBE]), "越过了自己的命名空间");
+  throws("裸通配「*」同样拒", () => acl.assertSubscribable("com.pet.todo", "*", [capsMod.BUS_SUBSCRIBE]), "越过了自己的命名空间");
 
   // widget 侧的窄化总线：publish 还要再验 bus:publish 授权（第三处判定，K3 一起收）
   const fakeBus = { published: [], publish(topic, payload, pluginId) { this.published.push({ topic, payload, pluginId }); }, subscribe() { return () => {}; } };
-  const scoped = acl.createScopedBus("todo", [capsMod.BUS_SUBSCRIBE], fakeBus);
-  throws("scoped bus 没声明 bus:publish 发布拒", () => scoped.publish("todo:changed", 1), "需要在 manifest 声明 bus:publish");
+  const scoped = acl.createScopedBus("com.pet.todo", [capsMod.BUS_SUBSCRIBE], fakeBus);
+  throws("scoped bus 没声明 bus:publish 发布拒", () => scoped.publish("com.pet.todo:changed", 1), "需要在 manifest 声明 bus:publish");
   eq("拒的时候没有真的发出去", fakeBus.published.length, 0);
-  const scopedOk = acl.createScopedBus("todo", [capsMod.BUS_PUBLISH, capsMod.BUS_SUBSCRIBE], fakeBus);
-  scopedOk.publish("todo:changed", 2);
+  const scopedOk = acl.createScopedBus("com.pet.todo", [capsMod.BUS_PUBLISH, capsMod.BUS_SUBSCRIBE], fakeBus);
+  scopedOk.publish("com.pet.todo:changed", 2);
   eq("声明后发出且带 pluginId", fakeBus.published.length, 1);
-  eq("发的 topic", fakeBus.published[0].topic, "todo:changed");
-  eq("带的 pluginId", fakeBus.published[0].pluginId, "todo");
+  eq("发的 topic", fakeBus.published[0].topic, "com.pet.todo:changed");
+  eq("带的 pluginId", fakeBus.published[0].pluginId, "com.pet.todo");
 }
 
 // 行为面（桥的 subscribe API）：没声明 bus:subscribe 时连 API 本身都被拒

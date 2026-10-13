@@ -14,10 +14,10 @@ import { readdirSync, readFileSync } from "node:fs";
 import { check, deep, eq, group } from "./harness.mjs";
 
 const sdk = await import(new URL("../../packages/sdk/topics.js", import.meta.url));
-const todoTopics = await import(new URL("../../plugins/todo/topics.js", import.meta.url));
+const todoTopics = await import(new URL("../../plugins/com.pet.todo/topics.js", import.meta.url));
 
 /** AGENTS.md「约定」段的标准事件 topic 五条（K2 卡 §3 原文） */
-const EXPECTED = ["ble:heart-rate", "agent:state", "agent:event", "llm:token-usage", "todo:changed"];
+const EXPECTED = ["ble:heart-rate", "agent:state", "agent:event", "llm:token-usage", "com.pet.todo:changed"];
 
 /** 宿主原生注入、但不在五条标准名单里的 BLE 事件（src/runtime/plugin-runtime.ts:244-247 的 listen 清单；
  * docs/plugin-dev/PLUGIN_SDK.md:111 把它们单列为标准事件名）。**钉死**在此：在这两个之外，插件源码里新增任何
@@ -27,7 +27,7 @@ const HOST_EXTRA_ALLOWED = Object.freeze(["ble:device-found", "ble:disconnected"
 const SRC = {
   "hr-ble": new URL("../../plugins/com.pet.hr-ble/index.js", import.meta.url),
   "agent-bridge": new URL("../../plugins/com.pet.agent-bridge/index.js", import.meta.url),
-  todo: new URL("../../plugins/todo/index.js", import.meta.url),
+  todo: new URL("../../plugins/com.pet.todo/index.js", import.meta.url),
 };
 const read = (u) => readFileSync(u, "utf8");
 
@@ -52,7 +52,7 @@ eq("BLE_HEART_RATE 的值", sdk.BLE_HEART_RATE, "ble:heart-rate");
 eq("AGENT_STATE 的值", sdk.AGENT_STATE, "agent:state");
 eq("AGENT_EVENT 的值", sdk.AGENT_EVENT, "agent:event");
 eq("LLM_TOKEN_USAGE 的值", sdk.LLM_TOKEN_USAGE, "llm:token-usage");
-eq("TODO_CHANGED 的值", sdk.TODO_CHANGED, "todo:changed");
+eq("TODO_CHANGED 的值", sdk.TODO_CHANGED, "com.pet.todo:changed");
 eq("host:fullscreen 不是总线 topic，不在名单里", sdk.STANDARD_TOPICS.includes("host:fullscreen"), false);
 
 /* ==================== 反向钉住：插件现场字面串 ==================== */
@@ -79,10 +79,10 @@ eq("hr-ble 订阅用的是 BLE_HEART_RATE 的值", found.get("hr-ble").has(sdk.B
 eq("agent-bridge 订阅用的是 AGENT_STATE 的值", found.get("agent-bridge").has(sdk.AGENT_STATE), true);
 eq("agent-bridge 订阅用的是 AGENT_EVENT 的值", found.get("agent-bridge").has(sdk.AGENT_EVENT), true);
 
-// publish 侧：todo 的发布串来自插件自己的 topics.js 常量（`todo` 落在自己前缀里）
-eq("todo 插件 TOPIC_CHANGED 的字面值 = SDK 的 TODO_CHANGED", todoTopics.TOPIC_CHANGED, sdk.TODO_CHANGED);
+// publish 侧：待办的发布串来自插件自己的 topics.js 常量（`com.pet.todo` 落在自己前缀里）
+eq("com.pet.todo 插件 TOPIC_CHANGED 的字面值 = SDK 的 TODO_CHANGED", todoTopics.TOPIC_CHANGED, sdk.TODO_CHANGED);
 check(
-  "todo/index.js 的发布点走 TOPIC_CHANGED 常量（发布侧没有可漂的字面串）",
+  "com.pet.todo/index.js 的发布点走 TOPIC_CHANGED 常量（发布侧没有可漂的字面串）",
   /bus\.publish\(\s*TOPIC_CHANGED\b/.test(read(SRC.todo)),
   "找不到 bus.publish(TOPIC_CHANGED) —— 发布点换了写法要同步本断言",
 );
@@ -90,7 +90,7 @@ check(
 /* ==================== 归属规则 ==================== */
 group("归属规则未被本卡破坏");
 
-eq("todo:changed 落在 todo 插件自己的前缀内", sdk.TODO_CHANGED.startsWith(`${todoTopics.PID}:`), true);
+eq("com.pet.todo:changed 落在 com.pet.todo 插件自己的前缀内", sdk.TODO_CHANGED.startsWith(`${todoTopics.PID}:`), true);
 check("llm:token-usage 在标准名单内（登记未使用，不是删掉）", sdk.STANDARD_TOPICS.includes(sdk.LLM_TOKEN_USAGE));
 
 {

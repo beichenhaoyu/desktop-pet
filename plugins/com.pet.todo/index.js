@@ -1,6 +1,6 @@
 // 待办插件主逻辑，运行在宠物窗上下文。
 // 数据只存插件自己的隔离存储（宿主按 id 分目录），不碰用户本机文件。
-// 清单变化 → 广播标准 topic `todo:changed`；界面数据一律经 ctx.widget.update
+// 清单变化 → 广播标准 topic `com.pet.todo:changed`；界面数据一律经 ctx.widget.update
 // 推到 `<id>:widget`，面板重新挂载时由宿主回灌，所以设置面板能显示当前状态。
 import { TOPIC_CHANGED, TOPIC_CMD, TOPIC_STATUS } from "./topics.js";
 import { formatLine, parseLine, sortOpen, today } from "./todo-txt.js";

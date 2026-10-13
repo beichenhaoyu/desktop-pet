@@ -47,7 +47,7 @@ Tauri 2 + TypeScript/Vite 实现的桌面宠物框架：宠物本体只提供窗
 
 - `com.pet.hr-ble`：扫描并连接心率设备，徽标小字或波形悬浮窗
 - `com.pet.agent-bridge`：把编码 Agent 的会话状态转成宠物动作与台词。事件由 Qoder hook 采集（宿主自己收，不依赖第三方）；hook 的配置入口走插件自己的设置页（能力 `agent:hooks`，见 [ADR-0001](docs/adr/0001-agent-hooks-capability-in-plugin-page.md)）
-- `todo`：待办清单。字段照 todo.txt 约定（`(A)` 优先级、`due:` 到期、`@项目`、`+上下文`），徽标显示剩余条数、桌面卡片可勾选、到点弹系统通知并让宠物有反应，变化时广播标准 topic `todo:changed`。数据只存插件自己的隔离存储 —— **整个插件零本体改动**
+- `com.pet.todo`：待办清单。字段照 todo.txt 约定（`(A)` 优先级、`due:` 到期、`@项目`、`+上下文`），徽标显示剩余条数、桌面卡片可勾选、到点弹系统通知并让宠物有反应，变化时广播标准 topic `com.pet.todo:changed`。数据只存插件自己的隔离存储 —— **整个插件零本体改动**
 
 **Agent 事件接入**：安装/卸载 Qoder hook 是插件可申请的能力 `agent:hooks`，入口在 agent 桥插件自己的设置页（宿主设置窗那张「Agent 事件接入」卡片已删除，见 [ADR-0001](docs/adr/0001-agent-hooks-capability-in-plugin-page.md)）。宿主 exe 自身兼任 hook 接收器（`--pet-hook <phase>` 分支，只落一个文件就退出），收件目录由 watcher 读增量并归一化成会话状态；安装只增删自己标记的条目，不动其他 hook，首次改动会留 `.pre-pet-backup` 备份。
 
@@ -83,7 +83,7 @@ npm run verify:release # 验打包产物的 CSP，每波次收尾手工跑一次
 - `src/overlay/` 与 `src/consent/` 悬浮窗页（按插件各开一扇）与权限同意框页
 - `src-tauri/` Rust 宿主：窗口（宠物/悬浮/托盘）、单实例、自启，加原生能力服务（BLE/存储/HTTP 代理/通知/权限/启停/快捷键/全屏/hook/形象）
 - `packages/sdk/` 插件 SDK：类型声明、manifest schema、能力与 topic 名单（单一事实源）
-- `plugins/` 示例插件：`com.pet.hr-ble`（心率蓝牙）、`com.pet.agent-bridge`（Agent 桥）、`todo`（待办）、`com.pet.astock`（A股盯盘）
+- `plugins/` 示例插件：`com.pet.hr-ble`（心率蓝牙）、`com.pet.agent-bridge`（Agent 桥）、`com.pet.todo`（待办）、`com.pet.astock`（A股盯盘）
 - `tests/unit/` 与 `tests/e2e/` 单测与 `verify-*.mjs` 端到端断言
 - `tools/` 开发辅助：`dev-debug.mjs`（供断言脚本连 CDP）、图标生成脚本
 - `docs/` 文档：`docs/architecture/`（本架构）、`docs/plugin-dev/`（SDK 与插件流程）、`docs/process/`（评审与派单）、`docs/adr/`（决策记录）

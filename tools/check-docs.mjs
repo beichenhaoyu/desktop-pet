@@ -80,6 +80,18 @@ const EXEMPT_FILE_TOKENS = [
     token: 'src-tauri/src/services/agent.rs',
     reason: '任务卡 A2 的「必读」坐标（写于 A01 拆分前；同一任务的边界句沿用同形态）',
   },
+  // M5（2026-10-13）插件目录改名 todo → com.pet.todo 后，CODE-REVIEW.md 里
+  // 2026-10-08 评审记录的「文件:行号」坐标按口径不改（历史坐标），按 (文档, token) 精确豁免：
+  {
+    file: 'docs/process/CODE-REVIEW.md',
+    token: 'plugins/todo/index.js',
+    reason: '2026-10-08 评审记录的行号坐标；todo 插件已由 M5 改名 com.pet.todo，历史坐标保留不搬',
+  },
+  {
+    file: 'docs/process/CODE-REVIEW.md',
+    token: 'plugins/todo/todo-txt.js',
+    reason: '同上：2026-10-08 评审记录的行号坐标；todo 插件已由 M5 改名 com.pet.todo，历史坐标保留不搬',
+  },
 ];
 
 // ---- R-A：md 相对链接可达 ----
@@ -162,7 +174,7 @@ function ruleB() {
 }
 
 // ---- R-C：README「目录速览」plugins/ 行点名四个插件 ----
-const PLUGIN_IDS = ['com.pet.hr-ble', 'com.pet.agent-bridge', 'todo', 'com.pet.astock'];
+const PLUGIN_IDS = ['com.pet.hr-ble', 'com.pet.agent-bridge', 'com.pet.todo', 'com.pet.astock'];
 function ruleC() {
   const ls = linesOf('README.md');
   const start = ls.findIndex((l) => /^##\s*目录速览/.test(l));

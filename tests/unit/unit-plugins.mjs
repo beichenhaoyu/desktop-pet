@@ -1,4 +1,4 @@
-// Q4 插件纯函数离线单测：todo 的 todo.txt 解析/序列化。
+// Q4 插件纯函数离线单测：com.pet.todo 的 todo.txt 解析/序列化。
 //
 // 运行：npm run unit（或 npm run unit:plugins）
 //
@@ -12,7 +12,7 @@
 import { deep, eq, group, check } from "./harness.mjs";
 
 const { parseLine, formatLine, today, dueRank, sortOpen } = await import(
-  new URL("../../plugins/todo/todo-txt.js", import.meta.url)
+  new URL("../../plugins/com.pet.todo/todo-txt.js", import.meta.url)
 );
 
 const dateRe = /^\d{4}-\d{2}-\d{2}$/;

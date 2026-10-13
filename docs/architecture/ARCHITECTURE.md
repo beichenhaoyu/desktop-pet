@@ -97,7 +97,7 @@
 ├── plugins/                    # 运行时插件目录（每个：manifest.json + index.js，磁盘加载）
 │   ├── com.pet.hr-ble/         # 心率蓝牙广播：扫描/连接/实时 BPM
 │   ├── com.pet.agent-bridge/   # Agent 桥：订阅宿主 agent:state 转成宠物反应
-│   ├── todo/                   # 待办事项：增删改勾 + 桌面卡片 + 到期提醒
+│   ├── com.pet.todo/           # 待办事项：增删改勾 + 桌面卡片 + 到期提醒
 │   ├── com.pet.astock/         # A股盯盘：自选/提醒/badge/overlay + 分时/K线/五档
 │   └── # 暂缓：llm-token-usage/ 目录未创建（用户 2026-10-10 决定，勿按存在处理）
 ├── packages/
@@ -174,7 +174,7 @@ export default {
 }
 ```
 
-**3. 事件总线**：所有跨插件通信走总线；Rust 原生事件（BLE 数据等）由宿主桥接注入。标准 topic：`ble:heart-rate`、`llm:token-usage`、`todo:changed`。
+**3. 事件总线**：所有跨插件通信走总线；Rust 原生事件（BLE 数据等）由宿主桥接注入。标准 topic：`ble:heart-rate`、`llm:token-usage`、`com.pet.todo:changed`。
 
 **4. Widget 贡献**：插件注册 widget 到宿主插槽（宠物旁气泡/侧面板），运行在各自 Shadow DOM 中，宿主控制布局与样式隔离；托盘菜单项为另一贡献点。
 
@@ -203,7 +203,7 @@ export default {
 2. **插件运行时**：manifest 解析与校验、动态 import、activate/deactivate 生命周期、错误隔离（单个插件抛错不影响宿主）、事件总线、widget Shadow DOM 宿主、插件隔离存储、设置窗（启停 + 权限列表）。
 3. **Rust 能力服务**：store、http 代理（域名白名单）、notify、btleplug BLE 服务 + IPC 命令与事件转发、权限同意框、skins（图集解析下载 + `petskin://` 协议）。
 4. **三个示例插件**：
-   - `todo`（完整可用）：增删改查 + widget 展示 + `todo:changed` 广播
+   - `com.pet.todo`（完整可用）：增删改查 + widget 展示 + `com.pet.todo:changed` 广播
    - `heart-rate-ble`：扫描展示（无设备时显示广播列表）、连接后 widget 显示实时 BPM
    - `llm-token-usage`：配置 base URL/key（存宿主 store），轮询用量接口，widget 显示当日 token 消耗
 5. **文档与收尾**：ARCHITECTURE.md（本文）、docs/plugin-dev/PLUGIN_SDK.md（能力清单表、示例代码、调试方法）、`npm run tauri dev` 验证全流程。
@@ -213,7 +213,7 @@ export default {
 - `npm run tauri dev` 启动：透明置顶宠物显示并播放 idle 动画，可拖拽，托盘可用
 - 设置窗输入 Petdex 名字（如 `deepseek`）即从公开画廊下载并换装，宠物窗不必重启；本地无皮肤的首次启动自动装默认形象 `deepseek`
 - plugins/ 目录放入/移除插件目录后，经设置窗启用停用生效，单插件异常不崩溃宿主
-- todo 插件完整可用；心率插件能列出扫描到的 BLE 设备广播（有设备则显示 BPM）；token 插件按配置轮询并在 widget 显示
+- com.pet.todo 插件完整可用；心率插件能列出扫描到的 BLE 设备广播（有设备则显示 BPM）；token 插件按配置轮询并在 widget 显示
 - 未授权能力调用被拒绝且触发同意框；SDK 文档完整到第三方可照写插件
 
 ## 决策记录

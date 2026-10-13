@@ -175,24 +175,24 @@ group("状态机优先级");
 group("topic-acl");
 
 {
-  noThrow("发布自己前缀放行", () => acl.assertPublishable("todo", "todo:changed"));
-  throws("发布他人前缀被拒", () => acl.assertPublishable("todo", "com.pet.astock:cmd"), "前缀");
-  throws("发布宿主 topic 被拒", () => acl.assertPublishable("todo", "ble:heart-rate"), "前缀");
-  throws("通配发布被拒", () => acl.assertPublishable("todo", "todo:*"), "前缀");
-  noThrow("订阅自己前缀不需要授权", () => acl.assertSubscribable("todo", "todo:widget", []));
-  noThrow("订阅自己前缀的通配也可以", () => acl.assertSubscribable("todo", "todo:*", []));
+  noThrow("发布自己前缀放行", () => acl.assertPublishable("com.pet.todo", "com.pet.todo:changed"));
+  throws("发布他人前缀被拒", () => acl.assertPublishable("com.pet.todo", "com.pet.astock:cmd"), "前缀");
+  throws("发布宿主 topic 被拒", () => acl.assertPublishable("com.pet.todo", "ble:heart-rate"), "前缀");
+  throws("通配发布被拒", () => acl.assertPublishable("com.pet.todo", "com.pet.todo:*"), "前缀");
+  noThrow("订阅自己前缀不需要授权", () => acl.assertSubscribable("com.pet.todo", "com.pet.todo:widget", []));
+  noThrow("订阅自己前缀的通配也可以", () => acl.assertSubscribable("com.pet.todo", "com.pet.todo:*", []));
   noThrow("声明 bus:subscribe 后能订宿主 topic", () =>
-    acl.assertSubscribable("todo", "agent:state", ["bus:subscribe"]),
+    acl.assertSubscribable("com.pet.todo", "agent:state", ["bus:subscribe"]),
   );
   throws(
     "未声明就订他人 topic 被拒",
-    () => acl.assertSubscribable("todo", "agent:state", []),
+    () => acl.assertSubscribable("com.pet.todo", "agent:state", []),
     "bus:subscribe",
   );
-  throws("通配订阅不许越过自己命名空间", () => acl.assertSubscribable("todo", "*", ["bus:subscribe"]), "通配");
+  throws("通配订阅不许越过自己命名空间", () => acl.assertSubscribable("com.pet.todo", "*", ["bus:subscribe"]), "通配");
   throws(
     "带前缀的通配同样越界",
-    () => acl.assertSubscribable("todo", "com.pet.*", ["bus:subscribe"]),
+    () => acl.assertSubscribable("com.pet.todo", "com.pet.*", ["bus:subscribe"]),
     "通配",
   );
 }
@@ -203,17 +203,17 @@ group("topic-acl");
     publish: (topic, payload, pluginId) => sent.push({ topic, payload, pluginId }),
     subscribe: () => () => {},
   };
-  const scoped = acl.createScopedBus("todo", ["bus:publish", "bus:subscribe"], fake);
+  const scoped = acl.createScopedBus("com.pet.todo", ["bus:publish", "bus:subscribe"], fake);
   deep("受限视图只暴露 publish/subscribe", Object.keys(scoped).sort(), ["publish", "subscribe"]);
-  scoped.publish("todo:cmd", { action: "sync" });
+  scoped.publish("com.pet.todo:cmd", { action: "sync" });
   deep("发布把插件身份带到中继那一层", sent[0], {
-    topic: "todo:cmd",
+    topic: "com.pet.todo:cmd",
     payload: { action: "sync" },
-    pluginId: "todo",
+    pluginId: "com.pet.todo",
   });
   throws("未声明 bus:publish 时本地就拦下", () => {
-    const bare = acl.createScopedBus("todo", [], fake);
-    bare.publish("todo:cmd", {});
+    const bare = acl.createScopedBus("com.pet.todo", [], fake);
+    bare.publish("com.pet.todo:cmd", {});
   }, "bus:publish");
   throws("受限视图里没有 inject", () => scoped.inject("agent:state", {}), "inject");
 }
@@ -225,16 +225,16 @@ resetStub();
 
 {
   const got = [];
-  const off = bus.subscribe("todo:changed", (p) => got.push(p));
-  bus.inject("todo:changed", { n: 1 });
+  const off = bus.subscribe("com.pet.todo:changed", (p) => got.push(p));
+  bus.inject("com.pet.todo:changed", { n: 1 });
   eq("inject 本地即时派发", got.length, 1);
   off();
-  bus.inject("todo:changed", { n: 2 });
+  bus.inject("com.pet.todo:changed", { n: 2 });
   eq("退订后不再收", got.length, 1);
 
   const wild = [];
-  const offWild = bus.subscribe("todo:*", (p) => wild.push(p));
-  bus.inject("todo:widget", { v: 1 });
+  const offWild = bus.subscribe("com.pet.todo:*", (p) => wild.push(p));
+  bus.inject("com.pet.todo:widget", { v: 1 });
   bus.inject("com.pet.astock:cmd", {});
   eq("前缀通配命中自己的 topic", wild.length, 1);
   offWild();
@@ -255,15 +255,15 @@ resetStub();
 
 {
   resetStub();
-  bus.publish("todo:changed", { n: 3 }, "todo");
+  bus.publish("com.pet.todo:changed", { n: 3 }, "com.pet.todo");
   const relay = tauriCalls.find((c) => c.cmd === "bus_publish");
   check("publish 走一趟中继", !!relay, `calls=${JSON.stringify(tauriCalls)}`);
   deep("中继参数带上 topic/payload/pluginId", relay?.args, {
-    topic: "todo:changed",
+    topic: "com.pet.todo:changed",
     payload: { n: 3 },
-    pluginId: "todo",
+    pluginId: "com.pet.todo",
   });
-  bus.publish("todo:status", { text: "x" });
+  bus.publish("com.pet.todo:status", { text: "x" });
   eq("宿主自己的发布不带插件身份（由宿主判为 null）", tauriCalls.at(-1)?.args.pluginId, null);
 }
 

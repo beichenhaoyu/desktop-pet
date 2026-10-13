@@ -253,7 +253,7 @@ MVP 范围：<这一轮只做什么>
 | A股插件 | `npm run verify:astock` | **154**（盘中形态实测：盘口两侧都有档 + 分时有数据 + 北交所有源供历史 + `session.trading` 为真 + 无异常留证分支；同形态两轮 154/0）。**这个数随数据形态浮动，不能当恒定下限** —— 五处分支各自产不同条数：① `verify-astock.mjs:473` 的 `session.trading` 守卫（盘中 1 条 / 非盘中 0 条，只出一行 info，**这是 153 与 154 最常见的差**：2026-10-13 12:44 午休跑出的就是 153）；② 分时那一段失败时 1 条（有数据时 2 条）；③ 北交所判「不供历史」3 条（成功出图 1 条）；④ 三源全不通的现场支与离线注入支条数不同；⑤ `!gotSug` / `!hasQuote` / `cardTarget` / `!cardGone` 四个异常留证支各多 1 条，`catch` 里那条「脚本未抛异常」只在崩溃时出现。验收时用 `audit-assertions.cjs` 把报告里的标题集合与源码里的 check 点做差，**比标题不比数字** |
 | `plugins/com.pet.astock` 的纯函数（三源解析 / 节流 / 提醒判定 / 五档数据 / 源判定层） | `npm run unit:astock`（常驻单测，零 GUI、零联网、秒级） | market **247** / aux **186**（含 A11 的 `sourceBranch` 组 36 条；Q2 起跑在 `node --test`，读 `ℹ tests 433 / fail 0` 与 `ASSERTIONS` 分组计数） |
 | `src/` 运行时纯逻辑（状态机、topic ACL、总线、插件 URL、manifest 校验、资源回收） | `npm run unit:runtime`（离线，靠 `tests/unit/ts-loader.mjs` 转译 .ts） | runtime **107**（Q3 + C1 的启停清单迁移；`npm run unit` 合计 **811**） |
-| 插件纯函数（`plugins/todo/todo-txt.js`；hr-ble 的 BPM 解析在 Rust，归 cargo test） | `npm run unit:plugins` | plugins **53**（Q4；`npm run unit` 合计 **811**） |
+| 插件纯函数（`plugins/com.pet.todo/todo-txt.js`；hr-ble 的 BPM 解析在 Rust，归 cargo test） | `npm run unit:plugins` | plugins **53**（Q4；`npm run unit` 合计 **811**） |
 | 任何新增脚本 / 协议源 / CSP / 打包相关 | `npm run verify:release` | 12 |
 | Cargo 依赖变动 | `cargo tree -p tauri` 必须仍是 **2.12.0**，且 `npm run verify:release` | — |
 

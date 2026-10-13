@@ -16,7 +16,7 @@ export const BLE_HEART_RATE = "ble:heart-rate";
 export const AGENT_STATE = "agent:state";
 export const AGENT_EVENT = "agent:event";
 export const LLM_TOKEN_USAGE = "llm:token-usage";
-export const TODO_CHANGED = "todo:changed";
+export const TODO_CHANGED = "com.pet.todo:changed";
 
 /** 全部标准 topic（冻结数组，顺序与应用无关）。 */
 export const STANDARD_TOPICS = Object.freeze([

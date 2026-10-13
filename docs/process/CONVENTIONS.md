@@ -27,7 +27,7 @@
 1. **脚手架 + 宠物窗** ✅
 2. **插件运行时** ✅
 3. **Rust 能力服务** ✅（store / http 白名单代理 / notify / BLE / 权限同意框均已实现）
-4. **三个示例插件**：`heart-rate-ble` ✅、`todo` ✅（纯插件、零本体改动）；`llm-token-usage` 暂缓（用户决定）
+4. **三个示例插件**：`heart-rate-ble` ✅、`com.pet.todo` ✅（纯插件、零本体改动）；`llm-token-usage` 暂缓（用户决定）
 5. **文档收尾**：[docs/plugin-dev/PLUGIN_SDK.md](docs/plugin-dev/PLUGIN_SDK.md) ✅
 6. **桌宠形象改由 Petdex 提供**：九状态图集渲染 ✅ + 设置窗按名字安装 + 默认形象 `deepseek`（本波次）
 
@@ -37,7 +37,7 @@
 - plugins/ 目录放入/移除插件后生效 ✅（目录 watcher + 设置窗启停）；单插件异常不崩溃宿主 ✅
 - 有应用全屏时宠物自动隐身并停止动画，退出后恢复 ✅（`npm run verify:game` 15 条）。隐身由宿主命令 `set_pet_hidden` 统一负责：宠物窗与贴在它身上的 overlay 悬浮 UI（状态卡、心率波形）一起收放，恢复时按插件当时的意愿重新显示
 - 心率插件可扫描/连接并显示实时 BPM ✅；`llm-token-usage` 未做
-- 待办插件可增删改勾、桌面卡片、到期提醒，并广播标准 topic `todo:changed` ✅（`npm run verify:todo` 30 条）。字段照 todo.txt 约定，数据只存插件自己的隔离存储
+- 待办插件可增删改勾、桌面卡片、到期提醒，并广播标准 topic `com.pet.todo:changed` ✅（`npm run verify:todo` 30 条）。字段照 todo.txt 约定，数据只存插件自己的隔离存储
 - 断开后可直接重连同一设备，不必重新扫描（代码级修复：扫描不再清空句柄缓存，缓存未命中时回落 `adapter.peripherals()`）。**本机无蓝牙硬件，未经真实心率设备验证**
 - 设置窗安装 Qoder hook 后，Agent 的工具调用/等确认/结束/失败能驱动宠物 ✅（`npm run verify:agent` 50 条断言）。**已用真实 Qoder 会话验证**：hook 确实被调用、事件按形状落盘并驱动宠物；状态卡贴在宠物头顶显示会话状态、工具名与步数，一轮结束 3 秒后自动收起
 - 设置页两级导航：**侧栏只有「宠物设置」+ 插件列表**（一个插件一条），点插件进去是宿主给的壳（启停 / id / 权限 / 撤销授权）+ 插件自己用 `widget.js` 的 `settings` 区渲染的页面；「宠物设置」里收全部非插件配置（形象 / 快捷键 / 自启 / Agent 接入 / 游戏模式）；搜索框过滤的是插件导航项 ✅（`npm run verify` 的「侧栏结构 / 点插件 → 插件页 / 搜索过滤」三组：切页只留一个面板、停用不挂页且说明原因、启用后 widget 挂进来、离开时摘干净）
@@ -73,16 +73,16 @@
 
 ## 其余约定
 
-- 标准事件 topic：`ble:heart-rate`、`agent:state`（`running｜needs_input｜completed｜idle`，只在变化时广播）、`agent:event`（细粒度 hook 事件：phase / toolName / detail / steps / title，每次工具调用都发）、`llm:token-usage`、`todo:changed`
+- 标准事件 topic：`ble:heart-rate`、`agent:state`（`running｜needs_input｜completed｜idle`，只在变化时广播）、`agent:event`（细粒度 hook 事件：phase / toolName / detail / steps / title，每次工具调用都发）、`llm:token-usage`、`com.pet.todo:changed`
 - 宿主窗口事件（不是总线 topic，插件收不到）：`host:fullscreen`（`{active,title}`，最近 3 次采样的多数票）
 - Agent 会话状态：`Stop` 之后 2 秒内到达的 pre/post 算迟到事件，不再把会话打回 running（否则卡片会挂着「正在执行」直到 90 秒 TTL 过期）；新一轮的 user-prompt/session-start 立刻作废该宽限期
 - topic 归属：`<插件id>:` 前缀归该插件。插件只能**发布**自己前缀；订阅他人/宿主 topic 需声明 `bus:subscribe`，且**不允许通配**越过自己的前缀
 - 能力名见 docs/plugin-dev/PLUGIN_SDK.md 第 3 节；新增能力时要同时更新桥、Rust 校验与那份表格
 - 共享资源（BLE 会话、BLE 扫描）按插件持有者计数，释放只对真正的持有者生效；overlay 悬浮窗**按插件各开一扇**（标签 `overlay-<id>`，页面按标签认归属），摆放/尺寸/显隐互不影响 —— 早先共用一扇窗导致「后打开的卡片显示不出来」，改成按插件分开后两扇可同时存在
 - 插件存储位置：`%APPDATA%/com.desktoppet.pet/plugins/<id>`（插件间隔离，撤销授权会连带清目录）
-- 首批插件目录：`plugins/com.pet.hr-ble`（已做）、`plugins/com.pet.agent-bridge`（已做：订阅宿主 `agent:state` 把编码 Agent 的会话状态转成宠物反应）、`plugins/todo`（已做：id 就叫 `todo`，这样标准 topic `todo:changed` 落在它自己的命名空间里）、`plugins/com.pet.astock`（已做：A股盯盘，出网走宿主 http 代理按域名授权，数据源东方财富公开接口；自选+提醒+badge/overlay，插件页另有分时/K线/五档面板。**2026-10-09 K线与分时已加腾讯后端**：`market.js` 的 `MARKET_SOURCES` 源注册表，每个源一套自己的列序映射（腾讯是「开收高低」，与东财同序不同实现），先试上一次成功的源、一个源内部再主入口→两个后备入口；快照与五档仍只有东财一条，等阶段二。**2026-10-10 阶段二落地**：四个 kind 都有多源，快照/五档为「东财 → 腾讯 `qt.gtimg.cn` → 新浪 `hq.sinajs.cn`」，新浪只兜价格、不供五档与涨跌停）、`plugins/llm-token-usage`（暂缓）
+- 首批插件目录：`plugins/com.pet.hr-ble`（已做）、`plugins/com.pet.agent-bridge`（已做：订阅宿主 `agent:state` 把编码 Agent 的会话状态转成宠物反应）、`plugins/com.pet.todo`（已做：目录名与 id 一致，标准 topic `com.pet.todo:changed` 落在它自己的命名空间里）、`plugins/com.pet.astock`（已做：A股盯盘，出网走宿主 http 代理按域名授权，数据源东方财富公开接口；自选+提醒+badge/overlay，插件页另有分时/K线/五档面板。**2026-10-09 K线与分时已加腾讯后端**：`market.js` 的 `MARKET_SOURCES` 源注册表，每个源一套自己的列序映射（腾讯是「开收高低」，与东财同序不同实现），先试上一次成功的源、一个源内部再主入口→两个后备入口；快照与五档仍只有东财一条，等阶段二。**2026-10-10 阶段二落地**：四个 kind 都有多源，快照/五档为「东财 → 腾讯 `qt.gtimg.cn` → 新浪 `hq.sinajs.cn`」，新浪只兜价格、不供五档与涨跌停）、`plugins/llm-token-usage`（暂缓）
 - 面板（分时/K线/五档）只在设置页活着时刷：`PANEL_TTL_MS` 90 秒，由设置页 widget 每 60 秒发一次 `sync` 续期（`watchView(ctx, render, { beatMs })`），badge/overlay 不续期 —— 人走了额外出网要自己停。
-- `ctx.bus.subscribe` 这个 API **本身**就要在 manifest 声明 `bus:subscribe`，不声明会在激活时被拒（`todo 未在 manifest 声明这些能力: bus:subscribe`）；ACL 放宽的只是「自己前缀不需要额外授权」，别把两者混为一谈
+- `ctx.bus.subscribe` 这个 API **本身**就要在 manifest 声明 `bus:subscribe`，不声明会在激活时被拒（`com.pet.todo 未在 manifest 声明这些能力: bus:subscribe`）；ACL 放宽的只是「自己前缀不需要额外授权」，别把两者混为一谈
 - **验证**：离线常驻单测有八份文件，合计 `npm run unit` = **948 个用例**：`unit:astock`（`tests/unit/unit-market.mjs` 247 + `tests/unit/unit-aux.mjs` 186）、`unit:runtime`（`src/` 运行时纯逻辑 107 条，含 C1 的启停清单迁移，靠 `tests/unit/ts-loader.mjs` 把 .ts 现场转译进 `node --test`，并把 `@tauri-apps/api/*` 换成 `tests/unit/tauri-stub.mjs`）、`unit:plugins`（插件纯函数 53 条，现为 todo-txt；**hr-ble 的 BPM uint8/uint16 解析在 Rust 侧 `ble.rs::parse_heart_rate`，它的单测归 cargo test**）、`unit:astock-views`（插件页分节拆出的纯函数 82 条，M4b）、`unit:capabilities`（能力名单与风险面元数据 159 条，K3/S2）、`unit:manifest-schema` 90 条（K4）、`unit:sdk-topics` 24 条（K2）。**这些条数只会随波次变，验收时读 `npm run unit` 尾部的 `ℹ pass / ℹ fail`，不要拿某个历史数字当常量**（单份文件要单独跑就得带对应的 npm 脚本：`unit:capabilities` / `unit:runtime` / `unit:manifest` 需要 `--import ./tests/unit/ts-loader.mjs`，直接 `node --test` 会得到假的失败）。全部零 GUI、零联网、秒级，用 `import.meta.url` 相对解析被测源码，与 cwd 无关 —— 改 `plugins/` 与 `src/` 的纯逻辑前先跑对应的套件，断言只许增不许减；其余都是 CDP 运行时套件。`npm run dev:debug` + `npm run verify`（WebView2 CDP 驱动真实 webview 的回归断言，覆盖隔离、权限、热安装、渲染几何）；`npm run verify:game` 单跑游戏模式（真起一个铺满显示器的窗口当触发源）；该窗**非置顶、任务栏可见、10~16 秒自关**，PowerShell 每轮检查父进程是否存活，脚本被中断时自己收窗不留孤儿；跑它会抢前台，期间别的置顶程序可能短暂闪动，不要在外面套 `timeout`（2026-09-30 就是「全屏 + TopMost + 每 150ms 注 ALT + timeout 杀父进程」把用户会话压垮过一次）；`npm run verify:agent` 单跑 Agent 桥端到端（脚本直接往 Agent 收件目录写事件，宿主 watcher 负责归一化）；`npm run verify:skin` 单跑桌宠资源安装链路（会真的连 petdex.dev 下载并临时装一个第二形象，跑完自动删掉）；`npm run verify:todo` 单跑待办插件端到端（解析/落盘/广播/桌面卡片/回显，跑完撤销授权并下线）；`npm run verify:astock` 单跑 A股盯盘端到端（会真出网拉行情与盘面数据、弹一次系统通知测试提醒、开一扇左上角盯盘卡、把设置页点到插件页并用 `getImageData` 数画布像素证明图真的画出来了，跑完撤销授权并下线；盘前/竞价时段数据形态不同，断言按「有价才比大小、无价必无量」写成时段无关的形式，**因此它的总条数是形态相关的，判覆盖要比标题集合不要比数字**）；`npm run verify:release` 单独验打包版 CSP，每波次收尾手工跑一次（约 3~4 分钟构建）；`npm run verify:http` 单跑宿主 http 的 charset 解码链路（临时装一个只用来拿能力的探针插件、真出网请求腾讯 GBK 与新浪 GB18030、各弹一次域名同意框并断言授权键不带 `:443`，跑完撤销授权并删探针）。**同一份 dev 实例上连跑多套 CDP 套件时先跑 `verify`**：`verify:astock` / `verify:todo` 这类会撤销授权、关窗并重载文档，跑完后调试端点可能失去响应，后跑的套件会在 `Runtime.evaluate` 上撞 20 秒超时报错（2026-10-13 实测：先 astock 后 verify 连炸两次同一个同意框后的调用，重启实例单跑 `verify` 即 219/0）。这不是被测行为的回归，遇到时重启实例复跑，别去改判据。
 - Agent 接入约定：hook 事件由宿主自己收 —— `--pet-hook <phase>` 分支在建窗之前分流，落成 `agent/inbox/<phase>.jsonl`，watcher 读增量并归一化成会话状态后广播。不读 petdex、不开本地端口。phase 必须命中白名单（它同时是文件名与 CLI 参数）；安装/卸载只按 `--pet-hook` 标记增删自己的条目，不动其他 hook，写配置前先备份且原子落盘。
 - 状态词表：**只有 petdex 的九个状态** `idle / running-right / running-left / waving / jumping / failed / waiting / running / review`（行号、每行帧数与整行时长见 `src/pet/petdex-states.ts`）。原来的 12 个自造状态（walk/greet/sleep/react/curious/teasing/blush/angry/night）已取消，别再往回加。`ctx.pet.react()` 只认这九个名字，Agent 桥的 phase→状态映射也照搬 petdex 的 `stateForEvent`

@@ -13,8 +13,8 @@ export const AGENT_STATE: "agent:state";
 export const AGENT_EVENT: "agent:event";
 /** LLM token 用量（登记中：llm-token-usage 示例插件暂缓，尚无发布方与订阅方）。 */
 export const LLM_TOKEN_USAGE: "llm:token-usage";
-/** 待办清单变化（todo 插件发布，落在它自己的前缀内）。 */
-export const TODO_CHANGED: "todo:changed";
+/** 待办清单变化（com.pet.todo 插件发布，落在它自己的前缀内）。 */
+export const TODO_CHANGED: "com.pet.todo:changed";
 
 /** 标准 topic 的联合类型。注意：总线 topic 参数**不收紧**成它 —— 私有 topic
  * （`<自己 id>:xxx`、`<自己 id>:widget`）必须继续合法，见 index.d.ts 的 BusTopic。 */
