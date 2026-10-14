@@ -3,7 +3,6 @@
 // 那样会把别人的卡片叠进同一扇窗。
 import { hostCall } from "../runtime/host-error";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { bus } from "../runtime/event-bus";
 import { applyHotReload, reloadIdsFrom } from "../runtime/hot-reload";
@@ -25,7 +24,7 @@ async function sync(): Promise<void> {
   }
   // 多扇悬浮窗在 CDP / 任务管理器里要分得清是谁的：document.title 就是 CDP 看到的标题
   document.title = `DesktopPet Overlay · ${pluginId}`;
-  const manifests = await invoke<PluginManifest[]>("plugins_list");
+  const manifests = await hostCall<PluginManifest[]>("plugins_list");
   // 启停清单向宿主取（C1）：本窗是新开的，缓存还没落地
   const enabled = new Set(await loadEnabled());
   const mine = manifests.find((m) => m.id === pluginId);

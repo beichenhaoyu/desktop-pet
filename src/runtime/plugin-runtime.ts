@@ -331,7 +331,7 @@ export async function initRuntime(): Promise<void> {
     // 清单的事实来源在宿主：本窗那份缓存要跟着刷新，否则下一次 reconcile
     // 会拿旧名单把刚被停用的插件又激活回来
     await loadEnabled();
-    const manifests = await invoke<PluginManifest[]>("plugins_list");
+    const manifests = await hostCall<PluginManifest[]>("plugins_list");
     const manifest = manifests.find((m) => m.id === id);
     if (!manifest) return;
     if (enabled) {
@@ -350,7 +350,7 @@ export async function initRuntime(): Promise<void> {
   // reconcile 逻辑保留（新装/删除插件仍靠它，重载只是它之上的一层判断）。
   await listen<{ ids?: string[]; reloadIds?: string[] }>("host:plugins-changed", async (e) => {
     applyHotReload(reloadIdsFrom(e.payload), (id) => active.has(id));
-    await reconcile(await invoke<PluginManifest[]>("plugins_list"));
+    await reconcile(await hostCall<PluginManifest[]>("plugins_list"));
   });
-  await reconcile(await invoke<PluginManifest[]>("plugins_list"));
+  await reconcile(await hostCall<PluginManifest[]>("plugins_list"));
 }

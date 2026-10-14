@@ -3,6 +3,7 @@ use std::sync::{Mutex, OnceLock};
 
 use tauri::{AppHandle, Emitter};
 
+use crate::host_error::{HostError, DENIED, INVALID_ARG, NOT_FOUND};
 use crate::services::permission::PermissionState;
 
 /// 跨窗口事件总线中继：任意窗口的 publish 广播到全部窗口，
@@ -21,7 +22,7 @@ pub fn bus_publish(
     topic: String,
     payload: serde_json::Value,
     plugin_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), HostError> {
     let label = window.label().to_string();
     let owner = resolve_owner(
         &label,
@@ -80,22 +81,32 @@ fn check_publish(
     topic: &str,
     installed: &HashSet<String>,
     is_granted: &dyn Fn(&str, &str) -> bool,
-) -> Result<(), String> {
+) -> Result<(), HostError> {
     if !relaying_from(label) {
-        return Err(format!("窗口 {label} 不能发布总线 topic"));
+        return Err(HostError::new(
+            DENIED,
+            format!("窗口 {label} 不能发布总线 topic"),
+        ));
     }
     let Some(id) = owner else {
-        return Err("发布总线需要 pluginId：topic 归属由它判定".into());
+        return Err(HostError::new(
+            INVALID_ARG,
+            "发布总线需要 pluginId：topic 归属由它判定",
+        ));
     };
     if !crate::ids::is_safe_id(id) {
-        return Err("invalid plugin id".into());
+        return Err(HostError::new(INVALID_ARG, "invalid plugin id"));
     }
     if !installed.contains(id) {
-        return Err(format!("插件 {id} 没有安装，不能发布它的 topic"));
+        return Err(HostError::new(
+            NOT_FOUND,
+            format!("插件 {id} 没有安装，不能发布它的 topic"),
+        ));
     }
     if !topic.starts_with(&format!("{id}:")) || topic == format!("{id}:") {
-        return Err(format!(
-            "只能发布 \"{id}:\" 前缀的 topic，收到的是 \"{topic}\""
+        return Err(HostError::new(
+            DENIED,
+            format!("只能发布 \"{id}:\" 前缀的 topic，收到的是 \"{topic}\""),
         ));
     }
     // `<id>:widget` 是插件给自己界面看的展示数据，桥那边 gated 在 widget 能力上，
@@ -103,8 +114,9 @@ fn check_publish(
     let allowed = is_granted(id, crate::plugin_caps::BUS_PUBLISH)
         || (topic == format!("{id}:widget") && is_granted(id, crate::plugin_caps::WIDGET));
     if !allowed {
-        return Err(format!(
-            "未授权 bus:publish：{id} 需要 manifest 声明且已同意"
+        return Err(HostError::new(
+            DENIED,
+            format!("未授权 bus:publish：{id} 需要 manifest 声明且已同意"),
         ));
     }
     Ok(())
@@ -171,6 +183,14 @@ mod tests {
             .collect()
     }
 
+    /// 两条 retention 测试共用全局 RETAINED（进程级静态）。默认并行跑时，
+    /// `retention_is_capped` 的 42 次 remember 会把另一条刚放的 `t:widget` 挤出队列，
+    /// 在 `.unwrap()` 处随机炸（A06 施工中实测复现过一次）。共享这块状态的两条必须串行。
+    fn retention_serial() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
     /// 授权表替身：只有列出来的 (id, cap) 算已授权
     fn grant(list: &[(&str, &str)]) -> impl Fn(&str, &str) -> bool {
         let set: HashSet<(String, String)> = list
@@ -189,7 +209,8 @@ mod tests {
         assert!(check_publish("overlay-todo", Some("todo"), "todo:cmd", &installed(), &g).is_ok(),);
     }
 
-    /// 这是 S2 的正身：绕过 JS 桥直接 invoke 也灌不进别人的、更灌不进宿主的 topic
+    /// 这是 S2 的正身：绕过 JS 桥直接 invoke 也灌不进别人的、更灌不进宿主的 topic。
+    /// A2/ADR-0007：前缀不符是**授权判定**（denied），不是入参不合法。
     #[test]
     fn foreign_and_host_topics_are_rejected() {
         let g = grant(&[("todo", "bus:publish"), ("com.pet.astock", "bus:publish")]);
@@ -202,7 +223,14 @@ mod tests {
             "todo:",
         ] {
             let err = check_publish("pet", Some("todo"), topic, &installed(), &g).unwrap_err();
-            assert!(err.contains("前缀"), "{topic} 的错误口径不对: {err}");
+            assert!(
+                err.message.contains("前缀"),
+                "{topic} 的错误口径不对: {err}"
+            );
+            assert_eq!(
+                err.code, DENIED,
+                "{topic} 是越权用别人/宿主的前缀，码必须是 denied"
+            );
         }
     }
 
@@ -210,7 +238,8 @@ mod tests {
     fn without_grant_the_publish_is_rejected() {
         let g = grant(&[]);
         let err = check_publish("pet", Some("todo"), "todo:changed", &installed(), &g).unwrap_err();
-        assert!(err.contains("未授权 bus:publish"), "实际: {err}");
+        assert!(err.message.contains("未授权 bus:publish"), "实际: {err}");
+        assert_eq!(err.code, DENIED, "缺能力 = denied");
     }
 
     #[test]
@@ -221,20 +250,28 @@ mod tests {
         assert!(check_publish("pet", Some("todo"), "todo:cmd", &installed(), &g).is_err());
     }
 
+    /// A2/ADR-0007：四类拒绝各带各的码 —— 入参缺归属 / 非法 id 是 invalid-arg，
+    /// 没装 = not-found，窗口不在发布名单 = denied。
     #[test]
     fn caller_must_be_a_known_plugin_in_a_relaying_window() {
         let g = grant(&[("todo", "bus:publish")]);
         // 没有 plugin_id：归属无从判定
-        assert!(check_publish("pet", None, "todo:changed", &installed(), &g).is_err());
+        let err = check_publish("pet", None, "todo:changed", &installed(), &g).unwrap_err();
+        assert_eq!(err.code, INVALID_ARG, "缺 pluginId = invalid-arg");
         // 没装着的插件（含冒用他人 id 的字面量）
-        assert!(check_publish("pet", Some("zz.gone"), "zz.gone:cmd", &installed(), &g).is_err());
+        let err =
+            check_publish("pet", Some("zz.gone"), "zz.gone:cmd", &installed(), &g).unwrap_err();
+        assert_eq!(err.code, NOT_FOUND, "没装的插件 = not-found");
         // 非法 id 先于授权被拒
-        assert!(check_publish("pet", Some("C:"), "C:x", &installed(), &g).is_err());
+        let err = check_publish("pet", Some("C:"), "C:x", &installed(), &g).unwrap_err();
+        assert_eq!(err.code, INVALID_ARG, "非法 id = invalid-arg");
         // 同意框与其它窗口不在发布名单里
-        assert!(
-            check_publish("consent-r1", Some("todo"), "todo:changed", &installed(), &g).is_err()
-        );
-        assert!(check_publish("main", Some("todo"), "todo:changed", &installed(), &g).is_err());
+        let err = check_publish("consent-r1", Some("todo"), "todo:changed", &installed(), &g)
+            .unwrap_err();
+        assert_eq!(err.code, DENIED, "窗口不在发布名单 = denied");
+        let err =
+            check_publish("main", Some("todo"), "todo:changed", &installed(), &g).unwrap_err();
+        assert_eq!(err.code, DENIED, "窗口不在发布名单 = denied");
     }
 
     #[test]
@@ -246,6 +283,7 @@ mod tests {
 
     #[test]
     fn retention_keeps_only_the_latest_per_topic() {
+        let _serial = retention_serial();
         remember("t:widget", &serde_json::json!({ "v": 1 }));
         remember("t:widget", &serde_json::json!({ "v": 2 }));
         let guard = retained().lock().unwrap_or_else(|p| p.into_inner());
@@ -258,6 +296,7 @@ mod tests {
 
     #[test]
     fn retention_is_capped() {
+        let _serial = retention_serial();
         for i in 0..(MAX_RETAINED + 10) {
             remember(&format!("cap{i}:widget"), &serde_json::json!(i));
         }

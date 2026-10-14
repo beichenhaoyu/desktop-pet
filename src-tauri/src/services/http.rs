@@ -5,6 +5,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use super::permission::PermissionState;
+use crate::host_error::{HostError, DENIED, INTERNAL, INVALID_ARG, NETWORK, PARSE};
 
 /// 出站 HTTP 代理。
 ///
@@ -57,10 +58,10 @@ impl HttpState {
 /// 带显式非默认端口的地址（`http://127.0.0.1:9`）两边一致，所以这个错只在 https 上暴露。
 /// `Url::port()` 的语义正好是「缺省或等于默认值时为 None」，所以直接用它。
 /// 重定向逐跳复核共用这一个函数，避免两处各写一份而漂移。
-fn host_key(parsed: &tauri::Url) -> Result<String, String> {
+fn host_key(parsed: &tauri::Url) -> Result<String, HostError> {
     let host = parsed
         .host_str()
-        .ok_or_else(|| "URL 缺少主机名".to_string())?;
+        .ok_or_else(|| HostError::new(INVALID_ARG, "URL 缺少主机名"))?;
     Ok(match parsed.port() {
         Some(p) => format!("{host}:{p}"),
         None => host.to_string(),
@@ -68,11 +69,17 @@ fn host_key(parsed: &tauri::Url) -> Result<String, String> {
 }
 
 /// 只放行 http/https，并返回授权粒度的 host 键
-fn parse_host(url: &str) -> Result<String, String> {
-    let parsed = tauri::Url::parse(url).map_err(|e| format!("URL 非法: {e}"))?;
+fn parse_host(url: &str) -> Result<String, HostError> {
+    let parsed = tauri::Url::parse(url)
+        .map_err(|e| HostError::new(INVALID_ARG, format!("URL 非法: {e}")))?;
     match parsed.scheme() {
         "http" | "https" => {}
-        other => return Err(format!("只允许 http/https，收到 {other}")),
+        other => {
+            return Err(HostError::new(
+                INVALID_ARG,
+                format!("只允许 http/https，收到 {other}"),
+            ))
+        }
     }
     host_key(&parsed)
 }
@@ -82,16 +89,13 @@ fn host_allowed(granted: &[String], host: &str) -> bool {
     granted.iter().any(|c| c == crate::plugin_caps::HTTP) && granted.iter().any(|c| c == &cap)
 }
 
-fn check_granted(
-    state: &tauri::State<'_, PermissionState>,
-    plugin_id: &str,
-    host: &str,
-) -> Result<(), String> {
+fn check_granted(state: &PermissionState, plugin_id: &str, host: &str) -> Result<(), HostError> {
     if host_allowed(&state.granted_caps(plugin_id), host) {
         return Ok(());
     }
-    Err(format!(
-        "未授权访问 {host}：需要 manifest 声明 http 且已同意该域名"
+    Err(HostError::new(
+        DENIED,
+        format!("未授权访问 {host}：需要 manifest 声明 http 且已同意该域名"),
     ))
 }
 
@@ -104,8 +108,9 @@ fn send_following_redirects(
     method: &str,
     headers: &[(String, String)],
     body: Option<&str>,
-) -> Result<HttpResponse, String> {
-    let mut current = tauri::Url::parse(url).map_err(|e| format!("URL 非法: {e}"))?;
+) -> Result<HttpResponse, HostError> {
+    let mut current = tauri::Url::parse(url)
+        .map_err(|e| HostError::new(INVALID_ARG, format!("URL 非法: {e}")))?;
     let mut method = method.to_string();
     let mut body = body;
     let mut last_host = String::new();
@@ -113,8 +118,9 @@ fn send_following_redirects(
     for hop in 0..=MAX_REDIRECTS {
         let host = host_key(&current)?;
         if !host_allowed(granted, &host) {
-            return Err(format!(
-                "未授权访问 {host}：需要 manifest 声明 http 且已同意该域名"
+            return Err(HostError::new(
+                DENIED,
+                format!("未授权访问 {host}：需要 manifest 声明 http 且已同意该域名"),
             ));
         }
         let cross_host = hop > 0 && host != last_host;
@@ -130,7 +136,7 @@ fn send_following_redirects(
             Some(text) => req.send_string(text),
             None => req.call(),
         }
-        .map_err(|e| format!("请求失败: {e}"))?;
+        .map_err(|e| HostError::new(NETWORK, format!("请求失败: {e}")))?;
 
         let status = resp.status();
         if !(300..400).contains(&status) {
@@ -140,18 +146,24 @@ fn send_following_redirects(
             return read_body(resp, status);
         };
         if hop == MAX_REDIRECTS {
-            return Err(format!("重定向超过 {MAX_REDIRECTS} 跳，已放弃"));
+            return Err(HostError::new(
+                NETWORK,
+                format!("重定向超过 {MAX_REDIRECTS} 跳，已放弃"),
+            ));
         }
         current = current
             .join(location)
-            .map_err(|e| format!("重定向目标非法: {e}"))?;
+            .map_err(|e| HostError::new(PARSE, format!("重定向目标非法: {e}")))?;
         // 303 一律转 GET；301/302 对非 GET 也转 GET（与浏览器一致）；307/308 保留方法与 body
         if status != 307 && status != 308 {
             method = "GET".to_string();
             body = None;
         }
     }
-    Err(format!("重定向超过 {MAX_REDIRECTS} 跳，已放弃"))
+    Err(HostError::new(
+        NETWORK,
+        format!("重定向超过 {MAX_REDIRECTS} 跳，已放弃"),
+    ))
 }
 
 fn is_credential_header(name: &str) -> bool {
@@ -209,7 +221,7 @@ fn decode_body(buf: &[u8], content_type: Option<&str>) -> String {
     String::from_utf8_lossy(buf).into_owned()
 }
 
-fn read_body(resp: ureq::Response, status: u16) -> Result<HttpResponse, String> {
+fn read_body(resp: ureq::Response, status: u16) -> Result<HttpResponse, HostError> {
     let content_type = resp.header("content-type").map(str::to_string);
     let mut buf = Vec::new();
     // 多取 1 字节：正好等于上限的合法响应不该被当成超长
@@ -217,7 +229,7 @@ fn read_body(resp: ureq::Response, status: u16) -> Result<HttpResponse, String> 
         .into_reader()
         .take(MAX_BODY_BYTES as u64 + 1)
         .read_to_end(&mut buf)
-        .map_err(|e| format!("读取响应失败: {e}"))?;
+        .map_err(|e| HostError::new(NETWORK, format!("读取响应失败: {e}")))?;
     let truncated = read > MAX_BODY_BYTES;
     if truncated {
         buf.truncate(MAX_BODY_BYTES);
@@ -231,6 +243,17 @@ fn read_body(resp: ureq::Response, status: u16) -> Result<HttpResponse, String> 
     })
 }
 
+/// 只放行这五个方法（ADR-0005：规则抽成函数，命令体只留委托）。入参不合法 → invalid-arg。
+fn assert_allowed_method(method: &str) -> Result<(), HostError> {
+    if matches!(method, "GET" | "POST" | "PUT" | "PATCH" | "DELETE") {
+        return Ok(());
+    }
+    Err(HostError::new(
+        INVALID_ARG,
+        format!("不支持的方法: {method}"),
+    ))
+}
+
 /// 插件出站请求。host 由 Rust 自己从 URL 解析，不采信前端传来的域名。
 #[tauri::command]
 pub async fn http_request(
@@ -241,17 +264,15 @@ pub async fn http_request(
     method: Option<String>,
     headers: Option<Vec<(String, String)>>,
     body: Option<String>,
-) -> Result<HttpResponse, String> {
+) -> Result<HttpResponse, HostError> {
     if !crate::ids::is_safe_id(&plugin_id) {
-        return Err("invalid plugin id".into());
+        return Err(HostError::new(INVALID_ARG, "invalid plugin id"));
     }
     let host = parse_host(&url)?;
     check_granted(&perms, &plugin_id, &host)?;
 
     let method = method.unwrap_or_else(|| "GET".into()).to_ascii_uppercase();
-    if !matches!(method.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE") {
-        return Err(format!("不支持的方法: {method}"));
-    }
+    assert_allowed_method(&method)?;
 
     // 阻塞线程里拿不到 State，先把这个插件已授权的能力取一份快照带进去
     let granted = perms.granted_caps(&plugin_id);
@@ -261,7 +282,7 @@ pub async fn http_request(
         send_following_redirects(&agent, &granted, &url, &method, &headers, body.as_deref())
     })
     .await
-    .map_err(|e| format!("HTTP 任务失败: {e}"))??;
+    .map_err(|e| HostError::new(INTERNAL, format!("HTTP 任务失败: {e}")))??;
     Ok(sent)
 }
 
@@ -444,6 +465,60 @@ mod tests {
         let key = parse_host("https://api.example.com/v1").unwrap();
         let g = vec!["http".to_string(), format!("http:{key}")];
         assert!(host_allowed(&g, &key));
+    }
+
+    /// A2/ADR-0007：URL 形状检查（http_request 与重定向两路的共同入口）的两类失败
+    /// 都是调用方的输入问题 → invalid-arg，文案逐字保持迁移前。
+    #[test]
+    fn url_shape_errors_are_invalid_arg() {
+        let err = parse_host("ftp://example.com/x").unwrap_err();
+        assert_eq!(
+            err.code, INVALID_ARG,
+            "非 http/https 的 scheme = invalid-arg"
+        );
+        assert_eq!(err.message, "只允许 http/https，收到 ftp");
+        let err = parse_host("not a url").unwrap_err();
+        assert_eq!(err.code, INVALID_ARG, "解析不了的 URL = invalid-arg");
+        assert!(err.message.starts_with("URL 非法: "), "实际: {err}");
+    }
+
+    /// 没有主机名的 URL（非特殊 scheme 的裸路径）在 host_key 处被拒，同码 invalid-arg
+    #[test]
+    fn missing_host_is_invalid_arg() {
+        let url = tauri::Url::parse("foo:/path").unwrap();
+        assert!(url.host_str().is_none(), "样例没构造出「无主机名」的形状");
+        let err = host_key(&url).unwrap_err();
+        assert_eq!(err.code, INVALID_ARG);
+        assert_eq!(err.message, "URL 缺少主机名");
+    }
+
+    /// A2/ADR-0007：域名没授权的拒绝是 denied（`:93` 与重定向逐跳复核同文案同码）；
+    /// 授权表放行后同一次调用成功。
+    #[test]
+    fn host_grant_denial_carries_the_denied_code() {
+        let perms = PermissionState::new();
+        let err = check_granted(&perms, "todo", "example.com").unwrap_err();
+        assert_eq!(err.code, DENIED, "缺域名同意 = denied");
+        assert_eq!(
+            err.message,
+            "未授权访问 example.com：需要 manifest 声明 http 且已同意该域名"
+        );
+        perms.grant(
+            "todo",
+            &["http".to_string(), "http:example.com".to_string()],
+        );
+        assert!(check_granted(&perms, "todo", "example.com").is_ok());
+    }
+
+    /// A2/ADR-0007：放行名单外的方法拒绝是 invalid-arg（`:253` 站点），文案逐字不变。
+    #[test]
+    fn unsupported_method_is_invalid_arg() {
+        for ok in ["GET", "POST", "PUT", "PATCH", "DELETE"] {
+            assert!(assert_allowed_method(ok).is_ok(), "{ok} 应当放行");
+        }
+        let err = assert_allowed_method("TRACE").unwrap_err();
+        assert_eq!(err.code, INVALID_ARG, "名单外的方法 = invalid-arg");
+        assert_eq!(err.message, "不支持的方法: TRACE");
     }
 
     #[test]

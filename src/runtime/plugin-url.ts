@@ -1,7 +1,7 @@
 // 插件代码经宿主自定义协议 petplugin://<id>/<相对路径> 加载（Windows 上即 http://petplugin.localhost/…）。
 // 磁盘上插件放在哪里只有 Rust 的 plugins_dir() 一个解析点，dev 与打包版因此走同一条路：
 // 放进目录即可生效，不再有构建时内嵌的第二份副本。
-import { invoke } from "@tauri-apps/api/core";
+import { hostCall } from "./host-error";
 
 const PLUGIN_BASE = "http://petplugin.localhost/";
 
@@ -24,7 +24,7 @@ export function pluginFileUrl(
  */
 export async function pluginFileVersion(pluginId: string, relPath: string): Promise<string> {
   try {
-    return String(await invoke<number>("plugin_file_version", { pluginId, rel: relPath }));
+    return String(await hostCall<number>("plugin_file_version", { pluginId, rel: relPath }));
   } catch {
     return "";
   }

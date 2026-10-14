@@ -2,6 +2,7 @@
 // （接收端按 origin 去重）。topic 支持前缀通配，如 "com.pet.hr-ble:*"。
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { hostCall } from "./host-error";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 type Handler = (payload: unknown) => void;
@@ -33,7 +34,7 @@ class EventBus {
   publish(topic: string, payload: unknown, pluginId?: string): void {
     this.dispatch(topic, payload);
     // 中继失败只影响其他窗口，不能让它变成宿主未处理的 rejection
-    invoke("bus_publish", { topic, payload, pluginId: pluginId ?? null }).catch((err) => {
+    hostCall("bus_publish", { topic, payload, pluginId: pluginId ?? null }).catch((err) => {
       console.error(`[bus] relay failed: ${topic}`, err);
     });
   }

@@ -253,10 +253,7 @@ pub async fn permission_request(
     capabilities: Vec<String>,
 ) -> Result<bool, HostError> {
     checked_plugin_id(&plugin_id)?;
-    // A2 混迁桥（反向）：declared_capabilities 仍回裸 String，这里先按兜底码收口；
-    // plugins.rs 迁完后本行应换成 `?` 透传（:84 internal / :93 io / :94 parse / :183-190 invalid-arg）
-    let declared = crate::commands::plugins::declared_capabilities(&app, &plugin_id)
-        .map_err(|e| HostError::new(INTERNAL, e))?;
+    let declared = crate::commands::plugins::declared_capabilities(&app, &plugin_id)?;
     ensure_declared(&plugin_id, &declared, &capabilities)?;
     if capabilities.iter().all(|c| state.is_granted(&plugin_id, c)) {
         return Ok(true);

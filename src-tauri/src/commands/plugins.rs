@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde_json::Value;
 use tauri::{Emitter, Manager};
 
+use crate::host_error::{HostError, INTERNAL, INVALID_ARG, IO, PARSE};
 use crate::ids::is_safe_id;
 
 /// manifest 字段约束的唯一数据源（K4）：与 TS 侧 import 的是同一份磁盘文件
@@ -23,50 +24,62 @@ fn manifest_schema() -> &'static Value {
 /// 必填键清单、id 的长度上下限（字符集部分仍归 `ids::is_safe_id` —— 唯一实现，S4）、
 /// permissions 的元素类型与成员资格（`plugin_caps::is_known`）。
 /// 拒绝发生在扫描阶段：坏 manifest 不进列表，只经 `host:plugin-error` 上报。
-fn validate_manifest_fields(manifest: &Value) -> Result<(), String> {
+fn validate_manifest_fields(manifest: &Value) -> Result<(), HostError> {
     let schema = manifest_schema();
     let required = schema
         .get("required")
         .and_then(Value::as_array)
-        .ok_or("manifest.schema.json 缺 required")?;
+        .ok_or(HostError::new(INTERNAL, "manifest.schema.json 缺 required"))?;
     for key in required {
-        let key = key
-            .as_str()
-            .ok_or("manifest.schema.json 的 required 项必须是字符串")?;
+        let key = key.as_str().ok_or(HostError::new(
+            INTERNAL,
+            "manifest.schema.json 的 required 项必须是字符串",
+        ))?;
         if manifest.get(key).is_none() {
-            return Err(format!("manifest 缺少 {key}"));
+            return Err(HostError::new(INVALID_ARG, format!("manifest 缺少 {key}")));
         }
     }
     let id_rule = schema
         .get("properties")
         .and_then(|p| p.get("id"))
-        .ok_or("manifest.schema.json 缺 properties.id")?;
+        .ok_or(HostError::new(
+            INTERNAL,
+            "manifest.schema.json 缺 properties.id",
+        ))?;
     let id_min = id_rule
         .get("minLength")
         .and_then(Value::as_u64)
-        .ok_or("manifest.schema.json 缺 id.minLength")?;
+        .ok_or(HostError::new(
+            INTERNAL,
+            "manifest.schema.json 缺 id.minLength",
+        ))?;
     let id_max = id_rule
         .get("maxLength")
         .and_then(Value::as_u64)
-        .ok_or("manifest.schema.json 缺 id.maxLength")?;
+        .ok_or(HostError::new(
+            INTERNAL,
+            "manifest.schema.json 缺 id.maxLength",
+        ))?;
     let id = manifest
         .get("id")
         .and_then(Value::as_str)
-        .ok_or("manifest 缺少 id")?;
+        .ok_or(HostError::new(INVALID_ARG, "manifest 缺少 id"))?;
     if !(id_min..=id_max).contains(&(id.chars().count() as u64)) || !is_safe_id(id) {
-        return Err(format!("非法插件 id: {id}"));
+        return Err(HostError::new(INVALID_ARG, format!("非法插件 id: {id}")));
     }
     if let Some(value) = manifest.get("permissions") {
-        let arr = value.as_array().ok_or("permissions 必须是数组")?;
+        let arr = value
+            .as_array()
+            .ok_or(HostError::new(INVALID_ARG, "permissions 必须是数组"))?;
         for item in arr {
             // 以前这里对非字符串元素 filter_map 静默丢弃：
             // 「声明了但类型写错」的能力等于没声明，现场只剩「未在 manifest 声明这些能力」，
             // 看不出真正原因（K4 修复）。
-            let name = item
-                .as_str()
-                .ok_or_else(|| format!("permissions 元素必须是字符串: {item}"))?;
+            let name = item.as_str().ok_or_else(|| {
+                HostError::new(INVALID_ARG, format!("permissions 元素必须是字符串: {item}"))
+            })?;
             if !crate::plugin_caps::is_known(name) {
-                return Err(format!("未知能力名: {name}"));
+                return Err(HostError::new(INVALID_ARG, format!("未知能力名: {name}")));
             }
         }
     }
@@ -74,32 +87,33 @@ fn validate_manifest_fields(manifest: &Value) -> Result<(), String> {
 }
 
 /// 插件目录根：dev 读仓库根 plugins/；release 读资源目录 plugins/（打包时由 bundle.resources 复制）。
-fn plugins_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+fn plugins_dir(app: &tauri::AppHandle) -> Result<PathBuf, HostError> {
     if cfg!(debug_assertions) {
         Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../plugins"))
     } else {
         app.path()
             .resource_dir()
             .map(|dir| dir.join("plugins"))
-            .map_err(|e| e.to_string())
+            .map_err(|e| HostError::new(INTERNAL, e.to_string()))
     }
 }
 
 // 插件 id 的规则只在 `crate::ids::is_safe_id` 有一份实现（S4）——
 // 它同时是存储目录名、overlay 窗口标签与授权表键的来源，各处的口径必须一致。
 
-fn read_manifest(dir: &Path, plugin_id: &str) -> Result<Value, String> {
+fn read_manifest(dir: &Path, plugin_id: &str) -> Result<Value, HostError> {
     let path = dir.join(plugin_id).join("manifest.json");
-    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    serde_json::from_str::<Value>(&raw).map_err(|e| e.to_string())
+    let raw = std::fs::read_to_string(&path).map_err(HostError::io)?;
+    serde_json::from_str::<Value>(&raw).map_err(|e| HostError::new(PARSE, e.to_string()))
 }
 
 /// 扫描 plugins 目录，收集合法插件的 manifest。
 /// 目录名必须等于 manifest.id —— 否则插件可冒用他人身份，读写其存储与 widget 路径。
-fn collect_manifests(app: &tauri::AppHandle) -> Result<Vec<Value>, String> {
+fn collect_manifests(app: &tauri::AppHandle) -> Result<Vec<Value>, HostError> {
     let dir = plugins_dir(app)?;
     let mut manifests = Vec::new();
-    let entries = std::fs::read_dir(&dir).map_err(|e| format!("读取插件目录失败: {e}"))?;
+    let entries = std::fs::read_dir(&dir)
+        .map_err(|e| HostError::new(IO, format!("读取插件目录失败: {e}")))?;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
         if !entry.path().join("manifest.json").is_file() {
@@ -109,8 +123,11 @@ fn collect_manifests(app: &tauri::AppHandle) -> Result<Vec<Value>, String> {
             validate_manifest_fields(&v)?;
             match v.get("id").and_then(Value::as_str) {
                 Some(id) if id == name => Ok(v),
-                Some(id) => Err(format!("manifest.id \"{id}\" 与目录名 \"{name}\" 不一致")),
-                None => Err("manifest 缺少 id".to_string()),
+                Some(id) => Err(HostError::new(
+                    INVALID_ARG,
+                    format!("manifest.id \"{id}\" 与目录名 \"{name}\" 不一致"),
+                )),
+                None => Err(HostError::new(INVALID_ARG, "manifest 缺少 id")),
             }
         });
         match loaded {
@@ -127,7 +144,7 @@ fn collect_manifests(app: &tauri::AppHandle) -> Result<Vec<Value>, String> {
 }
 
 #[tauri::command]
-pub fn plugins_list(app: tauri::AppHandle) -> Result<Vec<Value>, String> {
+pub fn plugins_list(app: tauri::AppHandle) -> Result<Vec<Value>, HostError> {
     collect_manifests(&app)
 }
 
@@ -139,9 +156,9 @@ pub fn plugin_file_version(
     app: tauri::AppHandle,
     plugin_id: String,
     rel: String,
-) -> Result<u64, String> {
+) -> Result<u64, HostError> {
     if !is_safe_id(&plugin_id) || !is_safe_rel(&rel) {
-        return Err("invalid plugin file".into());
+        return Err(HostError::new(INVALID_ARG, "invalid plugin file"));
     }
     let path = plugins_dir(&app)?.join(&plugin_id).join(&rel);
     file_modified_millis(&path)
@@ -149,9 +166,10 @@ pub fn plugin_file_version(
 
 /// 读文件的 mtime 并折算成 epoch 毫秒（ADR-0005：IO 不住在命令体里）。
 /// mtime 早于 epoch（老文件系统 / 时钟回拨）时按 0 计，不能让 cache-busting 拿到负数。
-fn file_modified_millis(path: &std::path::Path) -> Result<u64, String> {
-    let meta = std::fs::metadata(path).map_err(|e| format!("读取 {path:?} 失败: {e}"))?;
-    let modified = meta.modified().map_err(|e| e.to_string())?;
+fn file_modified_millis(path: &std::path::Path) -> Result<u64, HostError> {
+    let meta = std::fs::metadata(path)
+        .map_err(|e| HostError::new(IO, format!("读取 {path:?} 失败: {e}")))?;
+    let modified = meta.modified().map_err(HostError::io)?;
     Ok(modified
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -159,7 +177,7 @@ fn file_modified_millis(path: &std::path::Path) -> Result<u64, String> {
 }
 
 /// 当前实际安装的插件 id 集合，用于回收已删除插件留下的授权。
-pub fn installed_plugin_ids(app: &tauri::AppHandle) -> Result<Vec<String>, String> {
+pub fn installed_plugin_ids(app: &tauri::AppHandle) -> Result<Vec<String>, HostError> {
     Ok(collect_manifests(app)?
         .iter()
         .filter_map(|m| m.get("id").and_then(Value::as_str).map(str::to_string))
@@ -172,22 +190,24 @@ pub fn installed_plugin_ids(app: &tauri::AppHandle) -> Result<Vec<String>, Strin
 pub fn declared_capabilities(
     app: &tauri::AppHandle,
     plugin_id: &str,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, HostError> {
     if !is_safe_id(plugin_id) {
-        return Err("invalid plugin id".into());
+        return Err(HostError::new(INVALID_ARG, "invalid plugin id"));
     }
     let manifest = read_manifest(&plugins_dir(app)?, plugin_id)?;
     let Some(value) = manifest.get("permissions") else {
         return Ok(Vec::new());
     };
-    let arr = value.as_array().ok_or("permissions 必须是数组")?;
+    let arr = value
+        .as_array()
+        .ok_or(HostError::new(INVALID_ARG, "permissions 必须是数组"))?;
     let mut declared = Vec::with_capacity(arr.len());
     for item in arr {
-        let name = item
-            .as_str()
-            .ok_or_else(|| format!("permissions 元素必须是字符串: {item}"))?;
+        let name = item.as_str().ok_or_else(|| {
+            HostError::new(INVALID_ARG, format!("permissions 元素必须是字符串: {item}"))
+        })?;
         if !crate::plugin_caps::is_known(name) {
-            return Err(format!("未知能力名: {name}"));
+            return Err(HostError::new(INVALID_ARG, format!("未知能力名: {name}")));
         }
         declared.push(name.to_string());
     }
@@ -368,11 +388,12 @@ fn collect_ids(plugins_root: &Path, paths: &[PathBuf], modules_only: bool) -> Ve
 /// `reloadIds` 是其中**模块文件被覆盖**的那部分 —— 只有它们值得让承载窗口整页换茬，
 /// 见 `plugin_reload_ids_from_paths` 与 `src/runtime/hot-reload.ts`。
 /// 宠物窗据此 reconcile 启停并按需重载文档、设置窗/悬浮窗刷新列表。
-pub fn spawn_plugins_watcher(app: &tauri::AppHandle) -> Result<PluginWatcher, String> {
+pub fn spawn_plugins_watcher(app: &tauri::AppHandle) -> Result<PluginWatcher, HostError> {
     use notify::{EventKind, RecursiveMode, Watcher};
 
     let dir = plugins_dir(app)?;
-    std::fs::create_dir_all(&dir).map_err(|e| format!("创建插件目录失败: {e}"))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| HostError::new(IO, format!("创建插件目录失败: {e}")))?;
 
     let sink = app.clone();
     let root = dir.clone();
@@ -416,12 +437,12 @@ pub fn spawn_plugins_watcher(app: &tauri::AppHandle) -> Result<PluginWatcher, St
             );
         });
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| HostError::new(INTERNAL, e.to_string()))?;
     // 递归：插件入口引出的子模块（如 astock 的 sources/ 与 views/settings/）也要收事件，
     // 改子目录里的文件同样要让承载该插件的窗口知道 —— id 折叠见 plugin_ids_from_paths
     watcher
         .watch(&dir, RecursiveMode::Recursive)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| HostError::new(INTERNAL, e.to_string()))?;
     Ok(PluginWatcher(watcher))
 }
 
@@ -480,6 +501,7 @@ mod tests {
     }
 
     /// K4：`validate_manifest_fields` 按 schema 拒绝 —— 缺必填键、坏 id、坏 permissions。
+    /// A2/ADR-0007：manifest 校验链的拒绝都是 invalid-arg（入参不合法）。
     #[test]
     fn manifest_fields_are_validated_against_the_schema() {
         let good = || {
@@ -500,14 +522,15 @@ mod tests {
             let mut m = good();
             m.as_object_mut().unwrap().remove(key);
             let err = validate_manifest_fields(&m).unwrap_err();
-            assert!(err.contains(key), "缺 {key} 的报错没带键名: {err}");
+            assert!(err.message.contains(key), "缺 {key} 的报错没带键名: {err}");
+            assert_eq!(err.code, INVALID_ARG, "缺 {key} = invalid-arg");
         }
 
         let mut m = good();
         m["id"] = serde_json::json!("Todo");
-        assert!(validate_manifest_fields(&m)
-            .unwrap_err()
-            .contains("非法插件 id"));
+        let err = validate_manifest_fields(&m).unwrap_err();
+        assert!(err.message.contains("非法插件 id"));
+        assert_eq!(err.code, INVALID_ARG, "坏 id = invalid-arg");
         let mut m = good();
         m["id"] = serde_json::json!("a".repeat(64));
         assert!(
@@ -522,21 +545,61 @@ mod tests {
         m["permissions"] = serde_json::json!(["storage", 42]);
         let err = validate_manifest_fields(&m).unwrap_err();
         assert!(
-            err.contains("必须是字符串") && err.contains("42"),
+            err.message.contains("必须是字符串") && err.message.contains("42"),
             "非字符串元素的报错: {err}"
+        );
+        assert_eq!(
+            err.code, INVALID_ARG,
+            "permissions 元素类型错 = invalid-arg"
         );
         let mut m = good();
         m["permissions"] = serde_json::json!(["not-a-cap"]);
         let err = validate_manifest_fields(&m).unwrap_err();
         assert!(
-            err.contains("未知能力名") && err.contains("not-a-cap"),
+            err.message.contains("未知能力名") && err.message.contains("not-a-cap"),
             "未在名单里的能力名报错: {err}"
         );
+        assert_eq!(err.code, INVALID_ARG, "未知能力名 = invalid-arg");
         let mut m = good();
         m["permissions"] = serde_json::json!("storage");
+        let err = validate_manifest_fields(&m).unwrap_err();
+        assert_eq!(err.code, INVALID_ARG, "permissions 非数组 = invalid-arg");
+    }
+
+    /// A2/ADR-0007：manifest 读取链的两类失败分码 —— 读不到文件 = io，
+    /// 读到但 JSON 解析坏 = parse（A05 决策 1 里那个 internal 兜底要修掉的就是这两类）。
+    #[test]
+    fn manifest_read_failures_split_io_and_parse() {
+        let dir = std::env::temp_dir().join(format!("pet-manifest-read-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("zz.bad")).unwrap();
+        std::fs::write(dir.join("zz.bad").join("manifest.json"), b"{ not json").unwrap();
+
+        let err = read_manifest(&dir, "zz.missing").unwrap_err();
+        assert_eq!(err.code, IO, "读文件失败 = io");
+        let err = read_manifest(&dir, "zz.bad").unwrap_err();
+        assert_eq!(err.code, PARSE, "磁盘 JSON 解析失败 = parse");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 签名层钉子（A03 样板）：命令函数不能取符号（会把 tauri 命令机制拉进测试 exe 的
+    /// 链接，0xc0000139），而这两条命令形状一改、前端裸 invoke 调用点必须同卡跟上，
+    /// 所以 Err 侧形状在源码文本层钉住。
+    #[test]
+    fn plugin_command_signatures_declare_host_error() {
+        let flat = include_str!("plugins.rs")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(
-            validate_manifest_fields(&m).is_err(),
-            "permissions 非数组应当被拒"
+            flat.contains(
+                "pub fn plugins_list(app: tauri::AppHandle) -> Result<Vec<Value>, HostError>"
+            ),
+            "plugins_list 的 Err 侧必须是 HostError"
+        );
+        assert!(
+            flat.contains("rel: String, ) -> Result<u64, HostError>"),
+            "plugin_file_version 的 Err 侧必须是 HostError"
         );
     }
 
@@ -709,9 +772,10 @@ mod tests {
         );
         let err = file_modified_millis(&dir.join("没有这个文件.js")).unwrap_err();
         assert!(
-            err.starts_with("读取 "),
+            err.message.starts_with("读取 "),
             "错误文案要带路径便于排查，实得 {err}"
         );
+        assert_eq!(err.code, IO, "读文件失败 = io");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

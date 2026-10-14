@@ -1,6 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { bus } from "../runtime/event-bus";
+import { hostCall } from "../runtime/host-error";
 import { applyHotReload, reloadIdsFrom } from "../runtime/hot-reload";
 import {
   loadEnabled,
@@ -69,7 +69,7 @@ async function select(view: string): Promise<void> {
 }
 
 async function render(): Promise<void> {
-  const list = await invoke<PluginManifest[]>("plugins_list");
+  const list = await hostCall<PluginManifest[]>("plugins_list");
   // 目录可能已经变了：先按新的清单重建侧栏，再决定当前页怎么渲染
   setManifests([...list].sort((a, b) => a.id.localeCompare(b.id)));
   const alive = new Set(manifests.map((m) => m.id));
