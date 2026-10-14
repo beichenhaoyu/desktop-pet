@@ -4,7 +4,7 @@
   "$rules": [
     "同一文案跨命令必须同码（`invalid plugin id` 在 8 处出现，只能有一个码）",
     "码一旦发布不许改名；要拆细就加新码并把旧的标 deprecated",
-    "未迁移的命令在前端规整成 code = legacy，S3（check:shape 的 string_err 计数）归零后该分支连测试一起删"
+    "Tauri 框架自己发出的裸字符串错误（命令名写错、参数序列化失败这类）在前端规整成 code = legacy；legacy 码保留、不改名（规则 2），S3（check:shape 的 string_err）已升成拦截项：命令自己不得再返回裸字符串"
   ],
   "codes": [
     { "code": "denied", "meaning": "授权或窗口门禁拒绝：缺能力、缺域名同意、调用窗口不对、同意框答非所窗" },

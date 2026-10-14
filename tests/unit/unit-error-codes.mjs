@@ -69,8 +69,8 @@ describe("错误码清单的单一来源", () => {
   });
 });
 
-describe("asHostError：混合迁移期两种形状同形", () => {
-  it("已迁移的 {code,message} → Error.message 逐字不变、code 直取", () => {
+describe("asHostError：两种形状（命令负载 / 框架侧裸字符串）同形", () => {
+  it("命令负载 {code,message} → Error.message 逐字不变、code 直取", () => {
     const err = asHostError({ code: "denied", message: "未授权 storage：需要 manifest 声明且已同意" });
     assert.equal(err.message, "未授权 storage：需要 manifest 声明且已同意");
     assert.equal(err.code, "denied");
@@ -78,7 +78,7 @@ describe("asHostError：混合迁移期两种形状同形", () => {
     assert.ok(err instanceof Error);
   });
 
-  it("未迁移的裸字符串 → 文案原样进 message，码记 legacy（不是猜一个）", () => {
+  it("框架侧的裸字符串 → 文案原样进 message，码记 legacy（不是猜一个）", () => {
     const err = asHostError("只有设置窗可以撤销授权");
     assert.equal(err.message, "只有设置窗可以撤销授权");
     assert.equal(err.code, LEGACY_CODE);
@@ -93,7 +93,7 @@ describe("asHostError：混合迁移期两种形状同形", () => {
     assert.equal(asHostError(already).code, "io");
   });
 
-  it("null / undefined / 数字也不会抛，一律按 legacy 收成字符串", () => {
+  it("框架侧的裸值（null / undefined / 数字）也不会抛，一律按 legacy 收成字符串", () => {
     for (const v of [null, undefined, 42]) {
       const err = asHostError(v);
       assert.ok(err instanceof Error);
@@ -127,10 +127,12 @@ describe("asHostError：混合迁移期两种形状同形", () => {
   });
 });
 
-describe("迁移进度是可读数，不是文档承诺", () => {
-  it("check:shape 的 S3 现在只报数不拦（终态 string_err=0 才升成门禁）", () => {
+describe("S3 是拦截门禁，不是只读读数（A2 收口后）", () => {
+  it("check:shape 的 S3 与 S1/S2 同级：string_err>0 违例进 why、计入 failing、退出码非 0", () => {
     const tool = readFileSync(fileURLToPath(new URL("../../tools/check-command-shape.mjs", import.meta.url)), "utf8");
     assert.match(tool, /string_err/, "工具里没有 S3 读数");
-    assert.doesNotMatch(tool, /if \(stringErr > 0\) failures/, "S3 现在就拦了 —— 混合态下会把没迁的域全判红");
+    // 拦截的机械含义：S3 违例进 why，而 why 汇入 failures、failures 决定退出码 —— 不再只是末尾一个数字
+    assert.match(tool, /why\.push\("S3 /, "S3 违例没有进 why —— 那就拦不住任何东西");
+    assert.match(tool, /if \(failures\.length > 0\) process\.exitCode = 1/, "退出码没有挂在 failing 上");
   });
 });

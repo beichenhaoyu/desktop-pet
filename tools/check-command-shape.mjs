@@ -8,8 +8,8 @@
 // :79（extract_fn）：命令是否在册由那个 Rust 测试守，这里只管形状。
 //
 // 输出：每条违例一行 `  - <命令>: <说明>`，末行 `RESULT commands=48 s1=K s2=M string_err=N failing=F`。
-//   S3（string_err）是 A2 的进度读数，**只报不拦**：混合迁移期没迁完的域要能继续发布（ADR-0007），
-//   归零那天再把它升成第四条门禁。
+//   S3（string_err）已升成第四条拦截门禁（2026-10-14 A07 收口）：命令 Err 侧必须是 HostError 的
+//   `{code, message}`（ADR-0007），`string_err>0` 与 S1/S2 一样计入 failing 并退出非 0；此前混合迁移期它只是读数。
 // 任何一条违例 → process.exitCode = 1（CI 只认退出码）。
 // 加 --report 时额外打印全部命令的体行数直方图，供人审，不改变退出码。
 
@@ -24,6 +24,9 @@ const MAX_BODY_LINES = 20;
 
 // S1 的关键词：只收「真的会碰磁盘或网络」的原语，注释里的同名词由 stripComments 先清掉
 const IO_TOKENS = ["std::fs", "fs::", "File::open", "File::create", "read_to_string", "read_dir", "remove_file", "rename(", "reqwest", "send()", "download_to"];
+
+// S3 的判据：签名里 Err 侧是裸 String（2026-10-14 起是拦截项，靶子读数 string_err=0 已达成）
+const STRING_ERR = /Result<[^{}]*?,\s*String\s*>/;
 
 const posix = (p) => p.split(path.sep).join("/");
 
@@ -220,18 +223,18 @@ for (const qualified of reg) {
   const why = [];
   if (io.length) why.push(`S1 命令体内有 IO 原语: ${io.join(", ")}`);
   if (lines > MAX_BODY_LINES) why.push(`S2 命令体 ${lines} 行 > ${MAX_BODY_LINES}`);
+  if (STRING_ERR.test(found.signature.replace(/\s+/g, " ")))
+    why.push("S3 Err 侧还是裸 String（命令必须返回 HostError 的 {code, message}）");
   rows.push({ name, file, lines, why, signature: found.signature });
   for (const w of why) failures.push(`${qualified}（${file}:${found.startLine}）: ${w}`);
 }
 
 const s1 = rows.filter((r) => r.why.some((w) => w.startsWith("S1"))).length;
 const s2 = rows.filter((r) => r.why.some((w) => w.startsWith("S2"))).length;
-// S3：A2 的进度读数 —— Err 侧还是裸 String 的命令数。
-// **只报不拦**：混合迁移期（ADR-0007）没迁完的域必须能继续发布，拦在这里等于逼人大改。
-// `string_err=0` 那天把它升成第四条门禁，同时删掉 host_error.rs 的 From<HostError> for String
-// 与前端那条 legacy 分支。
-const STRING_ERR = /Result<[^{}]*?,\s*String\s*>/;
-const s3 = rows.filter((r) => STRING_ERR.test(r.signature.replace(/\s+/g, " "))).length;
+// S3：命令 Err 侧不得是裸 String —— 与 S1/S2 同级，违例同样进 why / failing / 退出码。
+// `string_err=0` 的兑现日（2026-10-14 A07）已到：升成第四条拦截门禁；Rust 侧那个
+// From<HostError> for String 的混迁桥已删（前端 legacy 码保留，改兜框架侧裸字符串错误）。
+const s3 = rows.filter((r) => r.why.some((w) => w.startsWith("S3"))).length;
 
 for (const f of failures) console.log(`  - ${f}`);
 if (process.argv.includes("--report")) {

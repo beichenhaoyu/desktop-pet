@@ -1,5 +1,6 @@
+// `consent-timeout` 与 `unsupported` 两个码暂无生产引用点（同意框超时按拒绝收口走 Ok(false)；本轮没有平台限制类 Err）；
+// 撤掉这行 allow 会出 3 条 dead_code 警告（2026-10-14 A07 实测，含只被单测引用的 CONSTS），不许为消警告给它们造用法。
 #![allow(dead_code)]
-// A2 按域迁移中，尚无生产引用点的码先放宽；`check:shape` 的 string_err 归零后连同前端 legacy 分支一起撤（ADR-0007 的收尾条件）
 //! A2 / [ADR-0007](../../docs/adr/0007-unified-command-error-codes.md)：IPC 错误的唯一形状 `{code, message}`。
 //!
 //! 码表本体是仓库根的 `packages/sdk/error-codes.json` —— 与 TS 侧
@@ -8,8 +9,9 @@
 //! 生产代码引用下面的编译期 const，形状由本文件单测与 `tests/unit/unit-error-codes.mjs` 两侧对撞。
 //! 与 `plugin_caps.rs` 同一套套路，不是重新发明 —— 改一边，node 与 cargo 都红。
 //!
-//! 迁移期间的口径（ADR-0007）：`message` 逐字保持原样，所以 `tests/e2e` 里按错误文本判的断言不动；
-//! 未迁移的命令在前端被规整成 `code = "legacy"`，进度读数看 `npm run check:shape` 的 `string_err`。
+//! `message` 逐字保持原样（ADR-0007），所以 `tests/e2e` 里按错误文本判的断言不受影响；
+//! 命令 Err 侧已全部迁完（2026-10-14 A07 收口，`check:shape` 的 `string_err` 已是拦截项），
+//! 前端 `legacy` 码只兜 Tauri 框架自己发出的裸字符串错误（命令名写错、参数序列化失败）。
 
 use std::sync::OnceLock;
 
@@ -44,7 +46,7 @@ pub const UNSUPPORTED: &str = "unsupported";
 pub const INTERNAL: &str = "internal";
 
 /// 命令的 Err 侧。序列化成 `{code, message}`，`Display` 只出 `message` ——
-/// 这样未迁移的调用方（把错误当字符串用的那些）拿到的文案与迁移前逐字相同。
+/// 这样按文本取文案的调用方（日志、`tests/e2e` 的断言）拿到的字与迁移前逐字相同。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostError {
     pub code: &'static str,
@@ -77,16 +79,6 @@ impl std::fmt::Display for HostError {
 }
 
 impl std::error::Error for HostError {}
-
-/// 迁移期的桥（ADR-0007）：还没改签名的命令体里 `crate::gate::*(...)?` 继续拿字符串，
-/// 文案与 `Display` 逐字相同 —— 所以 gate 先迁、其余按域排队时，`tests/e2e` 里
-/// 按文本判的断言一条都不必动。S3（`check:shape` 的 `string_err`）归零后，
-/// 这个 impl 连同前端那条 legacy 分支一起删掉。
-impl From<HostError> for String {
-    fn from(e: HostError) -> String {
-        e.message
-    }
-}
 
 impl Serialize for HostError {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

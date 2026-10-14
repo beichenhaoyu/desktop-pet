@@ -12,9 +12,9 @@ export const ERROR_CODES: readonly string[] = Object.freeze(
 );
 
 /**
- * 迁移期的标记：还没改成 `{code, message}` 的命令仍然 reject 一个裸字符串，
- * 规整之后 `code` 就是它。等 `npm run check:shape` 的 `string_err` 归零，
- * 这条连同 `asHostError` 里的字符串分支一起删 —— 它是进度的可见标记，不是长期设计。
+ * 兜 Tauri 框架自己发出的裸字符串错误（命令名写错、参数序列化失败这类）。
+ * A2 迁移期它标记「还没迁完的命令」；2026-10-14（A07）迁移面走完后语义改成上面那条 ——
+ * 码保留、不改名（ADR-0007 规则 2），因为宿主命令之外仍会有非 `{code, message}` 的负载到达前端。
  */
 export const LEGACY_CODE = "legacy";
 
@@ -42,7 +42,7 @@ export const CONSENT_TIMEOUT = define("consent-timeout");
 export const UNSUPPORTED = define("unsupported");
 export const INTERNAL = define("internal");
 
-/** 宿主已经改成 `{code, message}` 的负载形状。判据只看这两个键是不是字符串。 */
+/** 宿主命令错误的负载形状。判据只看这两个键是不是字符串。 */
 export function isHostErrorPayload(value: unknown): value is { code: string; message: string } {
   if (typeof value !== "object" || value === null) return false;
   const v = value as { code?: unknown; message?: unknown };
@@ -50,9 +50,9 @@ export function isHostErrorPayload(value: unknown): value is { code: string; mes
 }
 
 /**
- * 把 invoke 的拒绝值规整成 `Error & {code}` —— 未迁移的命令给的是裸字符串，
- * 已迁移的是 `{code, message}`，两种形状下调用方读到的 `message` 都与文案原文一致，
- * 所以 A2 的迁移期间 `tests/e2e` 那批按文本判的断言不需要跟着改（只加不减）。
+ * 把 invoke 的拒绝值规整成 `Error & {code}` —— 宿主命令给的是 `{code, message}`，
+ * Tauri 框架自己发出的裸字符串错误（命令名写错、参数序列化失败这类）给的是字符串，
+ * 两种形状下调用方读到的 `message` 都与文案原文一致，所以 `tests/e2e` 那批按文本判的断言不受影响。
  */
 export function asHostError(rejection: unknown): CodedError {
   if (isHostErrorPayload(rejection)) {
@@ -62,11 +62,12 @@ export function asHostError(rejection: unknown): CodedError {
     return err;
   }
   if (rejection instanceof Error) {
-    // bridge 自己抛的（如权限被拒绝）已有 message；没带码的按 legacy 记。
+    // bridge 自己抛的（如权限被拒绝）已有 message；没带码的按 legacy 记（框架侧兜底，见 LEGACY_CODE）。
     const err = rejection as CodedError;
     if (typeof err.code !== "string") err.code = LEGACY_CODE;
     return err;
   }
+  // 框架侧的裸字符串错误（命令名写错、参数序列化失败）落到这里：message 就是原文案。
   const err = new Error(String(rejection)) as CodedError;
   err.name = "HostError";
   err.code = LEGACY_CODE;
@@ -74,7 +75,7 @@ export function asHostError(rejection: unknown): CodedError {
 }
 
 /**
- * 给人读的那一句：已迁移的命令（`{code,message}`）、未迁移的裸字符串、
+ * 给人读的那一句：宿主命令（`{code,message}`）、框架侧的裸字符串、
  * 前端自己抛的 `Error` 三种形状都取回**同一句文案**。
  * 设置窗这类「把错误显示进状态行」的地方用它 —— 直接 `String(e)` 会在迁移过的命令上
  * 变成 `Error: …`，那是形状泄漏，不是信息。
@@ -91,9 +92,9 @@ export function rethrowAsHostError(rejection: unknown): never {
 }
 
 /**
- * 前端调宿主的唯一入口（桥内外都用它）。已迁移的命令 reject `{code,message}`、
- * 未迁移的仍 reject 裸字符串，这里一律收成 `Error & {code}`：`message` 逐字不变，
- * 所以调用点与 `tests/e2e` 的文本判据都不用跟着迁移节奏改（ADR-0007 的混合态收口点）。
+ * 前端调宿主的唯一入口（桥内外都用它）。宿主命令 reject `{code,message}`、
+ * 框架侧的错误是裸字符串，这里一律收成 `Error & {code}`：`message` 逐字不变，
+ * 所以调用点与 `tests/e2e` 的文本判据都不受影响（ADR-0007 的收口点）。
  */
 export function hostCall<T = unknown>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   return invoke<T>(cmd, args).catch(rethrowAsHostError);
