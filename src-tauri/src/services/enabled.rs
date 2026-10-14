@@ -15,14 +15,16 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::fsutil::write_atomic;
+use crate::host_error::{HostError, INTERNAL, IO};
 
 const FILE_NAME: &str = "plugins-enabled.json";
 
-fn file(app: &AppHandle) -> Result<PathBuf, String> {
+fn file(app: &AppHandle) -> Result<PathBuf, HostError> {
     app.path()
         .app_data_dir()
         .map(|dir| dir.join(FILE_NAME))
-        .map_err(|e| e.to_string())
+        // 拿不到自己的数据目录 = 宿主起不来，不是调用方的错
+        .map_err(|e| HostError::new(INTERNAL, e.to_string()))
 }
 
 /// 只保留符合 id 词表的那些（清单里可能有指向已删除插件的残留 id，
@@ -44,11 +46,11 @@ fn sanitize(ids: &[String]) -> Vec<String> {
 /// 读清单。返回 `None` = 还没写过（新安装，或老用户尚未迁移）。
 /// 文件在但读不动/形状不对时按 `None` 处理并留日志 —— 这条恢复路径由迁移那一步接管，
 /// 但**不在此处覆盖原文件**（写只发生在 set / migrate）。
-fn read_ids(path: &PathBuf) -> Result<Option<Vec<String>>, String> {
+fn read_ids(path: &PathBuf) -> Result<Option<Vec<String>>, HostError> {
     let raw = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("读取启停清单失败: {e}")),
+        Err(e) => return Err(HostError::new(IO, format!("读取启停清单失败: {e}"))),
     };
     match serde_json::from_str::<Value>(&raw) {
         Ok(value) => Ok(value.get("ids").and_then(Value::as_array).map(|arr| {
@@ -64,18 +66,19 @@ fn read_ids(path: &PathBuf) -> Result<Option<Vec<String>>, String> {
     }
 }
 
-fn write_ids(app: &AppHandle, ids: &[String]) -> Result<(), String> {
+fn write_ids(app: &AppHandle, ids: &[String]) -> Result<(), HostError> {
     let path = file(app)?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("创建宿主数据目录失败: {e}"))?;
+        fs::create_dir_all(parent)
+            .map_err(|e| HostError::new(IO, format!("创建宿主数据目录失败: {e}")))?;
     }
     let json = serde_json::to_string_pretty(&serde_json::json!({ "ids": ids }))
-        .map_err(|e| e.to_string())?;
-    write_atomic(&path, json.as_bytes())
+        .map_err(|e| HostError::new(INTERNAL, e.to_string()))?;
+    write_atomic(&path, json.as_bytes()).map_err(|e| HostError::new(IO, e))
 }
 
 #[tauri::command]
-pub fn plugin_enabled_list(app: AppHandle) -> Result<Option<Vec<String>>, String> {
+pub fn plugin_enabled_list(app: AppHandle) -> Result<Option<Vec<String>>, HostError> {
     read_ids(&file(&app)?)
 }
 
@@ -87,7 +90,7 @@ pub fn plugin_enabled_set(
     app: AppHandle,
     window: tauri::Window,
     ids: Vec<String>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, HostError> {
     crate::gate::settings(&window, "改动插件启停清单")?;
     let cleaned = sanitize(&ids);
     write_ids(&app, &cleaned)?;
@@ -104,7 +107,7 @@ pub fn plugin_enabled_migrate(
     app: AppHandle,
     window: tauri::Window,
     ids: Vec<String>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, HostError> {
     crate::gate::pet(&window, "迁移插件启停清单")?;
     let path = file(&app)?;
     if let Some(existing) = read_ids(&path)? {

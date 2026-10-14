@@ -1,13 +1,12 @@
 // PetAPI 能力桥：按 manifest 权限逐项校验，未授权时触发同意框，拒绝默认。
 // 进程内插件不是硬安全边界，这里是策略层（见 docs/architecture/ARCHITECTURE.md 信任模型）。
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { bus } from "./event-bus";
 import { PET_ACTIONS, petController, type ActionName } from "../pet/host";
 import { claim, release } from "./resources";
 import { register } from "./subscriptions";
 import { assertPublishable, assertSubscribable } from "./topic-acl";
-import { deniedError, rethrowAsHostError } from "./host-error";
+import { deniedError, hostCall } from "./host-error";
 import {
   AGENT_HOOKS,
   BLE_CONNECT,
@@ -67,7 +66,7 @@ async function ensurePermissions(manifest: ManifestLike, capabilities: string[])
   // 缓存说「没授权」时仍要问宿主一次：授权表是宿主的事实，可能已被别处改动
   const missing: string[] = [];
   for (const capability of uncached) {
-    const ok = await invoke<boolean>("permission_check", { pluginId: pid, capability });
+    const ok = await hostCall<boolean>("permission_check", { pluginId: pid, capability });
     if (ok) known.add(capability);
     else missing.push(capability);
   }
@@ -75,7 +74,7 @@ async function ensurePermissions(manifest: ManifestLike, capabilities: string[])
     granted.set(pid, known);
     return true;
   }
-  const accepted = await invoke<boolean>("permission_request", {
+  const accepted = await hostCall<boolean>("permission_request", {
     pluginId: pid,
     pluginName: manifest.name,
     capabilities: missing,
@@ -112,9 +111,9 @@ function gated<A extends unknown[], R>(
  */
 export function createAgentHooksApi(manifest: ManifestLike) {
   return {
-    status: gated(manifest, AGENT_HOOKS, () => invoke<unknown>("agent_hooks_status", { pluginId: manifest.id })),
-    install: gated(manifest, AGENT_HOOKS, () => invoke<unknown>("agent_hooks_install", { pluginId: manifest.id })),
-    uninstall: gated(manifest, AGENT_HOOKS, () => invoke<unknown>("agent_hooks_uninstall", { pluginId: manifest.id })),
+    status: gated(manifest, AGENT_HOOKS, () => hostCall<unknown>("agent_hooks_status", { pluginId: manifest.id })),
+    install: gated(manifest, AGENT_HOOKS, () => hostCall<unknown>("agent_hooks_install", { pluginId: manifest.id })),
+    uninstall: gated(manifest, AGENT_HOOKS, () => hostCall<unknown>("agent_hooks_uninstall", { pluginId: manifest.id })),
   };
 }
 
@@ -123,10 +122,10 @@ export function buildContext(manifest: ManifestLike): PluginContext {
   const storage = {
     // store_* 已迁到 `{code, message}`（ADR-0007）。这一层规整让两种形状对调用方同形：
     // message 逐字不变，多出来的 code 才是新信息，所以未迁移的命令一行都不用动。
-    get: (key: string) => invoke("store_get", { pluginId: pid, key }).catch(rethrowAsHostError),
+    get: (key: string) => hostCall("store_get", { pluginId: pid, key }),
     set: (key: string, value: unknown) =>
-      invoke("store_set", { pluginId: pid, key, value }).catch(rethrowAsHostError),
-    delete: (key: string) => invoke("store_delete", { pluginId: pid, key }).catch(rethrowAsHostError),
+      hostCall("store_set", { pluginId: pid, key, value }),
+    delete: (key: string) => hostCall("store_delete", { pluginId: pid, key }),
   };
   return {
     pluginId: pid,
@@ -158,7 +157,7 @@ export function buildContext(manifest: ManifestLike): PluginContext {
         // 留着幽灵持有者的话，真正在扫的那个 release 时永远返回 false，扫描就停不下来
         claim("ble-scan", pid);
         try {
-          await invoke("ble_start_scan", { pluginId: pid });
+          await hostCall("ble_start_scan", { pluginId: pid });
         } catch (err) {
           release("ble-scan", pid);
           throw err;
@@ -166,22 +165,22 @@ export function buildContext(manifest: ManifestLike): PluginContext {
       }),
       stopScan: gated(manifest, BLE_SCAN, async () => {
         // 仍有别的插件在扫就不该真的停
-        if (release("ble-scan", pid)) await invoke("ble_stop_scan", { pluginId: pid });
+        if (release("ble-scan", pid)) await hostCall("ble_stop_scan", { pluginId: pid });
       }),
       connect: gated(manifest, BLE_CONNECT, async (deviceId: string) => {
         claim("ble", pid);
         try {
-          await invoke("ble_connect", { pluginId: pid, deviceId });
+          await hostCall("ble_connect", { pluginId: pid, deviceId });
         } catch (err) {
           release("ble", pid);
           throw err;
         }
       }),
       disconnect: gated(manifest, BLE_CONNECT, async () => {
-        if (release("ble", pid)) await invoke("ble_disconnect", { pluginId: pid });
+        if (release("ble", pid)) await hostCall("ble_disconnect", { pluginId: pid });
       }),
       connectedDevice: gated(manifest, BLE_CONNECT, () =>
-        invoke("ble_connected_device", { pluginId: pid }) as Promise<string | null>,
+        hostCall("ble_connected_device", { pluginId: pid }) as Promise<string | null>,
       ),
     },
 
@@ -225,7 +224,7 @@ export function buildContext(manifest: ManifestLike): PluginContext {
         if (!(await ensurePermissions(manifest, [HTTP, `${HTTP_HOST_PREFIX}${host}`]))) {
           throw deniedError(`[${pid}] 域名授权被拒绝: ${host}`);
         }
-        return invoke<HttpResponse>("http_request", {
+        return hostCall<HttpResponse>("http_request", {
           pluginId: pid,
           url,
           method: options.method ?? null,
@@ -237,7 +236,7 @@ export function buildContext(manifest: ManifestLike): PluginContext {
 
     notify: {
       show: gated(manifest, NOTIFY, (title: string, body: string) =>
-        invoke("notify_show", { pluginId: pid, title, body }) as Promise<void>,
+        hostCall("notify_show", { pluginId: pid, title, body }) as Promise<void>,
       ),
     },
 
@@ -245,17 +244,17 @@ export function buildContext(manifest: ManifestLike): PluginContext {
       // 每个插件一扇自己的悬浮窗（标签 overlay-<id>）：位置、高度、显隐互不影响，
       // 不再是谁先 show 谁定这扇窗
       show: gated(manifest, OVERLAY, async (options: { placement?: string; height?: number } = {}) => {
-        await invoke("overlay_show", {
+        await hostCall("overlay_show", {
           pluginId: pid,
           placement: options.placement ?? null,
           height: options.height ?? null,
         });
       }),
       hide: gated(manifest, OVERLAY, async () => {
-        await invoke("overlay_hide", { pluginId: pid });
+        await hostCall("overlay_hide", { pluginId: pid });
       }),
       destroy: gated(manifest, OVERLAY, async () => {
-        await invoke("overlay_destroy", { pluginId: pid });
+        await hostCall("overlay_destroy", { pluginId: pid });
       }),
     },
   };

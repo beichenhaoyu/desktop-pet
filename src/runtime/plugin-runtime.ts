@@ -10,6 +10,7 @@ import { bus } from "./event-bus";
 import { buildContext, invalidatePermissions } from "./bridge";
 import { applyHotReload, reloadIdsFrom } from "./hot-reload";
 import { CAPABILITIES } from "./plugin-capabilities";
+import { hostCall } from "./host-error";
 import { pluginFileUrl, pluginFileVersion } from "./plugin-url";
 import { widgetHost } from "./widget-host";
 import { releaseAll } from "./resources";
@@ -60,14 +61,14 @@ export function getEnabled(): string[] {
  * 以宿主回读的那份为准（非法 id 与重复项在宿主侧被滤掉），不自己猜过滤结果。
  */
 export async function loadEnabled(): Promise<string[]> {
-  const stored = await invoke<string[] | null>("plugin_enabled_list");
+  const stored = await hostCall<string[] | null>("plugin_enabled_list");
   if (stored) {
     enabledCache = stored;
     return enabledCache;
   }
   const legacy = readLegacyEnabled();
   try {
-    enabledCache = await invoke<string[]>("plugin_enabled_migrate", { ids: legacy });
+    enabledCache = await hostCall<string[]>("plugin_enabled_migrate", { ids: legacy });
   } catch {
     // 老宿主没这条命令、或本窗不是宠物窗：至少按旧键那份继续跑，别把用户挡在门外
     enabledCache = legacy;
@@ -77,7 +78,7 @@ export async function loadEnabled(): Promise<string[]> {
 
 /** 写启停清单（只认设置窗，宿主会拒），并同步本窗缓存 —— 调用方需要 await 它 */
 export async function setEnabledIds(ids: string[]): Promise<void> {
-  const stored = await invoke<string[]>("plugin_enabled_set", { ids });
+  const stored = await hostCall<string[]>("plugin_enabled_set", { ids });
   enabledCache = stored;
 }
 

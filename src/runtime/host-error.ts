@@ -3,6 +3,7 @@
 // 码表本体在 packages/sdk/error-codes.json —— Rust 侧 host_error.rs 用 include_str! 内嵌**同一份磁盘文件**
 // （import 必须带 `with { type: "json" }`，不带会在 node 单测里当场 ERR_IMPORT_ATTRIBUTE_MISSING，K3 实测过这条）。
 // 两侧 const 与这份表的一致性由 cargo 单测 + tests/unit/unit-error-codes.mjs 双向钉住。
+import { invoke } from "@tauri-apps/api/core";
 import catalog from "../../packages/sdk/error-codes.json" with { type: "json" };
 
 /** 码表本体（冻结）。 */
@@ -72,9 +73,30 @@ export function asHostError(rejection: unknown): CodedError {
   return err;
 }
 
+/**
+ * 给人读的那一句：已迁移的命令（`{code,message}`）、未迁移的裸字符串、
+ * 前端自己抛的 `Error` 三种形状都取回**同一句文案**。
+ * 设置窗这类「把错误显示进状态行」的地方用它 —— 直接 `String(e)` 会在迁移过的命令上
+ * 变成 `Error: …`，那是形状泄漏，不是信息。
+ */
+export function hostErrorMessage(rejection: unknown): string {
+  if (isHostErrorPayload(rejection)) return rejection.message;
+  if (rejection instanceof Error) return rejection.message;
+  return String(rejection);
+}
+
 /** 给 `.catch()` 直接用：把拒绝值换成规整后的 Error 再抛出去。 */
 export function rethrowAsHostError(rejection: unknown): never {
   throw asHostError(rejection);
+}
+
+/**
+ * 前端调宿主的唯一入口（桥内外都用它）。已迁移的命令 reject `{code,message}`、
+ * 未迁移的仍 reject 裸字符串，这里一律收成 `Error & {code}`：`message` 逐字不变，
+ * 所以调用点与 `tests/e2e` 的文本判据都不用跟着迁移节奏改（ADR-0007 的混合态收口点）。
+ */
+export function hostCall<T = unknown>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  return invoke<T>(cmd, args).catch(rethrowAsHostError);
 }
 
 /**

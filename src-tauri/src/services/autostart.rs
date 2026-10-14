@@ -6,6 +6,8 @@
 use serde::Serialize;
 use tauri_plugin_autostart::ManagerExt;
 
+use crate::host_error::{HostError, INTERNAL};
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutostartStatus {
@@ -28,10 +30,13 @@ fn exe_path() -> String {
 }
 
 #[tauri::command]
-pub fn autostart_status(app: tauri::AppHandle) -> Result<AutostartStatus, String> {
+pub fn autostart_status(app: tauri::AppHandle) -> Result<AutostartStatus, HostError> {
     let exe = exe_path();
     Ok(AutostartStatus {
-        enabled: manager(&app).is_enabled().map_err(|e| e.to_string())?,
+        // 读 HKCU 失败是系统侧的失败，不是调用方的参数问题
+        enabled: manager(&app)
+            .is_enabled()
+            .map_err(|e| HostError::new(INTERNAL, e.to_string()))?,
         dev_build: exe.contains("\\target\\") || exe.contains("/target/"),
         exe,
     })
@@ -43,13 +48,19 @@ pub fn autostart_set(
     app: tauri::AppHandle,
     window: tauri::Window,
     enabled: bool,
-) -> Result<bool, String> {
+) -> Result<bool, HostError> {
     crate::gate::settings(&window, "改动开机自启")?;
     let starter = manager(&app);
     if enabled {
-        starter.enable().map_err(|e| e.to_string())?;
+        starter
+            .enable()
+            .map_err(|e| HostError::new(INTERNAL, e.to_string()))?;
     } else {
-        starter.disable().map_err(|e| e.to_string())?;
+        starter
+            .disable()
+            .map_err(|e| HostError::new(INTERNAL, e.to_string()))?;
     }
-    starter.is_enabled().map_err(|e| e.to_string())
+    starter
+        .is_enabled()
+        .map_err(|e| HostError::new(INTERNAL, e.to_string()))
 }

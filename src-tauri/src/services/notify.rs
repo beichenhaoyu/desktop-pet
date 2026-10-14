@@ -1,6 +1,7 @@
 use tauri_plugin_notification::NotificationExt;
 
 use super::permission::PermissionState;
+use crate::host_error::{HostError, INTERNAL, INVALID_ARG};
 
 /// 系统通知。同样过授权表，否则任何插件都能拿它骚扰用户。
 #[tauri::command]
@@ -10,19 +11,20 @@ pub fn notify_show(
     plugin_id: String,
     title: String,
     body: String,
-) -> Result<(), String> {
+) -> Result<(), HostError> {
     crate::gate::plugin_capability(&perms, &plugin_id, crate::plugin_caps::NOTIFY)?;
     let title = sanitize(&title, 80);
     let text = sanitize(&body, 240);
     if title.is_empty() && text.is_empty() {
-        return Err("通知内容为空".into());
+        return Err(HostError::new(INVALID_ARG, "通知内容为空"));
     }
     app.notification()
         .builder()
         .title(&title)
         .body(&text)
         .show()
-        .map_err(|e| e.to_string())
+        // 投递失败是系统侧的失败，不是插件的参数问题 —— 码分开，文案照旧
+        .map_err(|e| HostError::new(INTERNAL, e.to_string()))
 }
 
 /// 压掉换行并限长：通知气泡不接受插件塞进来的多行长文
