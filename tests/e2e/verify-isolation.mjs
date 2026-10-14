@@ -8,6 +8,7 @@ import {
   attach,
   createReport,
   hostInvoke,
+  listPages,
   openSettingsInvoker,
   readEnabledIds,
   reloadAndWait,
@@ -327,6 +328,25 @@ try {
     await c.ev(`(async () => { const rt = await import('/src/runtime/plugin-runtime.ts'); return (await rt.loadEnabled()).includes(${JSON.stringify(PROBE_ID)}); })()`),
   );
   await c.ev(`localStorage.removeItem('host:enabled-plugins'); true`);
+
+  // 迁移命令只认宠物窗，且只在清单文件还没写过时落盘 —— 拒绝与回读各钉一条
+  r.group("启停清单迁移命令（plugin_enabled_migrate）：只认宠物窗、只在未初始化时写");
+  const staleMigrate = await settings.invoke("plugin_enabled_migrate", { ids: [] });
+  r.check("设置窗调迁移被窗口门禁拒", "denied", staleMigrate.code);
+  // 用原始 plugin_enabled_list 判「文件写过没有」：readEnabledIds 会把 null 归一成 []，分不出来
+  const migList = (await invoke_("plugin_enabled_list")).v;
+  if (migList === null) {
+    r.info("跳过迁移原样回读断言", "宿主清单还没写过（fresh 环境）——迁移这一步只在首启时才落盘");
+  } else {
+    const forgedMigrate = await invoke_("plugin_enabled_migrate", { ids: ["zz.forged"] });
+    const migAfter = (await invoke_("plugin_enabled_list")).v;
+    r.check(
+      "已有清单时迁移是原样回读：带伪造 ids 调完，返回与清单逐字相等",
+      JSON.stringify([migList, migList]),
+      JSON.stringify([forgedMigrate.v, migAfter]),
+    );
+  }
+
   r.group("热安装 / 热移除（不重启宿主，仅靠 plugins 目录 watcher）");
   // 先造出「有启用记录但目录不存在」的状态：此时不该有任何激活。
   // 探针此刻还在跑，目录被移走会让宠物窗整页热重载（本卡的新行为）：先武装
@@ -506,6 +526,29 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
   r.check("读连接状态同样要授权", true, !readDenied.ok && /未授权/.test(String(readDenied.e)));
   const badId = await invoke_("ble_start_scan", { pluginId: "a/b" });
   r.check("非法插件 id 直接拒", true, !badId.ok && /invalid plugin id/.test(String(badId.e)));
+  // 断开与停扫走同一把能力门禁：这里只验「没授权时一个也过不去」
+  const discDenied = await invoke_("ble_disconnect", { pluginId: PROBE_ID });
+  r.check("未授权 ble:connect 就断开被拒", "denied", discDenied.code);
+  const stopScanDenied = await invoke_("ble_stop_scan", { pluginId: PROBE_ID });
+  r.check("未授权 ble:scan 就停不了扫描", "denied", stopScanDenied.code);
+
+  // 放行路径要真授权才进得来：两条前置各自走一次真实同意框（grantProbeCap 内部应答）
+  r.group("扫描启停与断开的放行路径（真实适配器，无心率设备）");
+  await grantProbeCap("ble:connect");
+  const idleConn = await invoke_("ble_connected_device", { pluginId: PROBE_ID });
+  if (idleConn.ok === true && idleConn.v === null) {
+    const idleDisc = await invoke_("ble_disconnect", { pluginId: PROBE_ID });
+    r.check("没连设备时断开是幂等空操作", true, idleDisc.ok);
+  } else {
+    // 护栏：用户真连着心率设备时不替他把连接掐掉
+    r.info("跳过 ble_disconnect 空操作断言", `连接状态=${JSON.stringify(idleConn.v ?? idleConn.e ?? null)}（有设备在场就不动它）`);
+  }
+  await grantProbeCap("ble:scan");
+  const scanStart = await invoke_("ble_start_scan", { pluginId: PROBE_ID });
+  await sleep(1200); // 真扫约 1 秒：让适配器真的转起来再停，不是只测参数解析
+  const scanStop1 = await invoke_("ble_stop_scan", { pluginId: PROBE_ID });
+  const scanStop2 = await invoke_("ble_stop_scan", { pluginId: PROBE_ID });
+  r.check("授权后扫描启停放行：起扫→停扫→再停都 ok", "true|true|true", [scanStart.ok, scanStop1.ok, scanStop2.ok].join("|"));
 
   r.group("总线自递归必须被深度上限截断");
   // 嵌套调用走 inject 而不是 publish：两者共用同一个 dispatch（被测的就是它），
@@ -680,6 +723,143 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
   // 名义发消息，这里按同一条真实链路把 bus:publish 要回来（否则中继被拒会往 console 里灌噪音，
   // 打断最后那条「宿主页面自身无告警」的断言）
   r.check("恢复 bus:publish 授权", true, await grantProbeCap("bus:publish"));
+
+  // overlay_owner 没有门禁（悬浮窗开机就要问归属），断言全是归属正确性：
+  // 归属只由窗口标签决定 —— 两扇插件窗各答出自己、宿主窗答 null。
+  // 悬浮窗是插件起的：没开的用宿主命令补一扇，收尾把补的收掉、把新授的授权收回。
+  r.group("overlay_owner：悬浮窗归属由窗口标签决定（两扇插件窗都在）");
+  const OWNER_AGENT = "com.pet.agent-bridge";
+  const OWNER_HR = "com.pet.hr-ble";
+  const OWNER_NAME = { [OWNER_AGENT]: "Agent 桥", [OWNER_HR]: "心率蓝牙" };
+  const OWNER_LABEL = { [OWNER_AGENT]: "overlay-com_pet_agent-bridge", [OWNER_HR]: "overlay-com_pet_hr-ble" };
+
+  // 前置一：起窗要求插件在启停清单里（overlay 页 sync 会自我关闭未启用插件的窗）
+  const ownerEnabledAtStart = await readEnabledIds(invoke_);
+  const ownerMissingEnabled = [OWNER_AGENT, OWNER_HR].filter((id) => !ownerEnabledAtStart.includes(id));
+  if (ownerMissingEnabled.length) await setEnabled([...ownerEnabledAtStart, ...ownerMissingEnabled]);
+
+  // 前置二：开窗命令要 overlay 已授权；没授的当场走真实同意框，记下来收尾撤销
+  const ownerGrantedNow = new Set();
+  const ownerBackup = {};
+  for (const id of [OWNER_AGENT, OWNER_HR]) {
+    const prior = (await settings.invoke("permission_list")).v?.[id] ?? [];
+    ownerBackup[id] = { prior, config: undefined };
+    const pre = await invoke_("permission_check", { pluginId: id, capability: "overlay" });
+    if (pre.ok && pre.v === true) {
+      r.info(`${id} 的 overlay 已在授权表里`, "本组不新授，也不收尾撤销");
+      continue;
+    }
+    const pending = c
+      .ev(`window.__TAURI_INTERNALS__.invoke('permission_request', { pluginId: ${JSON.stringify(id)}, pluginName: ${JSON.stringify(OWNER_NAME[id])}, capabilities: ['overlay'] })`)
+      .catch(() => undefined);
+    try {
+      await driveConsent("allow");
+    } catch (err) {
+      console.log(`     没能操作 ${id} 的 overlay 同意框: ` + String(err?.message ?? err).split("\n")[0]);
+    }
+    await pending;
+    let got = false;
+    const grantUntil = Date.now() + 15_000;
+    while (Date.now() < grantUntil && !got) {
+      const now = await invoke_("permission_check", { pluginId: id, capability: "overlay" });
+      got = now.ok && now.v === true;
+      if (!got) await sleep(400);
+    }
+    if (got) {
+      ownerGrantedNow.add(id);
+      // 撤销会连带清掉存储：先把 config 记下，收尾重授后写回
+      const cfgBackup = await invoke_("store_get", { pluginId: id, key: "config" });
+      ownerBackup[id].config = cfgBackup.ok && cfgBackup.v !== undefined ? cfgBackup.v : undefined;
+    }
+    r.info(`${id} 的 overlay 授权`, got ? "经真实同意框拿到（收尾会撤销）" : "没拿到 —— 下面的开窗会被拒");
+  }
+
+  // 起窗：注册表里的条目**不等于**活窗（窗自关或被停用后条目可能还挂着、页面已经没了），
+  // 所以无条件 show 一次 —— 已有活窗时它是幂等的，死条目/无窗时它把窗建回来。
+  const ownerPrior = {};
+  for (const [id, visible] of (await invoke_("overlay_list")).v ?? []) {
+    ownerPrior[id] = { entry: true, visible: visible === true };
+  }
+  for (const [id, placement, height] of [
+    [OWNER_AGENT, "above-pet", 104],
+    [OWNER_HR, "corner", 200],
+  ]) {
+    const shown = await invoke_("overlay_show", { pluginId: id, placement, height });
+    if (!shown.ok) r.info(`给 ${id} 开悬浮窗失败`, String(shown.e));
+  }
+
+  // 按窗口标签枚举（不按 title 找窗，避开循环论证）：读页面的当前标签 + 它的 overlay_owner 应答。
+  // attach 出来的客户端跨轮复用（反复 attach/detach 会把 CDP 调试端点拖垮，本仓踩过）。
+  const ownerClients = new Map();
+  const ownerMap = {};
+  const ownerRound = async () => {
+    for (const t of await listPages(PORT).catch(() => [])) {
+      if (!/overlay\.html/.test(t.url)) continue;
+      let oc = ownerClients.get(t.webSocketDebuggerUrl);
+      if (!oc) {
+        oc = await attach(PORT, (x) => x.webSocketDebuggerUrl === t.webSocketDebuggerUrl, 8_000).catch(() => null);
+        if (!oc) continue;
+        ownerClients.set(t.webSocketDebuggerUrl, oc);
+      }
+      const read = await oc
+        .ev(`(async () => ({ label: window.__TAURI_INTERNALS__.metadata.currentWindow.label, owner: await window.__TAURI_INTERNALS__.invoke('overlay_owner') }))()`)
+        .catch(() => null);
+      if (read?.label) {
+        ownerMap[read.label] = read.owner ?? null;
+      } else {
+        // 页面可能刚被换掉（导航会让旧客户端失效）：丢掉它，下一轮重建
+        oc.close();
+        ownerClients.delete(t.webSocketDebuggerUrl);
+      }
+    }
+  };
+  const ownerUntil = Date.now() + 30_000;
+  while (Date.now() < ownerUntil) {
+    await ownerRound();
+    if (ownerMap[OWNER_LABEL[OWNER_AGENT]] === OWNER_AGENT && ownerMap[OWNER_LABEL[OWNER_HR]] === OWNER_HR) break;
+    await sleep(800);
+  }
+  for (const oc of ownerClients.values()) oc.close();
+  r.check("头顶卡片那扇答出自己属于 com.pet.agent-bridge", OWNER_AGENT, ownerMap[OWNER_LABEL[OWNER_AGENT]] ?? null);
+  r.check("左上角波形那扇答出自己属于 com.pet.hr-ble", OWNER_HR, ownerMap[OWNER_LABEL[OWNER_HR]] ?? null);
+  const petOwner = await invoke_("overlay_owner");
+  r.check("宠物窗（非悬浮窗）问归属得到 null", true, petOwner.ok === true && petOwner.v === null);
+
+  // 收尾：本来就显示着的窗原地不动；其余（我们补开的、或本来就带病/隐藏的）收掉 ——
+  // 插件下次需要它时会自己 show 回来。新授的 overlay 撤销前先让插件真的下线 ——
+  // 否则它下一次轮询发现能力没了会再弹同意框；撤销连带清掉存储，所以按原样重授 + 写回 config。
+  for (const id of [OWNER_AGENT, OWNER_HR]) {
+    if (ownerPrior[id]?.entry && ownerPrior[id]?.visible) continue;
+    await invoke_("overlay_destroy", { pluginId: id });
+  }
+  for (const id of ownerGrantedNow) {
+    const wasStopped = await c
+      .ev(`(async () => { const rt = await import('/src/runtime/plugin-runtime.ts'); if (!rt.isActive(${JSON.stringify(id)})) return false; await rt.deactivatePlugin(${JSON.stringify(id)}); return true; })()`)
+      .catch(() => false);
+    const revoked = await settings.invoke("permission_revoke", { pluginId: id });
+    if (revoked.ok && ownerBackup[id].prior.length) {
+      const regrant = c
+        .ev(`window.__TAURI_INTERNALS__.invoke('permission_request', { pluginId: ${JSON.stringify(id)}, pluginName: ${JSON.stringify(OWNER_NAME[id])}, capabilities: ${JSON.stringify(ownerBackup[id].prior)} })`)
+        .catch(() => undefined);
+      try {
+        await driveConsent("allow");
+      } catch (err) {
+        console.log(`     还原 ${id} 授权时没能操作同意框: ` + String(err?.message ?? err).split("\n")[0]);
+      }
+      const back = await regrant;
+      if (ownerBackup[id].config !== undefined) {
+        await invoke_("store_set", { pluginId: id, key: "config", value: ownerBackup[id].config }).catch(() => undefined);
+      }
+      r.info(`已按原样重授 ${id} 的授权`, `${JSON.stringify(ownerBackup[id].prior)} → ${JSON.stringify(back)}${wasStopped ? "（撤销前已先下线）" : ""}`);
+    } else if (revoked.ok) {
+      r.info(`已收回本组给 ${id} 的 overlay 授权`, JSON.stringify(revoked.v));
+    } else {
+      r.info(`撤销 ${id} 的 overlay 授权失败`, JSON.stringify(revoked.e));
+    }
+  }
+  if (ownerMissingEnabled.length) await setEnabled(ownerEnabledAtStart);
+  // 收尾前换新文档：本组的同意框/开窗会留下在飞 IPC，别让它们污染后面的分组
+  await reloadAndWait(c);
 
   r.group("http 代理与按域名授权（#21）");
   // 热安装那组测试结束时删掉了 fixture，这里要自己造回来：
@@ -1061,6 +1241,29 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
   r.check("宠物挪到指针底下后穿透自己关掉", true, heal.reopened);
   r.check("关掉只发生一次（不来回抖）", 1, heal.after.filter((v) => v === false).length);
 
+  // 上面的穿透组全部注入 setThrough 接缝，「命令被删/参数名漂」也照样全绿。
+  // 这一组不传接缝、走生产默认的 invoke('set_click_through')：断言两向翻转期间零 console 新增。
+  r.group("穿透翻转走真实 set_click_through（不注入 setThrough 接缝）");
+  const throughNoiseBefore = c.noise.length;
+  await c.ev(`(async () => {
+    const { installClickThrough } = await import('/src/pet/click-through.ts');
+    let fake = { x: 99999, y: 99999 };
+    const stop = installClickThrough({
+      spriteRect: () => ({ left: 47, top: 47, size: 266 }),
+      isDragging: () => false,
+      pollMs: 40,
+      readCursor: async () => ({ x: fake.x, y: fake.y }),
+      windowOrigin: async () => ({ x: 0, y: 0, scale: 1 }),
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    fake = { x: 180, y: 180 }; // 转回实体内：两个方向的翻转都真发过命令再收
+    await new Promise((r) => setTimeout(r, 300));
+    stop();
+    return true;
+  })()`);
+  await sleep(800); // console 事件异步送达
+  r.check("真实调用链下翻转不产生任何 console 报错", 0, c.noise.length - throughNoiseBefore);
+
   r.group("dev 下的 CSP 现状（仅作基线记录，断言在 verify-release.mjs）");
   r.info("探针内 eval", bare.csp);
   r.check("widget 注入 <style> 生效", true, bare.styleApplied);
@@ -1282,6 +1485,15 @@ export function unmount() {}
 
     // 起点确定：清掉上一次（可能崩溃留下）的旧授权，否则 permission_check 会短路掉声明校验
     await sCall("permission_revoke", { pluginId: PROBE_ID });
+    // 此刻探针确定没有 agent:hooks，且下面这次调用不会弹同意框（窗口门禁过了走的是能力校验）
+    const hookSnapBefore = JSON.stringify((await sCall("agent_hooks_status")).v);
+    const unauthUninstall = await sCall("agent_hooks_uninstall", { pluginId: PROBE_ID });
+    const hookSnapAfter = JSON.stringify((await sCall("agent_hooks_status")).v);
+    r.check(
+      "设置窗带 pluginId 但未授权 agent:hooks：能力门禁拒且配置快照未动",
+      "denied|true",
+      `${unauthUninstall.code}|${hookSnapBefore === hookSnapAfter}`,
+    );
     const undeclared = await sc.ev(`window.__hookProbes.settings.call("status")`);
     r.check(
       "未声明 agent:hooks：settings 区调用被拒（未声明的能力不弹框，直接拒）",
@@ -1313,6 +1525,8 @@ export function unmount() {}
     r.check("宠物窗直接 invoke status 被拒（label=pet）", true, petStatus.ok === false && /设置窗/.test(String(petStatus.e)));
     const petInstall = await call("agent_hooks_install", { pluginId: PROBE_ID });
     r.check("宠物窗带 pluginId 的 install 同样被窗口门禁拒", true, petInstall.ok === false && /设置窗/.test(String(petInstall.e)));
+    const petUninstall = await call("agent_hooks_uninstall", { pluginId: PROBE_ID });
+    r.check("宠物窗直接 invoke agent_hooks_uninstall（带 pluginId）被窗口门禁拒", "denied", petUninstall.code);
 
     // 写盘类断言只在宿主被指到 temp/ 时跑（PET_AGENT_CONFIG_FILES 启动方式）；
     // 否则一律不改写真实用户配置，只做只读断言。
@@ -1475,6 +1689,16 @@ export function unmount() {}
     r.check("改键成功并归一化", "Ctrl+Alt+F9", moved.v);
     r.check("状态读回的是改后的键", "Ctrl+Alt+F9", (await sCall("hotkey_status")).v?.accelerator);
     r.check("改回默认值", "CommandOrControl+Alt+P", (await sCall("hotkey_set", { accelerator: "CommandOrControl+Alt+P" })).v);
+
+    r.group("hotkey_test：试注册命令的门禁、语法码与不改现状");
+    const petHotkeyTest = await call("hotkey_test", { accelerator: "Ctrl+Alt+F8" });
+    r.check("宠物窗直接 invoke hotkey_test 被窗口门禁拒", "denied", petHotkeyTest.code);
+    const badSyntaxTest = await sCall("hotkey_test", { accelerator: "P" });
+    r.check("语法错的组合拒绝时带 code=invalid-arg", "invalid-arg", badSyntaxTest.code);
+    // 试的就是「当前生效」的那个键：注册必然报已占用，那不是冲突 —— 命令必须识别并直接放行
+    const liveAccel = (await sCall("hotkey_status")).v?.accelerator;
+    const liveTest = await sCall("hotkey_test", { accelerator: liveAccel });
+    r.check("当前生效的键试注册必得 true（不把已占用误报成冲突）", true, liveTest.v);
 
     const auto = await sCall("autostart_status");
     r.check("自启状态带真实路径与 dev 标记", true, typeof auto.v?.devBuild === "boolean" && /\.exe$/.test(auto.v?.exe ?? ""));
