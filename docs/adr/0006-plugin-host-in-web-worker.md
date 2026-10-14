@@ -45,8 +45,9 @@ T10 数出的可伪造点里，前 6 条都源于同一个事实：**Worker 里�
 - **渲染层留在宿主 realm**：widget 的容器与 Shadow DOM 由宿主持有（`widget-host.ts`），Worker 只发渲染指令。
   四个插件对主文档 realm 的依赖共 84 处，分级是 **W 可做 6 / 需宿主代理 78 / 做不到 0**——
   也就是说没有哪条必须在 Worker 里做不到的事，但绝大多数要么变成消息、要么留在宿主侧。
-- **引导形状已由实测定死**（见下一节第 1、2 条）：宿主自己出一个**同源**的 worker 脚本（进 `dist` 的构建产物），
-  由它 `import()` 插件的绝对 petplugin URL；相对说明符由宿主在交给 Worker 之前绝对化。
+- **引导形状已由实测定死**（见下面两节）：宿主自己出一个**同源**的 worker 脚本（进 `dist` 的构建产物，
+  Vite 的 `?worker` + `worker.format:"es"`），由它 `import()` 插件入口的绝对 petplugin URL；
+  入口自己的相对子模块由 Worker 按 ESM 规则解析，宿主不做 URL 重写。
   「让 Worker 直接吃 petplugin URL」「blob:/data: 自举」「宿主 fetch 源码再转 blob」这三条在打包版全部走不通，
   不要再当备选提出。
 
@@ -72,9 +73,11 @@ dev 用 `npm run dev:debug`（无 CSP），打包版用 `tauri build --no-bundle
 
 1. **Worker 引导脚本必须是同源资产**（进 `dist` 的构建产物）。A/B/C/E 四条在打包版都走不通：
    petplugin URL 撞跨源规则，blob:/data: 撞 CSP；D 说明 `'self'` 放行，H 说明同源 worker 里 import petplugin 可用。
-2. **相对说明符要由宿主绝对化**：H 里 `import('./leaf.js')` 解析成 `http://tauri.localhost/leaf.js` → Failed to fetch。
-   插件现有的 `sources/`、`views/settings/` 子模块全是相对引用（astock 一家 26 个文件），
-   所以「放进目录即生效」这条产品承诺要在 Worker 侧靠绝对 URL 维持，不能指望 Worker 自己解析。
+2. **相对说明符由 Worker 自己解析，宿主不做绝对化**（本条 2026-10-14 晚由原型实测**推翻**了原先的判断，
+   原文见下一节的「更正」）：插件入口里的 `./leaf.js` 在 Worker 里按 **入口自身 URL** 解析成
+   `http://petplugin.localhost/<id>/leaf.js` 并取到内容 —— todo 的 `./todo-txt.js`、`./topics.js` 同理。
+   原先那条「H 里 `import('./leaf.js')` 解析成 `http://tauri.localhost/leaf.js`」量的是**引导脚本自己**写的
+   相对引用（referrer 是 Worker 脚本），不是插件模块的相对引用，两者不能混。
 3. **宿主也别想用 fetch 代取插件源码**（F 被 connect-src 拦）。要么把 petplugin 加进 connect-src（那要再过一次 ADR），
    要么引导脚本用 import 而不是 fetch —— H 已证明 import 这条路通，所以**本波不必改 CSP**。
 4. **Worker 里没有 window/document/localStorage**（B/H 实测 undefined）：真隔离成立，
@@ -82,11 +85,44 @@ dev 用 `npm run dev:debug`（无 CSP），打包版用 `tauri build --no-bundle
 5. **OffscreenCanvas 在 Worker 里可用**（function），主文档侧 canvas 元素确有 `transferControlToOffscreen`；
    T10 判为 W 的 6 条画布类依赖可以搬，但画布所有权的交接只能在主文档发起。
 
-还剩两条**本波没测**、留给 L1 原型第一天量的：
+## 更正与补测（2026-10-14 晚，L1 原型第一天，`npm run verify:worker` 25 条 + `npm run unit` 118 条实测）
 
-- 同源引导脚本用 Vite 的 `?worker` 还是 `new URL('./x', import.meta.url)` 形态 —— 两者都会给文件名带 hash，
-  影响「绝对化」这一步写在哪儿。
-- Worker 里 petplugin 的 cache-busting 查询串（`?v=`）与 H2 的 `no-store` 是否仍够（本次 H 用的是无查询串的固定 URL）。
+上一节留的两条已量完，另有一条被推翻。方法：`src/runtime/plugin-worker.ts` 作为同源资产进 `dist`，
+`src/runtime/worker-plugin-host.ts` 在宠物窗一侧造 Worker、转方法，取证插件 `zz.l1-probe`
+（`tests/fixtures/l1-probe/`，跑完即删）把 realm 事实写进自己的隔离存储，外部只读这份副作用。
+
+1. **引导形态定样 = Vite 的 `?worker` + `worker.format: "es" as const`**。Vite 8.2.2 实测四种形态的产物：
+   - `import W from './x.ts?worker'` → `new Worker('/assets/x-<hash>.js',{type:'module',name:…})`，
+     文件带 hash ✓、是真正的 ESM（顶层 `const`，无 IIFE 包裹）✓、路径同源 ✓ → **采用**。
+     默认 `worker.format` 是 `iife`，产物虽同源带 hash 但**没有** `type:'module'`（脚本体被包成
+     `(function(){…})()`），module worker 起不来，所以配置项必须显式写；
+     而 `format: "es"` 不加 `as const` 会让 `npm run build` 的 `tsc` 报 TS2769（`string` 不匹配
+     `"es"|"iife"`）—— 本仓 `vite.config.ts` 用的是函数式 `defineConfig(() => ({…}))`，没有上下文类型。
+   - `new URL('./x.ts', import.meta.url)` 配 `new Worker(…,{type:'module'})` → 同样落成那个带 hash 的同源文件
+     （与 `?worker` 共用同一份产物）。能用，但多一条 `import.meta.url` 解析路径，本波不选。
+   - `?worker&inline` → `Blob` + `createObjectURL`，并留一条 `data:text/javascript` 回退 ——
+     两条都在打包版被 CSP 拦（就是上表 B/E），**禁用**。
+   - 裸 `new URL('./x.ts', import.meta.url).href`（不配 new Worker）→ 被当静态资产**原样 base64 内联成
+     `data:video/mp2t;base64,…`**，TypeScript 根本不转译 —— **禁用**，别拿它当「绝对化」的手段。
+2. **`?v=` 与 `no-store` 在 Worker 路径上都成立，但 ESM 模块映射表的老规矩不变**：
+   - 入口 URL 实测带着 `?v=1791972970068` 进 Worker（协议侧 `request.uri().path()` 天然剥查询串，
+     `src-tauri/src/commands/plugins.rs:230`），取回的是新内容。
+   - **覆盖子模块**（URL 恒定、无查询串）之后：同一个还活着的 Worker 拿回的是**旧实例**；
+     停用 → 换一个 Worker 重新 boot → 拿回**新内容**。后者就是 `Cache-Control: no-store`
+     （`plugins.rs:309-312`）在 Worker 的取回路径上确实生效的证据。
+   - 推论：Worker 宿主的失效手段是「**terminate 换新的**」，而不是重载文档。所以
+     `plugin-runtime.ts` 的热重载判定改成 `active.has(id) && !workerHosted.has(id)` ——
+     给 Worker 插件整页换茬既换不掉它的模块表，又白白抹掉窗口状态。
+3. **更正**：上一节第 2 条原写「相对说明符要由宿主绝对化」，实测不成立（见上）。
+   插件的相对子模块在 Worker 里正常解析，L2 迁移**不需要**写 URL 重写器 —— 少一整块最易出错的面。
+4. **原型收口了什么**：探针在 Worker 里 `window`/`document`/`localStorage` 全 undefined、
+   `__TAURI_INTERNALS__` 不可达、裸说明符 `@tauri-apps/api/core` 当场 `Failed to resolve module specifier`、
+   `fetch('http://ipc.localhost/…')` 回 500（拿不到可用通道）；协议层伪造（表外方法名、冒名调
+   `permission_revoke`、借表内方法发别人的 topic）全部被宿主拒，跨插件读别人的存储读到 `null`。
+5. **原型没收口的部分（L2 的活，别当成已完成）**：widget 的 `mount()` 仍跑在宿主 realm
+   （`widget-host.ts` 没动），所以 ADR 第 6 条「设置窗里 widget 天然过 `gate::settings`」那条口子
+   还在；`?v=` 只钉入口、子模块靠换 Worker；打包版 CSP 下这条 Worker 路径尚未复跑（上表 D/H 是同机制的
+   旁证，不是本产物的直接证据）。
 
 **判据口径**（本仓踩过的坑，写死）：以上每条都取**页面自身代码的副作用**为准；
 拿 CDP 求值判 CSP 会得出「CSP 没生效」的假结论。
@@ -103,8 +139,14 @@ dev 用 `npm run dev:debug`（无 CSP），打包版用 `tauri build --no-bundle
 
 ## 分期与退出条件
 
-- **L1 原型**：`com.pet.todo` 一个插件在 Worker 里跑通，退出条件是清单原文那句「ADR 获批；todo 插件在 Worker 中跑通」，
-  外加一条自定的：**第 1–6 条可伪造点在原型上逐条复现不出**（以前能复现的形状要写成回归断言，见下）。
-- **L2 全面落地**：四个插件迁移 + 全部 `verify:*` 通过。`verify-isolation` 里那批「越权尝试被拒」的断言
+- **L1 原型**（2026-10-14 落地）：`com.pet.todo` 已在 Worker 里跑通 —— badge 挂载、经通道写存储并落盘、
+  相对子模块 `./todo-txt.js` 解析成立（`npm run verify:worker` 前三条）。退出条件里「第 1–6 条可伪造点逐条复现不出」
+  **达成 4 条**（1 冒名调用、2 冒名发 bus、3 裸 IPC/伪造事件投递、5 跨插件读存储），
+  外加协议层表外方法名被拒；**没达成的是第 6 条**（设置窗里 widget 仍跑宿主 realm）与第 4 条
+  （bus 中继的窃听面 —— 那本来就是宿主侧 emit 的收件人筛选问题，不因为 Worker 而消失）。
+  代码：`src/runtime/plugin-worker.ts`、`plugin-worker-protocol.ts`、`worker-plugin-host.ts`，
+  开关是宠物窗 localStorage 的 `host:worker-plugin-host`（逗号分隔 id 名单，缺省空 = 老路径）。
+- **L2 全面落地**：四个插件迁移 + widget 的渲染指令化（把第 6 条一起收掉）+ 打包版 CSP 下复跑
+  `verify:worker` + 全部 `verify:*` 通过。`verify-isolation` 里那批「越权尝试被拒」的断言
   要**新增而不是替换**——同 realm 越权用例全部被拒是 L2 的验收，本波先把判据立起来。
 - L1/L2 都不改能力名单与授权模型（K3/K4 交付的那套），改的只是「谁在替插件说话」。

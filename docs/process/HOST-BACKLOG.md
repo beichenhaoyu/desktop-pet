@@ -246,6 +246,7 @@ MVP 范围：<这一轮只做什么>
 |---|---|---|
 | `src/pet/`（状态机、图集切片、点击穿透、气泡） | `npm run verify` + `npm run verify:skin`（动了形象/协议）+ `verify:game`（动了显隐） | verify **189** / skin 26 / game 15 |
 | `src/runtime/`（插件运行时、bridge、widget 宿主、订阅回收） | `npm run verify` | **189** |
+| L1 Worker 插件宿主（`src/runtime/plugin-worker.ts`、`plugin-worker-protocol.ts`、`worker-plugin-host.ts`，开关是宠物窗 localStorage 的 `host:worker-plugin-host`） | `npm run verify:worker` + `npm run unit:worker-host` | worker **25**（2026-10-14 原型首日：装载 1 + realm 事实 7 + 相对子模块 2 + 协议层伪造 5 + `?v=`/`no-store` 4 + todo 跑通 3 + 回收 2 + 零噪音 1）/ unit:worker-host **118**（22 方法表、派发表完备、Worker 侧禁带裸 IPC）。**打包版 CSP 下这条路径尚未复跑，属 L2 验收项**（[ADR-0006](../adr/0006-plugin-host-in-web-worker.md)） |
 | `src-tauri/`（Rust 能力服务、gate、fsutil、hotkeys） | `cargo test --lib` + `npm run verify` + 对应 `verify:<域>` | cargo **144** / verify **234**（S/Q/C1 之后。verify 的条数随同意框是否真弹在 215~234 间浮动，**下限按 215**；2026-10-13 实测 219 即落在该区间内，A1 那波起实例实测 230/0。cargo 由 121 → 131（H2）→ **144**（A1 的 13 条新规则单测）） |
 | `http` 能力 / charset 解码 / 重定向 | `npm run verify:http` | 21 |
 | Agent hook 链路 | `npm run verify:agent` | **72**（A9a 加了插件页端到端组；当批实测 `cargo` 72 / `verify` 189。本波只改了 overlay/bus 门禁那条采样路径，verify:agent 72/72 复跑过） |

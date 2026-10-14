@@ -110,8 +110,9 @@
 │       ├── manifest.schema.json      # 插件 manifest 的 JSON Schema
 │       └── plugin-capabilities.json  # 能力名单（Rust 侧与 TS 侧共读同一份）
 ├── tests/
-│   ├── unit/                   # node:test 单测（运行时、能力、manifest schema、行情源等）
-│   └── e2e/                    # verify-*.mjs 端到端断言 + harness/（CDP 与夹具）
+│   ├── unit/                   # node:test 单测（运行时、能力、manifest schema、Worker 通道契约、行情源等）
+│   ├── e2e/                    # verify-*.mjs 端到端断言 + harness/（CDP 与夹具）
+│   └── fixtures/               # 只在回归运行时装进 plugins/ 的取证插件（l1-probe，见 ADR-0006）
 ├── tools/                      # dev-debug.mjs（供断言脚本连 CDP）、generate-app-icon.ps1
 ├── docs/
 │   ├── architecture/
