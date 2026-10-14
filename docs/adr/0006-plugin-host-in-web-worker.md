@@ -121,8 +121,10 @@ dev 用 `npm run dev:debug`（无 CSP），打包版用 `tauri build --no-bundle
    `permission_revoke`、借表内方法发别人的 topic）全部被宿主拒，跨插件读别人的存储读到 `null`。
 5. **原型没收口的部分（L2 的活，别当成已完成）**：widget 的 `mount()` 仍跑在宿主 realm
    （`widget-host.ts` 没动），所以 ADR 第 6 条「设置窗里 widget 天然过 `gate::settings`」那条口子
-   还在；`?v=` 只钉入口、子模块靠换 Worker；打包版 CSP 下这条 Worker 路径尚未复跑（上表 D/H 是同机制的
-   旁证，不是本产物的直接证据）。
+   还在；`?v=` 只钉入口、子模块靠换 Worker。
+   ~~打包版 CSP 下这条路径尚未复跑~~ —— **已补上**（2026-10-14 晚）：`npm run verify:release` 里新增
+   「L1 Worker 宿主在打包版 CSP 下成立」一组 14 条断言（release 套件现共 24 条），
+   在全新 `tauri build -- --no-bundle` 产物上复跑通过，dev 与打包两边从此都有可重跑的证据。
 
 **判据口径**（本仓踩过的坑，写死）：以上每条都取**页面自身代码的副作用**为准；
 拿 CDP 求值判 CSP 会得出「CSP 没生效」的假结论。
@@ -146,7 +148,9 @@ dev 用 `npm run dev:debug`（无 CSP），打包版用 `tauri build --no-bundle
   （bus 中继的窃听面 —— 那本来就是宿主侧 emit 的收件人筛选问题，不因为 Worker 而消失）。
   代码：`src/runtime/plugin-worker.ts`、`plugin-worker-protocol.ts`、`worker-plugin-host.ts`，
   开关是宠物窗 localStorage 的 `host:worker-plugin-host`（逗号分隔 id 名单，缺省空 = 老路径）。
-- **L2 全面落地**：四个插件迁移 + widget 的渲染指令化（把第 6 条一起收掉）+ 打包版 CSP 下复跑
-  `verify:worker` + 全部 `verify:*` 通过。`verify-isolation` 里那批「越权尝试被拒」的断言
-  要**新增而不是替换**——同 realm 越权用例全部被拒是 L2 的验收，本波先把判据立起来。
+- **L2 全面落地**：四个插件迁移 + widget 的渲染指令化（把第 6 条一起收掉）+ 全部 `verify:*` 通过。
+  `verify-isolation` 里那批「越权尝试被拒」的断言要**新增而不是替换**——同 realm 越权用例全部被拒是 L2 的验收，本波先把判据立起来。
+  拆两步的依据是 T16 取证（`reference/T16-summary.md`）：**阶段一不用改任何插件代码** ——
+  四个入口闭包共 20 个文件对宿主 realm 零依赖（B=0、C=0），把 Worker 变成默认即可收口第 1/2/3/5 条；
+  **阶段二才是硬骨头** —— 338 行 DOM 全在 widget 图，缺的是渲染指令词汇表与一条反向事件通道（`el-on` 17 行在 22 表里没有对应物）。
 - L1/L2 都不改能力名单与授权模型（K3/K4 交付的那套），改的只是「谁在替插件说话」。
