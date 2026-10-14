@@ -6,6 +6,9 @@
 //! 两者都不需要真蓝牙硬件。
 use super::*;
 
+use crate::host_error::{DENIED, DEVICE_UNAVAILABLE, INVALID_ARG, INVALID_STATE};
+use crate::services::permission::PermissionState;
+
 #[test]
 fn uint8_flag_clear_reads_second_byte() {
     // 心率报文：首字节 bit0 = 0 表示 Rate 是一个 uint8
@@ -123,4 +126,75 @@ fn heart_rate_requires_both_characteristic_and_service() {
         "只找到特征值、服务枚举里没有 0x180D → 拒"
     );
     assert!(device_lacks_heart_rate(false, false), "两者都没有 → 拒");
+}
+
+/// A04：BLE 五条命令的门禁链 —— 非法 id 的码是 invalid-arg，与「没授权」的 denied 分开
+#[test]
+fn require_granted_rejects_unsafe_id_with_invalid_arg() {
+    let perms = PermissionState::new();
+    let err = require_granted(&perms, "../evil", crate::plugin_caps::BLE_SCAN).unwrap_err();
+    assert_eq!(err.code, INVALID_ARG, "非法 id 不能混进 denied");
+    assert_eq!(err.message, "invalid plugin id");
+}
+
+/// A04：没授权 = denied（scan 面：start / stop 两条命令的门禁都走这一条）
+#[test]
+fn require_granted_rejects_ungranted_scan_with_denied() {
+    let perms = PermissionState::new();
+    let err = require_granted(&perms, "zz.probe", crate::plugin_caps::BLE_SCAN).unwrap_err();
+    assert_eq!(err.code, DENIED);
+    assert!(err.message.starts_with("未授权 ble:scan"), "实际: {err}");
+    perms.grant("zz.probe", &["ble:scan".to_string()]);
+    assert!(require_granted(&perms, "zz.probe", crate::plugin_caps::BLE_SCAN).is_ok());
+}
+
+/// A04：没授权 = denied（connect 面：connect / disconnect / connected_device 的门禁走这一条）
+#[test]
+fn require_granted_rejects_ungranted_connect_with_denied() {
+    let perms = PermissionState::new();
+    let err = require_granted(&perms, "zz.probe", crate::plugin_caps::BLE_CONNECT).unwrap_err();
+    assert_eq!(err.code, DENIED);
+    // 逐项校验：只授权 scan 不连带 connect（同插件也不行）
+    let perms2 = PermissionState::new();
+    perms2.grant("zz.probe", &["ble:scan".to_string()]);
+    let err2 = require_granted(&perms2, "zz.probe", crate::plugin_caps::BLE_CONNECT).unwrap_err();
+    assert_eq!(err2.code, DENIED);
+}
+
+/// A04：未初始化就起扫描 = invalid-state（不是 internal、不是 device-unavailable）
+#[test]
+fn begin_adapter_scan_without_init_is_invalid_state() {
+    let state = BleState::new();
+    let err = tauri::async_runtime::block_on(begin_adapter_scan(&state)).unwrap_err();
+    assert_eq!(
+        err.code, INVALID_STATE,
+        "invalid-state 的定义明文包含「未初始化」"
+    );
+    assert_eq!(err.message, "BLE init failed");
+}
+
+/// A04：未初始化就按 id 取设备 = invalid-state（同一条「BLE init failed」链）
+#[test]
+fn lookup_peripheral_without_init_is_invalid_state() {
+    let state = BleState::new();
+    let err = tauri::async_runtime::block_on(lookup_peripheral(&state, "AA:BB")).unwrap_err();
+    assert_eq!(err.code, INVALID_STATE);
+    assert_eq!(err.message, "BLE init failed");
+}
+
+/// A04：init 失败链（建 manager / 枚举适配器 / 找适配器）统一 device-unavailable。
+/// 适配器缺失的机器上执行断言；本机实测有适配器（init_ble 直接成功，见 eprintln），
+/// 所以这条在本机只验证「不报别的错」——设备可达类分支不在这条断言的目标内。
+#[test]
+fn init_ble_failure_chain_is_device_unavailable() {
+    let state = BleState::new();
+    match tauri::async_runtime::block_on(init_ble(&state)) {
+        Err(err) => {
+            assert_eq!(err.code, DEVICE_UNAVAILABLE, "实际: {err}");
+            eprintln!("[a04] init_ble 失败链命中：{}", err.message);
+        }
+        Ok(()) => {
+            eprintln!("[a04] 本机有蓝牙适配器，init_ble 成功；device-unavailable 链留给无硬件机器")
+        }
+    }
 }

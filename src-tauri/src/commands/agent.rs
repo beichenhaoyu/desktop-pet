@@ -10,11 +10,12 @@
 //! `label == "settings"` 对它天然成立，边界靠 manifest 声明 + 同意框，不是靠窗口身份。
 //! 那条缺口要等 Web Worker 宿主才收口，别在这条注释里给自己假安全感。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
+use crate::host_error::{HostError, INTERNAL, NOT_FOUND};
 use crate::services::agent::HOOK_PHASES;
 use crate::services::agent_hooks;
 use crate::services::permission::PermissionState;
@@ -25,7 +26,8 @@ fn assert_caller(
     window: &tauri::Window,
     plugin_id: Option<&str>,
     what: &str,
-) -> Result<(), String> {
+) -> Result<(), HostError> {
+    // gate 已迁 HostError（ADR-0007），两道门禁的码原样透传，不再经 String 转换
     crate::gate::settings(window, what)?;
     if let Some(pid) = plugin_id {
         let perms = app.state::<PermissionState>();
@@ -34,15 +36,28 @@ fn assert_caller(
     Ok(())
 }
 
-fn home_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path().home_dir().map_err(|e| e.to_string())
+fn home_dir(app: &AppHandle) -> Result<PathBuf, HostError> {
+    app.path()
+        .home_dir()
+        // 拿不到 home 目录 = 宿主起不来，不是调用方的错（与 enabled.rs 同口径）
+        .map_err(home_dir_error)
 }
 
-fn exe_path() -> Result<PathBuf, String> {
-    std::env::current_exe().map_err(|e| format!("取不到自身路径: {e}"))
+/// 失败映射单列成函数：单测里构造不出 AppHandle，只有它能直连这条路径钉码
+fn home_dir_error(e: tauri::Error) -> HostError {
+    HostError::new(INTERNAL, e.to_string())
 }
 
-fn snapshot(app: &AppHandle) -> Result<Value, String> {
+fn exe_path() -> Result<PathBuf, HostError> {
+    std::env::current_exe().map_err(exe_path_error)
+}
+
+/// 同上：单测里构造不出 `current_exe` 的失败，用映射函数钉住码
+fn exe_path_error(e: std::io::Error) -> HostError {
+    HostError::new(INTERNAL, format!("取不到自身路径: {e}"))
+}
+
+fn snapshot(app: &AppHandle) -> Result<Value, HostError> {
     let files = agent_hooks::candidate_files(&home_dir(app)?);
     let reports = agent_hooks::status_reports(&files);
     let managed: usize = reports.iter().map(|r| r.managed).sum();
@@ -57,12 +72,25 @@ fn snapshot(app: &AppHandle) -> Result<Value, String> {
     }))
 }
 
+/// 安装的配置目录入口：一个候选都没有时按「资源名字不存在」拒（not-found）。
+/// 独立成函数让这条失败在单测里可达（命令体要 AppHandle 与窗口，构造不出来）。
+fn required_hook_configs(home: &Path) -> Result<Vec<PathBuf>, HostError> {
+    let files = agent_hooks::candidate_files(home);
+    if files.is_empty() {
+        return Err(HostError::new(
+            NOT_FOUND,
+            "没找到 Qoder 的配置目录（~/.qoder 或 ~/.qoder-cn）",
+        ));
+    }
+    Ok(files)
+}
+
 #[tauri::command]
 pub fn agent_hooks_status(
     app: AppHandle,
     window: tauri::Window,
     plugin_id: Option<String>,
-) -> Result<Value, String> {
+) -> Result<Value, HostError> {
     assert_caller(&app, &window, plugin_id.as_deref(), "查询或改动 Agent hook")?;
     snapshot(&app)
 }
@@ -72,12 +100,9 @@ pub fn agent_hooks_install(
     app: AppHandle,
     window: tauri::Window,
     plugin_id: Option<String>,
-) -> Result<Value, String> {
+) -> Result<Value, HostError> {
     assert_caller(&app, &window, plugin_id.as_deref(), "查询或改动 Agent hook")?;
-    let files = agent_hooks::candidate_files(&home_dir(&app)?);
-    if files.is_empty() {
-        return Err("没找到 Qoder 的配置目录（~/.qoder 或 ~/.qoder-cn）".into());
-    }
+    let files = required_hook_configs(&home_dir(&app)?)?;
     let reports = agent_hooks::install_files(&files, &exe_path()?);
     Ok(json!({ "files": reports }))
 }
@@ -87,7 +112,7 @@ pub fn agent_hooks_uninstall(
     app: AppHandle,
     window: tauri::Window,
     plugin_id: Option<String>,
-) -> Result<Value, String> {
+) -> Result<Value, HostError> {
     assert_caller(&app, &window, plugin_id.as_deref(), "查询或改动 Agent hook")?;
     let files = agent_hooks::candidate_files(&home_dir(&app)?);
     let reports = agent_hooks::uninstall_files(&files);
@@ -172,5 +197,35 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A04：装 hook 时一个配置目录都没有 = 资源名字不存在 → not-found（文案逐字保持）
+    #[test]
+    fn install_without_qoder_config_dirs_is_not_found() {
+        let dir = std::env::temp_dir().join(format!("pet-a04-cfg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let err = required_hook_configs(&dir).unwrap_err();
+        assert_eq!(err.code, NOT_FOUND);
+        assert_eq!(
+            err.message,
+            "没找到 Qoder 的配置目录（~/.qoder 或 ~/.qoder-cn）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A04：home 目录解析失败 = 宿主起不来 → internal（status / uninstall 链上都会经过）
+    #[test]
+    fn home_dir_failure_is_internal() {
+        let err = home_dir_error(tauri::Error::UnknownPath);
+        assert_eq!(err.code, INTERNAL);
+    }
+
+    /// A04：取不到自身 exe 路径 → internal（status / install 链上都会经过）
+    #[test]
+    fn exe_path_failure_is_internal() {
+        let err = exe_path_error(std::io::Error::new(std::io::ErrorKind::NotFound, "probe"));
+        assert_eq!(err.code, INTERNAL);
+        assert_eq!(err.message, "取不到自身路径: probe");
     }
 }

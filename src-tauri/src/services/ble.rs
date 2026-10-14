@@ -13,6 +13,8 @@ use uuid::Uuid;
 
 use super::permission::PermissionState;
 
+use crate::host_error::{HostError, DEVICE_UNAVAILABLE, INVALID_STATE, SCAN_START};
+
 const HR_SERVICE: Uuid = Uuid::from_u128(0x0000180d_0000_1000_8000_00805f9b34fb);
 const HR_MEASUREMENT: Uuid = Uuid::from_u128(0x00002a37_0000_1000_8000_00805f9b34fb);
 
@@ -158,22 +160,21 @@ async fn clear_generation(app: &AppHandle, device_id: &str, gen: u64) {
 }
 
 /// 初始化蓝牙（首次调用时创建 Manager/Adapter）
-async fn init_ble(state: &BleState) -> Result<(), String> {
+async fn init_ble(state: &BleState) -> Result<(), HostError> {
     let mut guard = state.core.lock().await;
     if guard.is_some() {
         return Ok(());
     }
     let manager = BtleManager::new()
         .await
-        .map_err(|e| format!("BLE manager: {e}"))?;
+        .map_err(|e| HostError::new(DEVICE_UNAVAILABLE, format!("BLE manager: {e}")))?;
     let adapters = manager
         .adapters()
         .await
-        .map_err(|e| format!("BLE adapters: {e}"))?;
-    let adapter = adapters
-        .into_iter()
-        .next()
-        .ok_or("未找到蓝牙适配器（本机蓝牙可能未开启）")?;
+        .map_err(|e| HostError::new(DEVICE_UNAVAILABLE, format!("BLE adapters: {e}")))?;
+    let adapter = adapters.into_iter().next().ok_or_else(|| {
+        HostError::new(DEVICE_UNAVAILABLE, "未找到蓝牙适配器（本机蓝牙可能未开启）")
+    })?;
     *guard = Some(Core {
         _manager: manager,
         adapter,
@@ -187,13 +188,9 @@ async fn init_ble(state: &BleState) -> Result<(), String> {
 /// JS 能力桥本来就按 manifest 校验，这一步是为了让「绕过桥直接 invoke」也拿不到别人的权限；
 /// 插件之间仍无法区分（同一个宠物窗），那要等 Web Worker 宿主。
 /// 判定收在 `crate::gate::plugin_capability`（S4/S5：全项目一把门禁，别再各写一份）。
-fn require_granted(
-    perms: &tauri::State<'_, PermissionState>,
-    plugin_id: &str,
-    cap: &str,
-) -> Result<(), String> {
-    // 还没迁的调用方继续拿原文案（From<HostError> for String），gate 已迁
-    crate::gate::plugin_capability(perms, plugin_id, cap).map_err(String::from)
+fn require_granted(perms: &PermissionState, plugin_id: &str, cap: &str) -> Result<(), HostError> {
+    // gate 已迁 HostError（ADR-0007），这里不再过 `From<HostError> for String` 那道转换
+    crate::gate::plugin_capability(perms, plugin_id, cap)
 }
 
 /// 开始扫描；发现的新设备通过 ble:device-found 事件广播
@@ -203,7 +200,7 @@ pub async fn ble_start_scan(
     state: tauri::State<'_, BleState>,
     perms: tauri::State<'_, PermissionState>,
     plugin_id: String,
-) -> Result<(), String> {
+) -> Result<(), HostError> {
     require_granted(&perms, &plugin_id, crate::plugin_caps::BLE_SCAN)?;
     init_ble(&state).await?;
     reset_seen(&state).await;
@@ -225,13 +222,15 @@ async fn reset_seen(state: &tauri::State<'_, BleState>) {
     }
 }
 
-async fn begin_adapter_scan(state: &tauri::State<'_, BleState>) -> Result<(), String> {
+async fn begin_adapter_scan(state: &BleState) -> Result<(), HostError> {
     let core_guard = state.core.lock().await;
-    let core = core_guard.as_ref().ok_or("BLE init failed")?;
+    let core = core_guard
+        .as_ref()
+        .ok_or_else(|| HostError::new(INVALID_STATE, "BLE init failed"))?;
     core.adapter
         .start_scan(ScanFilter::default())
         .await
-        .map_err(|e| format!("启动扫描失败: {e}"))
+        .map_err(|e| HostError::new(SCAN_START, format!("启动扫描失败: {e}")))
 }
 
 /// 设备上报泵（ADR-0005：从命令体里搬出来，命令只负责「要不要起这一路」）。
@@ -293,7 +292,7 @@ pub async fn ble_stop_scan(
     state: tauri::State<'_, BleState>,
     perms: tauri::State<'_, PermissionState>,
     plugin_id: String,
-) -> Result<(), String> {
+) -> Result<(), HostError> {
     require_granted(&perms, &plugin_id, crate::plugin_caps::BLE_SCAN)?;
     state.scanning.store(false, Ordering::SeqCst);
     let core_guard = state.core.lock().await;
@@ -311,7 +310,7 @@ pub async fn ble_connect(
     perms: tauri::State<'_, PermissionState>,
     plugin_id: String,
     device_id: String,
-) -> Result<(), String> {
+) -> Result<(), HostError> {
     require_granted(&perms, &plugin_id, crate::plugin_caps::BLE_CONNECT)?;
     init_ble(&state).await?;
     drop_old_connection(&state).await;
@@ -322,22 +321,25 @@ pub async fn ble_connect(
         has_hr_service(&peripheral),
     ) {
         let _ = peripheral.disconnect().await;
-        return Err("该设备没有标准心率服务 (0x180D)".into());
+        return Err(HostError::new(
+            DEVICE_UNAVAILABLE,
+            "该设备没有标准心率服务 (0x180D)",
+        ));
     }
     start_notify_pump(app, &state, peripheral, device_id).await;
     Ok(())
 }
 
 /// 连上并枚举服务：两段的错误文案都在这里定，命令体只管调用（ADR-0005）。
-async fn connect_and_discover(peripheral: &Peripheral) -> Result<(), String> {
+async fn connect_and_discover(peripheral: &Peripheral) -> Result<(), HostError> {
     peripheral
         .connect()
         .await
-        .map_err(|e| format!("连接失败: {e}"))?;
+        .map_err(|e| HostError::new(DEVICE_UNAVAILABLE, format!("连接失败: {e}")))?;
     peripheral
         .discover_services()
         .await
-        .map_err(|e| format!("发现服务失败: {e}"))
+        .map_err(|e| HostError::new(DEVICE_UNAVAILABLE, format!("发现服务失败: {e}")))
 }
 
 /// 一律先摘掉旧连接：同设备重连也必须换下旧通知流，
@@ -350,12 +352,11 @@ async fn drop_old_connection(state: &tauri::State<'_, BleState>) {
 
 /// 取外设句柄：缓存没命中就现问适配器一次（btleplug 自己保留已发现的设备）。
 /// 不能把「再扫一遍」当成重连的前置条件，否则断开后立刻重连就会失败。
-async fn lookup_peripheral(
-    state: &tauri::State<'_, BleState>,
-    device_id: &str,
-) -> Result<Peripheral, String> {
+async fn lookup_peripheral(state: &BleState, device_id: &str) -> Result<Peripheral, HostError> {
     let mut core_guard = state.core.lock().await;
-    let core = core_guard.as_mut().ok_or("BLE init failed")?;
+    let core = core_guard
+        .as_mut()
+        .ok_or_else(|| HostError::new(INVALID_STATE, "BLE init failed"))?;
     if let Some(p) = core.peripherals.get(device_id).cloned() {
         return Ok(p);
     }
@@ -363,10 +364,15 @@ async fn lookup_peripheral(
         .adapter
         .peripherals()
         .await
-        .map_err(|e| format!("查询已发现设备失败: {e}"))?
+        .map_err(|e| HostError::new(DEVICE_UNAVAILABLE, format!("查询已发现设备失败: {e}")))?
         .into_iter()
         .find(|p| format!("{}", p.id()) == device_id)
-        .ok_or_else(|| format!("设备 {device_id} 未被适配器发现，请重新扫描"))?;
+        .ok_or_else(|| {
+            HostError::new(
+                DEVICE_UNAVAILABLE,
+                format!("设备 {device_id} 未被适配器发现，请重新扫描"),
+            )
+        })?;
     core.peripherals
         .insert(device_id.to_string(), found.clone());
     Ok(found)
@@ -394,7 +400,7 @@ async fn start_notify_pump(
     *state.notify_task.lock().await = Some((gen, task));
 }
 
-async fn ble_disconnect_inner(state: &BleState, device_id: String) -> Result<(), String> {
+async fn ble_disconnect_inner(state: &BleState, device_id: String) -> Result<(), HostError> {
     if let Some((_, task)) = state.notify_task.lock().await.take() {
         task.abort();
     }
@@ -419,7 +425,7 @@ pub async fn ble_disconnect(
     state: tauri::State<'_, BleState>,
     perms: tauri::State<'_, PermissionState>,
     plugin_id: String,
-) -> Result<(), String> {
+) -> Result<(), HostError> {
     require_granted(&perms, &plugin_id, crate::plugin_caps::BLE_CONNECT)?;
     let current = state.connected.lock().await.clone();
     match current {
@@ -433,7 +439,7 @@ pub async fn ble_connected_device(
     state: tauri::State<'_, BleState>,
     perms: tauri::State<'_, PermissionState>,
     plugin_id: String,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, HostError> {
     require_granted(&perms, &plugin_id, crate::plugin_caps::BLE_CONNECT)?;
     Ok(state.connected.lock().await.clone())
 }

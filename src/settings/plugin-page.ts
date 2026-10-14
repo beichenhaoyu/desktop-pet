@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { hostCall } from "../runtime/host-error";
 import { RISK_FLAGS } from "../runtime/plugin-capabilities";
 import { validateManifest } from "../runtime/plugin-runtime";
 import { widgetHost } from "../runtime/widget-host";
@@ -73,7 +74,7 @@ export async function renderPluginPage(): Promise<void> {
           go.disabled = true;
           if (alsoUninstall.checked) {
             try {
-              await invoke("agent_hooks_uninstall");
+              await hostCall("agent_hooks_uninstall");
             } catch (err) {
               // 卸载失败不拦住撤权：能力先收回，失败原因留给宿主日志
               console.error("[settings] 撤销时卸载 hook 失败", err);
