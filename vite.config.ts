@@ -28,6 +28,7 @@ export default defineConfig(() => ({
     },
   },
   // 4. 多窗口入口：宠物窗 / 设置窗 / overlay 悬浮层 / 权限同意框
+  worker: { format: "es" as const },
   build: {
     rollupOptions: {
       input: {

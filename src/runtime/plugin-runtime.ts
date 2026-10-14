@@ -12,6 +12,7 @@ import { applyHotReload, reloadIdsFrom } from "./hot-reload";
 import { CAPABILITIES } from "./plugin-capabilities";
 import { hostCall } from "./host-error";
 import { pluginFileUrl, pluginFileVersion } from "./plugin-url";
+import { shouldUseWorkerHost, WORKER_HOST_FLAG } from "./plugin-worker-protocol";
 import { widgetHost } from "./widget-host";
 import { releaseAll } from "./resources";
 import { disposeAll } from "./subscriptions";
@@ -177,6 +178,10 @@ interface ActiveInstance {
 
 const active = new Map<string, ActiveInstance>();
 
+/** 这一轮被搬进 Worker 的插件 id。停用时按它决定「收 Worker」还是「调同 realm 的 deactivate」，
+ * 也用来跳过整页重载（Worker 的模块映射表不在文档里，换文档也换不掉它）。 */
+const workerHosted = new Set<string>();
+
 /**
  * 每个插件一条串行执行链。
  *
@@ -219,6 +224,26 @@ export function deactivatePlugin(pluginId: string): Promise<void> {
   return enqueue(pluginId, () => doDeactivate(pluginId));
 }
 
+/**
+ * Worker 宿主模块按需取，不写在顶层 import 里：它 import 的 `./plugin-worker.ts?worker`
+ * 只有 Vite 认得，node 离线单测（要 import 本文件）会在解析时当场 SyntaxError。
+ */
+async function workerHost(): Promise<(typeof import("./worker-plugin-host"))["workerPluginHost"]> {
+  return (await import("./worker-plugin-host")).workerPluginHost;
+}
+
+/**
+ * L1 原型的开关：宠物窗 localStorage 里那份逗号分隔的插件 id 名单（缺省为空 = 全部走老路径）。
+ * 读失败（无痕模式、键被写成别的类型）一律按「不用 Worker」处理 —— 原型不该把插件加载搞挂。
+ */
+function workerHostFlag(): string | null {
+  try {
+    return localStorage.getItem(WORKER_HOST_FLAG);
+  } catch {
+    return null;
+  }
+}
+
 async function doActivate(manifest: PluginManifest): Promise<void> {
   const invalid = validateManifest(manifest);
   if (invalid) {
@@ -253,11 +278,18 @@ async function doActivate(manifest: PluginManifest): Promise<void> {
     // 别的窗口写过清单，读旧缓存会把一个确实启用的插件判成停用。
     if (!(await loadEnabled()).includes(manifest.id)) return;
 
-    const bust = await pluginFileVersion(manifest.id, manifest.entry);
-    const url = pluginFileUrl(manifest.id, manifest.entry, bust);
-    const mod = (await import(/* @vite-ignore */ url)) as ActiveInstance["module"];
-    await mod.activate?.(buildContext(manifest));
-    active.set(manifest.id, { manifest, module: mod });
+    if (shouldUseWorkerHost(manifest.id, workerHostFlag())) {
+      // L1 原型：插件代码进 Worker，身份由宿主在 boot 消息里钉死（ADR-0006）
+      await (await workerHost()).activate(manifest);
+      workerHosted.add(manifest.id);
+      active.set(manifest.id, { manifest, module: {} });
+    } else {
+      const bust = await pluginFileVersion(manifest.id, manifest.entry);
+      const url = pluginFileUrl(manifest.id, manifest.entry, bust);
+      const mod = (await import(/* @vite-ignore */ url)) as ActiveInstance["module"];
+      await mod.activate?.(buildContext(manifest));
+      active.set(manifest.id, { manifest, module: mod });
+    }
     // 宠物窗负责徽标区；settings/overlay 窗自行挂载各自区域
     await widgetHost.mount(manifest, "badge");
   } catch (err) {
@@ -269,10 +301,15 @@ async function doDeactivate(pluginId: string): Promise<void> {
   const instance = active.get(pluginId);
   if (!instance) return;
   active.delete(pluginId);
-  try {
-    await instance.module.deactivate?.();
-  } catch (err) {
-    reportError(pluginId, err);
+  if (workerHosted.delete(pluginId)) {
+    // Worker 会话的 deactivate 在插件自己那个 realm 里跑，跑完由宿主 terminate 整个 Worker
+    await (await workerHost()).deactivate(pluginId);
+  } else {
+    try {
+      await instance.module.deactivate?.();
+    } catch (err) {
+      reportError(pluginId, err);
+    }
   }
   // 插件自己漏掉的订阅由宿主兜底回收：留着闭包收事件，它捕获的界面也 GC 不掉
   disposeAll(pluginId);
@@ -349,7 +386,9 @@ export async function initRuntime(): Promise<void> {
   // 同一 realm 的模块映射表会把旧实例还回来 —— dev 下先按载荷判定本窗要不要整页重载，
   // reconcile 逻辑保留（新装/删除插件仍靠它，重载只是它之上的一层判断）。
   await listen<{ ids?: string[]; reloadIds?: string[] }>("host:plugins-changed", async (e) => {
-    applyHotReload(reloadIdsFrom(e.payload), (id) => active.has(id));
+    // Worker 宿主的那部分不必整页换茬：它的模块映射表在 Worker 里，重载文档也换不掉它，
+    // 真正取新内容的动作是「停用 → 换一个 Worker 重新 boot」（见 worker-plugin-host.ts）
+    applyHotReload(reloadIdsFrom(e.payload), (id) => active.has(id) && !workerHosted.has(id));
     await reconcile(await hostCall<PluginManifest[]>("plugins_list"));
   });
   await reconcile(await hostCall<PluginManifest[]>("plugins_list"));
