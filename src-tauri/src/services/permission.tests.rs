@@ -265,7 +265,8 @@ fn only_an_explicit_yes_grants_consent() {
 }
 
 /// ADR-0005：「未在 manifest 声明就不许申请」的文案与判定分开后，
-/// 未声明项必须逐个出现在错误里（设置窗要照着它告诉用户缺哪条）
+/// 未声明项必须逐个出现在错误里（设置窗要照着它告诉用户缺哪条）。
+/// A2/ADR-0007：这条拒绝的码是 denied（授权缺失），不是 not-found / invalid-arg。
 #[test]
 fn ensure_declared_names_every_undeclared_capability() {
     let declared = caps(&["storage", "http"]);
@@ -274,17 +275,197 @@ fn ensure_declared_names_every_undeclared_capability() {
         Ok(())
     );
     let err = ensure_declared("com.pet.x", &declared, &caps(&["ble:scan", "notify"])).unwrap_err();
+    assert_eq!(err.code, DENIED, "未声明 = 授权缺失，denied 码");
     assert!(
-        err.starts_with("com.pet.x 未在 manifest 声明这些能力: "),
+        err.message
+            .starts_with("com.pet.x 未在 manifest 声明这些能力: "),
         "实得 {err}"
     );
     assert!(
-        err.contains("ble:scan") && err.contains("notify"),
+        err.message.contains("ble:scan") && err.message.contains("notify"),
         "两条都要点名，实得 {err}"
     );
     // http:<host> 被 http 覆盖这条口径不能被抽函数抽丢
     assert_eq!(
         ensure_declared("com.pet.x", &declared, &caps(&["http:example.com"])),
         Ok(())
+    );
+}
+
+/* ============ A2 / ADR-0007：5 条命令各自拿到的码，逐条点名钉住 ============ */
+
+/// permission_request / permission_revoke：非法 id 的码是 invalid-arg，文案一字不变
+/// （与「没授权」的 denied 分开 —— 同文案跨命令同码组，见 T12 cross-command §1）
+#[test]
+fn invalid_plugin_id_is_invalid_arg() {
+    let err = checked_plugin_id("../evil").unwrap_err();
+    assert_eq!(err.code, INVALID_ARG, "非法 id 不能混进 denied");
+    assert_eq!(err.message, "invalid plugin id");
+    assert!(checked_plugin_id("com.pet.x").is_ok());
+}
+
+/// permission_request：同意框开窗失败 = 宿主内部失败 → internal（挂起项已在同一处清掉）
+#[test]
+fn consent_window_failure_is_internal() {
+    let err = consent_window_error(tauri::Error::UnknownPath);
+    assert_eq!(err.code, INTERNAL, "开窗失败是宿主内部问题，不是调用方的错");
+}
+
+/// consent_details / consent_answer：同意框只能由它自己的窗口应答 → denied（S3）
+#[test]
+fn a_foreign_window_answering_consent_is_denied() {
+    assert!(assert_consent_caller("consent-r1", "r1").is_ok());
+    let err = assert_consent_caller("consent-r2", "r1").unwrap_err();
+    assert_eq!(err.code, DENIED, "答非所窗是 denied 码");
+    assert_eq!(err.message, "consent window does not own this request");
+}
+
+/// consent_details：挂起项查不到 → not-found；查得到就把详情原样给出
+#[test]
+fn consent_details_missing_request_is_not_found() {
+    let state = PermissionState::new();
+    // 用 .err() 而不是 unwrap_err：ConsentDetails 没实现 Debug，unwrap_err 会因 T: Debug 约束编译不过
+    let err = pending_details(&state, "r-nope")
+        .err()
+        .expect("查不到挂起项该报错");
+    assert_eq!(err.code, NOT_FOUND, "挂起项查不到不该混进 denied");
+    assert_eq!(err.message, "request not found");
+
+    let (tx, _rx) = oneshot::channel::<bool>();
+    state
+        .pending
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(
+            "r-1".to_string(),
+            PendingConsent {
+                sender: tx,
+                plugin_id: "todo".to_string(),
+                plugin_name: "待办".to_string(),
+                caps: caps(&["storage"]),
+            },
+        );
+    let d = pending_details(&state, "r-1").unwrap();
+    assert_eq!(d.req_id, "r-1");
+    assert_eq!(d.plugin_id, "todo");
+    assert_eq!(d.plugin_name, "待办");
+    assert_eq!(d.caps, caps(&["storage"]));
+}
+
+/// consent_answer：查不到挂起项 → not-found；等待方已经走了 → internal。
+/// 后者既不是 denied 也不是 consent-timeout：用户既没同意也没拒绝，是通道自己断了。
+#[test]
+fn consent_answer_reports_not_found_and_dropped_receiver() {
+    let state = PermissionState::new();
+    let missing = answer_pending(&state, "r-nope", true).unwrap_err();
+    assert_eq!(missing.code, NOT_FOUND);
+    assert_eq!(missing.message, "request not found");
+
+    let (tx, rx) = oneshot::channel::<bool>();
+    drop(rx);
+    state
+        .pending
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(
+            "r-2".to_string(),
+            PendingConsent {
+                sender: tx,
+                plugin_id: "todo".to_string(),
+                plugin_name: "待办".to_string(),
+                caps: caps(&["storage"]),
+            },
+        );
+    let dropped = answer_pending(&state, "r-2", true).unwrap_err();
+    assert_eq!(dropped.code, INTERNAL, "通道断开是宿主内部时序");
+    assert_eq!(dropped.message, "receiver dropped");
+}
+
+/// consent_answer：用户的决定要送达等待方，回传即出队（窗口关闭那一路靠 discard_pending）
+#[test]
+fn consent_answer_delivers_the_decision_and_clears_the_pending_item() {
+    let state = PermissionState::new();
+    let (tx, rx) = oneshot::channel::<bool>();
+    state
+        .pending
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(
+            "r-3".to_string(),
+            PendingConsent {
+                sender: tx,
+                plugin_id: "todo".to_string(),
+                plugin_name: "待办".to_string(),
+                caps: caps(&["storage"]),
+            },
+        );
+    assert!(answer_pending(&state, "r-3", true).is_ok());
+    assert!(
+        rx.blocking_recv().unwrap(),
+        "用户按了允许，等待方要收到 true"
+    );
+    assert!(
+        !state
+            .pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains_key("r-3"),
+        "回传即出队"
+    );
+}
+
+/// permission_list：体内没有错误产生点，唯一失败链是 gate（真实窗口单测构造不出来），
+/// 签名改在源码文本层钉住 —— 与 skins/tests.rs 的 pet_skin_list 同款（A03 实测）。
+#[test]
+fn permission_list_signature_declares_host_error() {
+    let flat = include_str!("permission.rs")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        flat.contains(
+            "pub fn permission_list( window: tauri::Window, state: tauri::State<PermissionState>, ) -> Result<HashMap<String, Vec<String>>, HostError> {"
+        ),
+        "permission_list 的 Err 侧必须是 HostError"
+    );
+    // 门禁不能被顺手挪走：唯一失败链的码（denied）由 gate.rs 的既有断言覆盖
+    assert!(
+        flat.contains("crate::gate::settings(&window, \"查看授权表\")?;"),
+        "permission_list 必须继续走设置窗门禁"
+    );
+}
+
+/// permission_request / consent_details / consent_answer / permission_revoke：
+/// 四条命令体直接依赖真实窗口/AppHandle，单测拿不到函数地址（会把 tauri 命令机制
+/// 拉进测试 exe 链接，见 A03 实测），签名同样在源码文本层钉住。
+#[test]
+fn the_other_command_signatures_declare_host_error() {
+    let flat = include_str!("permission.rs")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        flat.contains(
+            "pub async fn permission_request( app: AppHandle, state: tauri::State<'_, PermissionState>, plugin_id: String, plugin_name: String, capabilities: Vec<String>, ) -> Result<bool, HostError> {"
+        ),
+        "permission_request 的 Err 侧必须是 HostError"
+    );
+    assert!(
+        flat.contains(
+            "pub fn consent_details( window: tauri::Window, state: tauri::State<PermissionState>, req_id: String, ) -> Result<ConsentDetails, HostError> {"
+        ),
+        "consent_details 的 Err 侧必须是 HostError"
+    );
+    assert!(
+        flat.contains(
+            "pub fn consent_answer( window: tauri::Window, state: tauri::State<PermissionState>, req_id: String, granted: bool, ) -> Result<(), HostError> {"
+        ),
+        "consent_answer 的 Err 侧必须是 HostError"
+    );
+    assert!(
+        flat.contains(
+            "pub fn permission_revoke( app: AppHandle, window: tauri::Window, plugin_id: String, state: tauri::State<PermissionState>, store: tauri::State<StoreState>, ) -> Result<Vec<String>, HostError> {"
+        ),
+        "permission_revoke 的 Err 侧必须是 HostError"
     );
 }

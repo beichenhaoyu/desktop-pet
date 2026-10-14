@@ -1,5 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
-import { hostCall } from "../runtime/host-error";
+import { hostCall, hostErrorMessage } from "../runtime/host-error";
 import { RISK_FLAGS } from "../runtime/plugin-capabilities";
 import { validateManifest } from "../runtime/plugin-runtime";
 import { widgetHost } from "../runtime/widget-host";
@@ -81,12 +80,12 @@ export async function renderPluginPage(): Promise<void> {
             }
           }
           try {
-            await invoke("permission_revoke", { pluginId: manifest.id });
+            await hostCall("permission_revoke", { pluginId: manifest.id });
             revoke.textContent = alsoUninstall.checked ? "已撤销（含卸载 hook）" : "已撤销（仅能力）";
             revoke.disabled = true;
           } catch (err) {
             // 撤销现在是宿主端会失败的命令（门禁、非法 id），不能装成成功
-            revoke.textContent = `撤销失败：${String(err instanceof Error ? err.message : err)}`;
+            revoke.textContent = `撤销失败：${hostErrorMessage(err)}`;
             go.disabled = false;
           }
           strip.remove();

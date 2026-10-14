@@ -11,6 +11,7 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 use crate::fsutil::write_atomic;
+use crate::host_error::{HostError, INTERNAL, INVALID_ARG};
 
 pub const DEFAULT_ACCEL: &str = "CommandOrControl+Alt+P";
 
@@ -103,14 +104,14 @@ const KEYS: &[&str] = &[
 
 /// 把用户写的各种写法（`Ctrl+Alt+p` / `control+alt+P` / `Ctrl P`）归一成
 /// Tauri 认的 `Ctrl+Alt+P`。必须至少一个修饰键 + 恰好一个主键。
-pub fn normalize_accel(raw: &str) -> Result<String, String> {
+pub fn normalize_accel(raw: &str) -> Result<String, HostError> {
     let tokens: Vec<String> = raw
         .split(['+', '-', ' '])
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
         .collect();
     if tokens.is_empty() {
-        return Err("加速键为空".into());
+        return Err(HostError::new(INVALID_ARG, "加速键为空"));
     }
     let mut mods: Vec<&'static str> = Vec::new();
     let mut key: Option<&'static str> = None;
@@ -124,28 +125,37 @@ pub fn normalize_accel(raw: &str) -> Result<String, String> {
         }
         if let Some(canon) = KEYS.iter().find(|k| k.to_lowercase() == lower) {
             if key.is_some() {
-                return Err(format!("只能有一个主键，多出来的是「{token}」"));
+                return Err(HostError::new(
+                    INVALID_ARG,
+                    format!("只能有一个主键，多出来的是「{token}」"),
+                ));
             }
             key = Some(canon);
             continue;
         }
-        return Err(format!("不支持的按键「{token}」"));
+        return Err(HostError::new(
+            INVALID_ARG,
+            format!("不支持的按键「{token}」"),
+        ));
     }
     if mods.is_empty() {
-        return Err("至少要带一个修饰键（Ctrl / Alt / Shift / Win），避免劫持普通输入".into());
+        return Err(HostError::new(
+            INVALID_ARG,
+            "至少要带一个修饰键（Ctrl / Alt / Shift / Win），避免劫持普通输入",
+        ));
     }
     let Some(main) = key else {
-        return Err("缺少主键，例如 Ctrl+Alt+P".into());
+        return Err(HostError::new(INVALID_ARG, "缺少主键，例如 Ctrl+Alt+P"));
     };
     // Ctrl 与 CmdOrCtrl 等价，但 CmdOrCtrl 在 mac/win 上语义更清楚，这里统一按用户写的来
     Ok(format!("{}+{main}", mods.join("+")))
 }
 
-fn settings_file(app: &AppHandle) -> Result<PathBuf, String> {
+fn settings_file(app: &AppHandle) -> Result<PathBuf, HostError> {
     app.path()
         .app_data_dir()
         .map(|dir| dir.join("settings.json"))
-        .map_err(|e| e.to_string())
+        .map_err(|e| HostError::new(INTERNAL, e.to_string()))
 }
 
 fn read_saved(app: &AppHandle) -> Option<String> {
@@ -158,7 +168,7 @@ fn read_saved(app: &AppHandle) -> Option<String> {
         .map(str::to_string)
 }
 
-fn write_saved(app: &AppHandle, accel: &str) -> Result<(), String> {
+fn write_saved(app: &AppHandle, accel: &str) -> Result<(), HostError> {
     let path = settings_file(app)?;
     let mut doc = std::fs::read_to_string(&path)
         .ok()
@@ -166,21 +176,24 @@ fn write_saved(app: &AppHandle, accel: &str) -> Result<(), String> {
         .filter(Value::is_object)
         .unwrap_or_else(|| json!({}));
     doc["hotkey"] = Value::String(accel.to_string());
-    // A2 混迁桥：write_saved 还是裸 String 签名（A05 迁移时删掉这行 map_err）
     write_atomic(
         &path,
         serde_json::to_vec_pretty(&doc)
-            .map_err(|e| e.to_string())?
+            .map_err(|e| HostError::new(INTERNAL, e.to_string()))?
             .as_slice(),
     )
-    .map_err(String::from)
+}
+
+/// 注册失败映射单列成函数：单测里构造不出 AppHandle，只有它能直连这条路径钉码
+fn register_error(accel: &str, e: impl std::fmt::Display) -> HostError {
+    HostError::new(INTERNAL, format!("注册 {accel} 失败：{e}"))
 }
 
 /// 注册并落盘。启动时由 setup 调用一次。
-pub fn apply(app: &AppHandle, accel: &str) -> Result<(), String> {
+pub fn apply(app: &AppHandle, accel: &str) -> Result<(), HostError> {
     app.global_shortcut()
         .register(accel)
-        .map_err(|e| format!("注册 {accel} 失败：{e}"))
+        .map_err(|e| register_error(accel, e))
 }
 
 fn unregister(app: &AppHandle, accel: &str) {
@@ -188,7 +201,7 @@ fn unregister(app: &AppHandle, accel: &str) {
 }
 
 #[tauri::command]
-pub fn hotkey_status(app: AppHandle) -> Result<Value, String> {
+pub fn hotkey_status(app: AppHandle) -> Result<Value, HostError> {
     Ok(json!({
         "accelerator": read_saved(&app).unwrap_or_else(|| DEFAULT_ACCEL.to_string()),
         "default": DEFAULT_ACCEL,
@@ -201,7 +214,7 @@ pub fn hotkey_set(
     app: AppHandle,
     window: tauri::Window,
     accelerator: String,
-) -> Result<String, String> {
+) -> Result<String, HostError> {
     crate::gate::settings(&window, "改动快捷键")?;
     let next = normalize_accel(&accelerator)?;
     let current = read_saved(&app).unwrap_or_else(|| DEFAULT_ACCEL.to_string());
@@ -221,7 +234,7 @@ pub fn hotkey_test(
     app: AppHandle,
     window: tauri::Window,
     accelerator: String,
-) -> Result<bool, String> {
+) -> Result<bool, HostError> {
     crate::gate::settings(&window, "试注册快捷键")?;
     let probe = normalize_accel(&accelerator)?;
     // 试的就是当前生效的那个键：注册必然报「已占用」，那不是冲突。
@@ -283,13 +296,19 @@ mod tests {
 
     #[test]
     fn requires_a_modifier() {
-        assert!(normalize_accel("P").unwrap_err().contains("修饰键"));
+        assert!(normalize_accel("P").unwrap_err().message.contains("修饰键"));
     }
 
     #[test]
     fn requires_exactly_one_main_key() {
-        assert!(normalize_accel("Ctrl+Alt").unwrap_err().contains("主键"));
-        assert!(normalize_accel("Ctrl+A+B").unwrap_err().contains("主键"));
+        assert!(normalize_accel("Ctrl+Alt")
+            .unwrap_err()
+            .message
+            .contains("主键"));
+        assert!(normalize_accel("Ctrl+A+B")
+            .unwrap_err()
+            .message
+            .contains("主键"));
     }
 
     #[test]
@@ -304,5 +323,68 @@ mod tests {
     fn rejects_plain_letter_keys_without_modifiers_to_avoid_hijacking() {
         // 单键热键会吞掉正常输入，必须挡住
         assert!(normalize_accel("A").is_err());
+    }
+
+    /* ============ A2 / ADR-0007：3 条命令各自拿到的码，逐条点名钉住 ============ */
+
+    /// hotkey_set / hotkey_test：5 条按键语法错的码全部 invalid-arg，文案一字不变
+    #[test]
+    fn syntax_errors_are_invalid_arg_with_unchanged_messages() {
+        let cases = [
+            ("", "加速键为空"),
+            ("Ctrl+A+B", "只能有一个主键，多出来的是「B」"),
+            ("Ctrl+MouseLeft", "不支持的按键「MouseLeft」"),
+            (
+                "P",
+                "至少要带一个修饰键（Ctrl / Alt / Shift / Win），避免劫持普通输入",
+            ),
+            ("Ctrl+Alt", "缺少主键，例如 Ctrl+Alt+P"),
+        ];
+        for (raw, want) in cases {
+            let err = normalize_accel(raw).unwrap_err();
+            assert_eq!(err.code, INVALID_ARG, "{raw:?} 的码应是 invalid-arg");
+            assert_eq!(err.message, want, "{raw:?} 的文案不许漂");
+        }
+    }
+
+    /// hotkey_set：注册失败（多半是被别的程序占了）定 internal —— 12 码里没有更贴的位置
+    #[test]
+    fn register_failure_is_internal() {
+        let err = register_error("Ctrl+Alt+P", "occupied by another app");
+        assert_eq!(err.code, INTERNAL);
+        assert_eq!(err.message, "注册 Ctrl+Alt+P 失败：occupied by another app");
+    }
+
+    /// hotkey_status / hotkey_set / hotkey_test：签名改在源码文本层钉住 ——
+    /// 命令函数不能取符号（会把 tauri 命令机制拉进测试 exe 链接，A03 实测 0xc0000139）。
+    /// 期望串用 concat! 拆两段：本测试就在被 include_str! 读的文件里，
+    /// 整串写字面量的话断言会匹配到自己、恒真。拆开后任何一段都不是完整签名。
+    #[test]
+    fn hotkey_command_signatures_declare_host_error() {
+        let flat = include_str!("hotkeys.rs")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            flat.contains(concat!(
+                "pub fn hotkey_status(app: AppHandle)",
+                " -> Result<Value, HostError> {"
+            )),
+            "hotkey_status 的 Err 侧必须是 HostError"
+        );
+        assert!(
+            flat.contains(concat!(
+                "pub fn hotkey_set( app: AppHandle, window: tauri::Window, accelerator: String,",
+                " ) -> Result<String, HostError> {"
+            )),
+            "hotkey_set 的 Err 侧必须是 HostError"
+        );
+        assert!(
+            flat.contains(concat!(
+                "pub fn hotkey_test( app: AppHandle, window: tauri::Window, accelerator: String,",
+                " ) -> Result<bool, HostError> {"
+            )),
+            "hotkey_test 的 Err 侧必须是 HostError"
+        );
     }
 }

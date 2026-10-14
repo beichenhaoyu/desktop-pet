@@ -9,6 +9,7 @@ use tokio::sync::oneshot;
 
 use super::store::StoreState;
 use crate::fsutil::write_atomic;
+use crate::host_error::{HostError, DENIED, INTERNAL, INVALID_ARG, NOT_FOUND};
 use crate::ids::is_safe_id;
 
 /// 插件权限管理：授权表持久化 + 首次调用未授权能力时弹同意框。
@@ -43,8 +44,11 @@ impl PermissionState {
         }
     }
 
-    pub fn init(&self, app: &AppHandle) -> Result<(), String> {
-        let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    pub fn init(&self, app: &AppHandle) -> Result<(), HostError> {
+        let dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| HostError::new(INTERNAL, e.to_string()))?;
         let file = dir.join("authorizations.json");
         if let Some(map) = restore_from(&file) {
             *self.granted.lock().unwrap_or_else(|p| p.into_inner()) = map;
@@ -185,6 +189,16 @@ pub fn check_capability(state: &PermissionState, plugin_id: &str, capability: &s
     is_safe_id(plugin_id) && state.is_granted(plugin_id, capability)
 }
 
+/// 申请/撤销入口的 id 词表检查单列成函数：两个命令共用同一文案与码，
+/// 命令体要真实窗口构造不出来，只有它能直连这条路径钉住码与文案。
+fn checked_plugin_id(plugin_id: &str) -> Result<(), HostError> {
+    if is_safe_id(plugin_id) {
+        Ok(())
+    } else {
+        Err(HostError::new(INVALID_ARG, "invalid plugin id"))
+    }
+}
+
 /// 请求里 manifest 没声明的那些能力。唯一放宽是 http：`http:<host>` 视为被 `http` 覆盖。
 /// 其余一律精确匹配 —— 别改成前缀匹配，否则声明一个 `ble` 就等于给了 `ble:connect`。
 fn undeclared_caps(declared: &[String], requested: &[String]) -> Vec<String> {
@@ -237,11 +251,12 @@ pub async fn permission_request(
     plugin_id: String,
     plugin_name: String,
     capabilities: Vec<String>,
-) -> Result<bool, String> {
-    if !is_safe_id(&plugin_id) {
-        return Err("invalid plugin id".into());
-    }
-    let declared = crate::commands::plugins::declared_capabilities(&app, &plugin_id)?;
+) -> Result<bool, HostError> {
+    checked_plugin_id(&plugin_id)?;
+    // A2 混迁桥（反向）：declared_capabilities 仍回裸 String，这里先按兜底码收口；
+    // plugins.rs 迁完后本行应换成 `?` 透传（:84 internal / :93 io / :94 parse / :183-190 invalid-arg）
+    let declared = crate::commands::plugins::declared_capabilities(&app, &plugin_id)
+        .map_err(|e| HostError::new(INTERNAL, e))?;
     ensure_declared(&plugin_id, &declared, &capabilities)?;
     if capabilities.iter().all(|c| state.is_granted(&plugin_id, c)) {
         return Ok(true);
@@ -256,15 +271,18 @@ fn ensure_declared(
     plugin_id: &str,
     declared: &[String],
     requested: &[String],
-) -> Result<(), String> {
+) -> Result<(), HostError> {
     let undeclared = undeclared_caps(declared, requested);
     if undeclared.is_empty() {
         return Ok(());
     }
-    Err(format!(
-        "{} 未在 manifest 声明这些能力: {}",
-        plugin_id,
-        undeclared.join(", ")
+    Err(HostError::new(
+        DENIED,
+        format!(
+            "{} 未在 manifest 声明这些能力: {}",
+            plugin_id,
+            undeclared.join(", ")
+        ),
     ))
 }
 
@@ -276,7 +294,7 @@ async fn ask_user(
     plugin_id: String,
     plugin_name: String,
     capabilities: Vec<String>,
-) -> Result<bool, String> {
+) -> Result<bool, HostError> {
     let req_id = format!("r{}", uuid::Uuid::new_v4().simple());
     let (tx, rx) = oneshot::channel::<bool>();
     state
@@ -307,7 +325,7 @@ async fn ask_user(
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .remove(&req_id);
-            e.to_string()
+            consent_window_error(e)
         })?;
     let _ = win.set_focus();
     // 用户把同意框直接关掉（Alt+F4 / 托盘退出等）时必须立刻按「拒绝」结束等待，
@@ -345,6 +363,11 @@ async fn ask_user(
     Ok(false)
 }
 
+/// 同意框开窗失败映射单列成函数：单测里构造不出 AppHandle，只有它能直连这条路径钉码
+fn consent_window_error(e: tauri::Error) -> HostError {
+    HostError::new(INTERNAL, e.to_string())
+}
+
 /// 同意框的答复只有「明确答了是」才算授权：超时、通道断开、窗口被直接关掉一律按拒绝收口。
 fn consent_outcome(answered: Option<bool>) -> bool {
     matches!(answered, Some(true))
@@ -352,11 +375,46 @@ fn consent_outcome(answered: Option<bool>) -> bool {
 
 /// 同意框只能由它自己的窗口应答：req_id 会从窗口 label 泄露，
 /// 不绑定调用方的话任何窗口都能自问自答地放行。
-fn assert_consent_caller(window: &tauri::Window, req_id: &str) -> Result<(), String> {
-    if window.label() == format!("consent-{req_id}") {
+fn assert_consent_caller(label: &str, req_id: &str) -> Result<(), HostError> {
+    if label == format!("consent-{req_id}") {
         Ok(())
     } else {
-        Err("consent window does not own this request".into())
+        Err(HostError::new(
+            DENIED,
+            "consent window does not own this request",
+        ))
+    }
+}
+
+/// 拉取挂起同意请求的详情（ADR-0005：判定内核与开窗分开，单测直连这条路径钉码）
+fn pending_details(state: &PermissionState, req_id: &str) -> Result<ConsentDetails, HostError> {
+    state
+        .pending
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(req_id)
+        .map(|p| ConsentDetails {
+            req_id: req_id.to_string(),
+            plugin_id: p.plugin_id.clone(),
+            plugin_name: p.plugin_name.clone(),
+            caps: p.caps.clone(),
+        })
+        .ok_or_else(|| HostError::new(NOT_FOUND, "request not found"))
+}
+
+/// 回传用户的决定（send 失败 = 等待方已经走了，不是用户答了什么）
+fn answer_pending(state: &PermissionState, req_id: &str, granted: bool) -> Result<(), HostError> {
+    let sender = state
+        .pending
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(req_id)
+        .map(|p| p.sender);
+    match sender {
+        Some(tx) => tx
+            .send(granted)
+            .map_err(|_| HostError::new(INTERNAL, "receiver dropped")),
+        None => Err(HostError::new(NOT_FOUND, "request not found")),
     }
 }
 
@@ -366,20 +424,9 @@ pub fn consent_details(
     window: tauri::Window,
     state: tauri::State<PermissionState>,
     req_id: String,
-) -> Result<ConsentDetails, String> {
-    assert_consent_caller(&window, &req_id)?;
-    state
-        .pending
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .get(&req_id)
-        .map(|p| ConsentDetails {
-            req_id: req_id.clone(),
-            plugin_id: p.plugin_id.clone(),
-            plugin_name: p.plugin_name.clone(),
-            caps: p.caps.clone(),
-        })
-        .ok_or_else(|| "request not found".into())
+) -> Result<ConsentDetails, HostError> {
+    assert_consent_caller(window.label(), &req_id)?;
+    pending_details(&state, &req_id)
 }
 
 /// 同意框页面回传用户决定
@@ -389,18 +436,9 @@ pub fn consent_answer(
     state: tauri::State<PermissionState>,
     req_id: String,
     granted: bool,
-) -> Result<(), String> {
-    assert_consent_caller(&window, &req_id)?;
-    let sender = state
-        .pending
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .remove(&req_id)
-        .map(|p| p.sender);
-    match sender {
-        Some(tx) => tx.send(granted).map_err(|_| "receiver dropped".into()),
-        None => Err("request not found".into()),
-    }
+) -> Result<(), HostError> {
+    assert_consent_caller(window.label(), &req_id)?;
+    answer_pending(&state, &req_id, granted)
 }
 
 /// 授权表：只认设置窗。插件 JS 就跑在宠物窗里，
@@ -409,7 +447,7 @@ pub fn consent_answer(
 pub fn permission_list(
     window: tauri::Window,
     state: tauri::State<PermissionState>,
-) -> Result<HashMap<String, Vec<String>>, String> {
+) -> Result<HashMap<String, Vec<String>>, HostError> {
     crate::gate::settings(&window, "查看授权表")?;
     Ok(state.list())
 }
@@ -422,11 +460,9 @@ pub fn permission_revoke(
     plugin_id: String,
     state: tauri::State<PermissionState>,
     store: tauri::State<StoreState>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, HostError> {
     crate::gate::settings(&window, "撤销授权")?;
-    if !is_safe_id(&plugin_id) {
-        return Err("invalid plugin id".into());
-    }
+    checked_plugin_id(&plugin_id)?;
     let revoked = state.revoke_all(&plugin_id);
     if let Err(e) = store.clear_plugin(&plugin_id) {
         log::warn!("清理 {plugin_id} 存储失败: {e}");

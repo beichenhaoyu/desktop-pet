@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { hostCall, hostErrorMessage } from "../../runtime/host-error";
 import { $ } from "../dom";
 
 /* ---------- 快捷键 ---------- */
@@ -9,7 +9,7 @@ export async function renderHotkey(): Promise<void> {
   const el2 = hotkeyStatus();
   if (!el2) return;
   try {
-    const info = await invoke<{ accelerator: string; default: string }>("hotkey_status");
+    const info = await hostCall<{ accelerator: string; default: string }>("hotkey_status");
     el2.replaceChildren(
       document.createTextNode("当前："),
       Object.assign(document.createElement("kbd"), { textContent: info.accelerator }),
@@ -18,20 +18,20 @@ export async function renderHotkey(): Promise<void> {
     const input = $<HTMLInputElement>("hotkey-input");
     if (input && !input.value) input.value = info.accelerator;
   } catch (e) {
-    el2.textContent = `读取失败：${String(e)}`;
+    el2.textContent = `读取失败：${hostErrorMessage(e)}`;
   }
 }
 
 async function saveHotkey(accelerator: string): Promise<void> {
   const el2 = hotkeyStatus();
   try {
-    const saved = await invoke<string>("hotkey_set", { accelerator });
+    const saved = await hostCall<string>("hotkey_set", { accelerator });
     const input = $<HTMLInputElement>("hotkey-input");
     if (input) input.value = saved;
     await renderHotkey();
     el2?.classList.remove("error");
   } catch (e) {
-    if (el2) el2.textContent = `应用失败：${String(e)}`;
+    if (el2) el2.textContent = `应用失败：${hostErrorMessage(e)}`;
   }
 }
 
@@ -53,12 +53,12 @@ export function wireHotkey(): void {
     const value = ($<HTMLInputElement>("hotkey-input")?.value ?? "").trim();
     if (!value || !el2) return;
     try {
-      const free = await invoke<boolean>("hotkey_test", { accelerator: value });
+      const free = await hostCall<boolean>("hotkey_test", { accelerator: value });
       el2.textContent = free
         ? `「${value}」可以注册，没被别的应用占用。`
         : `「${value}」注册失败，多半已被其他程序占用，换一个吧。`;
     } catch (e) {
-      el2.textContent = `测试失败：${String(e)}`;
+      el2.textContent = `测试失败：${hostErrorMessage(e)}`;
     }
   });
 }

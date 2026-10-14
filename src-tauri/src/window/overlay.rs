@@ -362,7 +362,7 @@ pub async fn overlay_reclaim(
 
 /// 当前有哪些悬浮层在显示（回归与诊断用）
 #[tauri::command]
-pub async fn overlay_list(app: AppHandle) -> Result<Vec<(String, bool, String)>, String> {
+pub async fn overlay_list(app: AppHandle) -> Result<Vec<(String, bool, String)>, HostError> {
     let guard = table().lock().unwrap_or_else(|p| p.into_inner());
     Ok(guard
         .iter()
@@ -493,6 +493,25 @@ mod tests {
         assert!(
             !state.visible,
             "可见性交给 apply_visibility，不在这里预先置真"
+        );
+    }
+
+    /// A2 / ADR-0007：overlay_list 体内没有错误产生点（一条 `?` 都没有），签名照样要改 ——
+    /// 在源码文本层钉住（命令函数不能取符号，会把 tauri 命令机制拉进测试 exe 链接，A03 实测）。
+    /// 期望串用 concat! 拆两段：本测试就在被 include_str! 读的文件里，
+    /// 整串写字面量的话断言会匹配到自己、恒真。拆开后任何一段都不是完整签名。
+    #[test]
+    fn overlay_list_signature_declares_host_error() {
+        let flat = include_str!("overlay.rs")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            flat.contains(concat!(
+                "pub async fn overlay_list(app: AppHandle) -> Result<Vec<(String, bool, String)>",
+                ", HostError> {"
+            )),
+            "overlay_list 的 Err 侧必须是 HostError"
         );
     }
 }

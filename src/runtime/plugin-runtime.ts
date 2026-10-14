@@ -237,7 +237,7 @@ async function doActivate(manifest: PluginManifest): Promise<void> {
       if (!granted) missing.push(capability);
     }
     if (missing.length > 0) {
-      const ok = await invoke<boolean>("permission_request", {
+      const ok = await hostCall<boolean>("permission_request", {
         pluginId: manifest.id,
         pluginName: manifest.name,
         capabilities: missing,
