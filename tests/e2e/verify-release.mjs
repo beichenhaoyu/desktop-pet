@@ -3,17 +3,22 @@
 //   npm run verify:release              先 tauri build --no-bundle（约 3~4 分钟）
 //   npm run verify:release -- --skip-build
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { argv, env } from "node:process";
 
-import { attach, createReport, hostInvoke, openSettingsInvoker, readEnabledIds, reloadAndWait, waitUntil, writeEnabledIds } from "./harness/cdp.mjs";
+import { attach, createReport, hostInvoke, listPages, openSettingsInvoker, readEnabledIds, reloadAndWait, waitUntil, writeEnabledIds } from "./harness/cdp.mjs";
 import { PROBE_ID, removeFixtures, writeFixtures } from "./harness/fixtures.mjs";
 
 const skipBuild = argv.includes("--skip-build");
 const PORT = Number(env.CDP_PORT ?? 9224);
 const EXE = resolve(import.meta.dirname, "../../src-tauri/target/release/desktop-pet.exe");
 const PLUGINS_DIR = join(dirname(EXE), "plugins");
+/** L1 原型（ADR-0006）的取证插件：仓库里那份夹具装进打包版的插件目录，跑完删 */
+const L1_ID = "zz.l1-probe";
+const L1_FIXTURE = resolve(import.meta.dirname, "../fixtures/l1-probe");
+const L1_DIR = join(PLUGINS_DIR, L1_ID);
+const L1_FLAG = "host:worker-plugin-host";
 const r = createReport("CSP 与插件加载（release）");
 
 if (!skipBuild) {
@@ -55,7 +60,14 @@ try {
 
     r.group("桌宠图集在打包版 CSP 下真的能解码（dev 不注入 CSP，这条只能在 release 验）");
     const skin = await invoke("pet_skin_active");
-    r.check("打包版也有默认形象 deepseek", "deepseek", skin.v?.slug ?? null);
+    const skinList = await invoke("pet_skin_list");
+    // 原来这条钉的是「激活的必须是 deepseek」——那是「用户从没换过形象」的隐含前提，
+    // 换过一次皮肤就常年红。真正要验的是随包那份形象装上了、且当前激活的那张图能被 CSP 解码（下一条）。
+    r.check(
+      "随包的默认形象 deepseek 在列表里",
+      true,
+      (skinList.v ?? []).some((s) => s.slug === "deepseek"),
+    );
     r.check("img-src 放行 petskin 协议", true, /img-src[^;]*petskin\.localhost/.test(header));
     // 由页面自己发起的 <img> 加载才受 img-src 约束；被 CSP 拦下会走 onerror
     const decoded = await c.ev(`(async () => {
@@ -112,6 +124,57 @@ try {
     const spoof = await invoke("consent_answer", { reqId: "rNOPE", granted: true });
     r.check("非同意框窗口不能应答授权", true, !spoof.ok && /does not own/.test(String(spoof.e)));
 
+    r.group("L1 Worker 宿主在打包版 CSP 下成立（ADR-0006）");
+    // 打包版没有 /src/*.ts，dev 套件那句「动态 import 宿主模块」在这里必然失败；
+    // 所以换 Worker 复装走真实用户的路径：删掉插件目录再装回去，由宿主的 watcher 触发 reconcile
+    r.check(
+      "CSP 未单列 worker-src（Worker 回落到 script-src 的 'self'）",
+      false,
+      /worker-src/.test(header),
+    );
+    installL1Probe("leaf-v1");
+    const beforeL1 = await readEnabledIds(invoke);
+    const l1Win = await openSettingsInvoker(PORT, c).catch(() => null);
+    if (!l1Win) r.check("Worker 组能唤出设置窗（写启停清单要用）", true, false);
+    if (l1Win) {
+      await l1Win.invoke("permission_revoke", { pluginId: L1_ID });
+      await writeEnabledIds(l1Win.invoke, [...new Set([...beforeL1, L1_ID])]);
+      await l1Win.close().catch(() => undefined);
+    }
+    await nap(1200);
+    await c.ev(`localStorage.setItem(${JSON.stringify(L1_FLAG)}, ${JSON.stringify(L1_ID)})`);
+    await reloadAndWait(c);
+    let stopPump = false;
+    void pumpConsent(() => stopPump);
+    const l1Booted = await waitUntil(c, l1KeyIs("booted", "true"), 90_000);
+    r.check("探针在打包版 CSP 下于 Worker 里 activate 成功", true, l1Booted);
+    const l1Facts = await readL1Facts(c);
+    r.info("入口 URL", String(l1Facts?.entryUrl));
+    r.info("裸说明符解析失败的原因", String(l1Facts?.bareImportText));
+    r.check("Worker 里没有 window", false, l1Facts?.hasWindow);
+    r.check("Worker 里没有 document", false, l1Facts?.hasDocument);
+    r.check("__TAURI_INTERNALS__ 在 Worker 里不可达", false, l1Facts?.hasInternals);
+    r.check("裸说明符 @tauri-apps/api/core 解析不了", "rejected", l1Facts?.bareImport);
+    r.check("入口的相对子模块在打包版 Worker 里取到", "leaf-v1", l1Facts?.leaf);
+    r.check("入口 URL 带上 ?v= 令牌", true, /\?v=\d+/.test(String(l1Facts?.entryUrl)));
+    r.check("协议表外的方法名被宿主拒", false, l1Facts?.forged?.unknownMethod?.ok);
+    r.check("借表内方法发别人的 topic 被前缀归属拦下", false, l1Facts?.forged?.publishAsOther?.ok);
+    r.check("跨插件读不到别人的存储", null, l1Facts?.crossPluginRead);
+
+    // 复装之前先把插件目录整个删掉（这也会让宿主把它的授权收走，pump 继续负责点同意框），
+    // 再按「leaf.js 先落盘、manifest.json 最后」的顺序装回去 ——
+    // 装回时 leaf 的内容就已经是 leaf-v2，新 Worker 取到的必须是新的那一份
+    rmSync(L1_DIR, { recursive: true, force: true });
+    await nap(2500);
+    installL1Probe("leaf-v2");
+    const refreshed = await waitUntil(c, l1KeyIs("facts.leaf", JSON.stringify("leaf-v2")), 90_000);
+    // 复装这一步也要继续点同意框：删插件目录会触发 prune_orphan_grants 把授权收走，
+    // 重新装载就是一次全新的首次授权（不是「缓存里还剩一份」）
+    stopPump = true;
+    if (!refreshed) r.info("复装后实得的 leaf", String((await readL1Facts(c))?.leaf));
+    r.check("换一个 Worker 后取到新内容（no-store 在打包版 Worker 路径上成立）", true, refreshed);
+    await c.ev(`localStorage.removeItem(${JSON.stringify(L1_FLAG)})`).catch(() => undefined);
+
     r.group("无 CSP 违规");
     const violations = c.noise.filter((n) => n.startsWith("CSP:"));
     r.check("违规条数", 0, violations.length);
@@ -121,6 +184,8 @@ try {
     {
       const back = await openSettingsInvoker(PORT, c).catch(() => null);
       if (back) await writeEnabledIds(back.invoke, prev).catch(() => undefined);
+      // 撤销会连带清掉该插件的隔离存储目录，比留一份探针写的垃圾干净
+      if (back) await back.invoke("permission_revoke", { pluginId: L1_ID }).catch(() => undefined);
       await back?.close().catch(() => undefined);
     }
   } finally {
@@ -151,6 +216,59 @@ try {
     );
   }
   removeFixtures(PLUGINS_DIR);
+  rmSync(L1_DIR, { recursive: true, force: true });
 }
 
 process.exit(exitCode);
+
+/** Worker 组用的等待与安装：打包版的插件目录在 exe 同级，不是仓库根的 plugins/ */
+function nap(ms) {
+  return new Promise((res) => setTimeout(res, ms));
+}
+
+/**
+ * 把 L1 取证插件装进打包版的插件目录。
+ * 顺序是有意的：`leaf.js`（内容按参数写）与 `index.js` 先落盘，`manifest.json` 最后 ——
+ * 宿主是在读到 manifest 的那一轮才 reconcile 的，这样「装载」看到的就是这一轮要验的那份 leaf 内容。
+ */
+function installL1Probe(leafValue) {
+  mkdirSync(L1_DIR, { recursive: true });
+  writeFileSync(join(L1_DIR, "leaf.js"), `export const LEAF_MARKER = ${JSON.stringify(leafValue)};\n`);
+  copyFileSync(join(L1_FIXTURE, "index.js"), join(L1_DIR, "index.js"));
+  copyFileSync(join(L1_FIXTURE, "manifest.json"), join(L1_DIR, "manifest.json"));
+}
+
+/** 读探针写进自己隔离存储的一条事实（`key` 支持 `facts.leaf` 这种两段路径） */
+function l1KeyIs(key, want) {
+  const [head, tail] = key.split(".");
+  const expr = tail ? `__v?.${tail}` : "__v";
+  return `(async () => { try { const __v = await window.__TAURI_INTERNALS__.invoke('store_get', { pluginId: ${JSON.stringify(L1_ID)}, key: ${JSON.stringify(head)} }); return ${expr} === ${want}; } catch { return false; } })()`;
+}
+
+async function readL1Facts(c) {
+  return c
+    .ev(`(async () => { try { return await window.__TAURI_INTERNALS__.invoke('store_get', { pluginId: ${JSON.stringify(L1_ID)}, key: 'facts' }) ?? null; } catch { return null; } })()`)
+    .catch(() => null);
+}
+
+/** 授权只能走真实同意框：打包版也一样，所以整轮持续点「允许」 */
+async function pumpConsent(stop) {
+  while (!stop()) {
+    const target = (await listPages(PORT).catch(() => [])).find((t) => /consent/.test(t.url));
+    if (!target) {
+      await nap(400);
+      continue;
+    }
+    try {
+      const cs = await attach(PORT, (t) => t.webSocketDebuggerUrl === target.webSocketDebuggerUrl, 8_000);
+      try {
+        await cs.ev(`document.getElementById('btn-allow').click()`);
+      } finally {
+        cs.close();
+      }
+    } catch (e) {
+      console.log(`  · 同意框应答失败，重试：${String(e).slice(0, 70)}`);
+    }
+    await nap(300);
+  }
+}
