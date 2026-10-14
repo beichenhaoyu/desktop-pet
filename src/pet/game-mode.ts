@@ -3,6 +3,7 @@
 // 分工：判定在 Rust（services/fullscreen.rs，只负责报「有没有全屏」），
 // 这里只决定「要不要因此藏起来」。开关关着时连传感都不启动，
 // 所以不玩这个功能的人不会多一份轮询开销。
+import { hostCall } from "../runtime/host-error";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -35,10 +36,10 @@ export async function installGameMode(control: {
       hiddenByMode = true;
       control.pause();
       // 交给宿主：宠物窗与贴在它身上的悬浮 UI（状态卡、波形图）一起收
-      await invoke("set_pet_hidden", { hidden: true });
+      await hostCall("set_pet_hidden", { hidden: true });
     } else if (!active && hiddenByMode) {
       hiddenByMode = false;
-      await invoke("set_pet_hidden", { hidden: false });
+      await hostCall("set_pet_hidden", { hidden: false });
       control.resume();
     }
   }

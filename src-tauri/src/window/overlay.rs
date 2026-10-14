@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+use crate::host_error::{HostError, DENIED, INTERNAL, INVALID_ARG, NOT_FOUND};
 use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
 
 use crate::services::permission::PermissionState;
@@ -74,7 +75,7 @@ pub(crate) fn owner_of_label(label: &str) -> Option<String> {
 
 /// 悬浮窗页面问宿主「这扇窗是给谁的」——按调用者的窗口标签回答，前端伪造不了归属
 #[tauri::command]
-pub async fn overlay_owner(window: tauri::Window) -> Result<Option<String>, String> {
+pub async fn overlay_owner(window: tauri::Window) -> Result<Option<String>, HostError> {
     Ok(owner_of_label(window.label()))
 }
 
@@ -165,7 +166,7 @@ pub fn set_suppressed(app: &AppHandle, suppressed: bool) {
     }
 }
 
-fn ensure_window(app: &AppHandle, plugin_id: &str, height: u32) -> Result<(), String> {
+fn ensure_window(app: &AppHandle, plugin_id: &str, height: u32) -> Result<(), HostError> {
     let label = overlay_label(plugin_id);
     if app.get_webview_window(&label).is_some() {
         let _ = app
@@ -187,28 +188,27 @@ fn ensure_window(app: &AppHandle, plugin_id: &str, height: u32) -> Result<(), St
         .shadow(false)
         .visible(false)
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| HostError::new(INTERNAL, e.to_string()))?;
     // 悬浮层永远不拦截鼠标
     let _ = win.set_ignore_cursor_events(true);
     Ok(())
 }
 
 /// 插件 id 会进窗口标签，先过宿主既有的 id 规则
-fn check_id(plugin_id: &str) -> Result<(), String> {
+fn check_id(plugin_id: &str) -> Result<(), HostError> {
     if crate::ids::is_safe_id(plugin_id) {
         Ok(())
     } else {
-        Err("非法的插件 id".into())
+        Err(HostError::new(INVALID_ARG, "非法的插件 id"))
     }
 }
 
 /// S3：悬浮层是插件的脸面，也得按能力放行。以前只有 JS 桥 `ctx.overlay` 上的 gated
 /// 一层在挡，绕过桥的插件可以凭空开一扇置顶透明窗，既不消耗配额也不留授权记录。
 /// 同 realm 的插件冒名他人 id 仍拦不住（见 gate.rs）。
-fn check_grant(perms: &PermissionState, plugin_id: &str) -> Result<(), String> {
+fn check_grant(perms: &PermissionState, plugin_id: &str) -> Result<(), HostError> {
     check_id(plugin_id)?;
     crate::gate::plugin_capability(perms, plugin_id, crate::plugin_caps::OVERLAY)
-        .map_err(String::from)
 }
 
 /// 收掉某插件的悬浮层（移出注册表 + 关窗）。
@@ -228,6 +228,11 @@ pub fn reclaim_for_permission(app: &AppHandle, plugin_id: &str) {
     reclaim(app, plugin_id);
 }
 
+/// 迁移期简写：窗口归属判定的拒绝（文案一字不改，只补码 —— ADR-0007）
+fn denied(msg: String) -> HostError {
+    HostError::new(DENIED, msg)
+}
+
 /// 谁能代表某个插件动它的悬浮层：宠物窗（运行时与插件同 realm）、设置窗（插件设置页）、
 /// 以及该插件自己那扇悬浮窗 —— 后者的归属由注册表判定，页面自报的 id 在这一路不算。
 fn caller_may_act_for(label: &str, plugin_id: &str) -> bool {
@@ -243,13 +248,13 @@ pub async fn overlay_show(
     plugin_id: String,
     placement: Option<String>,
     height: Option<u32>,
-) -> Result<(), String> {
+) -> Result<(), HostError> {
     check_grant(&perms, &plugin_id)?;
     if !caller_may_act_for(window.label(), &plugin_id) {
-        return Err(format!(
+        return Err(denied(format!(
             "窗口 {} 不能为插件 {plugin_id} 开悬浮层",
             window.label()
-        ));
+        )));
     }
     require_installed(&app, &plugin_id)?;
     mark_wanted(&plugin_id, resolve_placement(placement.as_deref()));
@@ -270,14 +275,17 @@ fn resolve_placement(requested: Option<&str>) -> u8 {
 
 /// 只为确实装着的插件开窗：凭空的 id 会留下一扇没人认领、也没人能收掉的窗
 /// （插件之间的越权仍拦不住，那是自报 plugin_id 的固有问题，见 gate.rs 与 R2）
-fn require_installed(app: &AppHandle, plugin_id: &str) -> Result<(), String> {
+fn require_installed(app: &AppHandle, plugin_id: &str) -> Result<(), HostError> {
     let installed = crate::commands::plugins::installed_plugin_ids(app)
         .map(|ids| ids.iter().any(|id| id == plugin_id))
         .unwrap_or(false);
     if installed {
         Ok(())
     } else {
-        Err(format!("插件 {plugin_id} 没有安装，不能开悬浮层"))
+        Err(HostError::new(
+            NOT_FOUND,
+            format!("插件 {plugin_id} 没有安装，不能开悬浮层"),
+        ))
     }
 }
 
@@ -300,13 +308,13 @@ pub async fn overlay_hide(
     perms: tauri::State<'_, PermissionState>,
     window: tauri::Window,
     plugin_id: String,
-) -> Result<(), String> {
+) -> Result<(), HostError> {
     check_grant(&perms, &plugin_id)?;
     if !caller_may_act_for(window.label(), &plugin_id) {
-        return Err(format!(
+        return Err(denied(format!(
             "窗口 {} 不能收起插件 {plugin_id} 的悬浮层",
             window.label()
-        ));
+        )));
     }
     if let Some(entry) = table()
         .lock()
@@ -326,13 +334,13 @@ pub async fn overlay_destroy(
     perms: tauri::State<'_, PermissionState>,
     window: tauri::Window,
     plugin_id: String,
-) -> Result<(), String> {
+) -> Result<(), HostError> {
     check_grant(&perms, &plugin_id)?;
     if !caller_may_act_for(window.label(), &plugin_id) {
-        return Err(format!(
+        return Err(denied(format!(
             "窗口 {} 不能销毁插件 {plugin_id} 的悬浮层",
             window.label()
-        ));
+        )));
     }
     reclaim(&app, &plugin_id);
     Ok(())
@@ -345,7 +353,7 @@ pub async fn overlay_reclaim(
     app: AppHandle,
     window: tauri::Window,
     plugin_id: String,
-) -> Result<(), String> {
+) -> Result<(), HostError> {
     crate::gate::pet(&window, "回收插件悬浮层")?;
     check_id(&plugin_id)?;
     reclaim(&app, &plugin_id);

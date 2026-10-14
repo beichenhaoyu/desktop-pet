@@ -1,6 +1,7 @@
 // 悬浮窗：每扇只挂**它自己的那个插件**的 overlay widget。
 // 窗口是按插件建的（标签 overlay-<插件 id>），所以这里不再遍历全部启用插件 ——
 // 那样会把别人的卡片叠进同一扇窗。
+import { hostCall } from "../runtime/host-error";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -16,7 +17,7 @@ let mounted = false;
 
 async function sync(): Promise<void> {
   if (!pluginId) {
-    pluginId = (await invoke<string | null>("overlay_owner")) ?? "";
+    pluginId = (await hostCall<string | null>("overlay_owner")) ?? "";
   }
   if (!pluginId) {
     console.error(`[overlay] 宿主不认识窗口 ${getCurrentWindow().label}，不知道要显示谁的卡片`);

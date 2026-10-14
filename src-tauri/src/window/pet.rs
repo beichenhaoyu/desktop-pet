@@ -1,5 +1,7 @@
 use tauri::{AppHandle, Manager, PhysicalPosition};
 
+use crate::host_error::{HostError, INTERNAL};
+
 /// 宠物窗初始化：默认摆放到主屏右下角
 pub fn setup(app: &AppHandle) -> Result<(), String> {
     // 配置里没定义 pet 窗是启动期错误，不该 panic（宿主以 panic=abort 构建）
@@ -40,14 +42,16 @@ pub async fn set_pet_hidden(
     window: tauri::Window,
     app: AppHandle,
     hidden: bool,
-) -> Result<(), String> {
+) -> Result<(), HostError> {
     // 只有宠物窗自己能隐身：绕过 JS 桥直接 invoke 的插件不该能把宠物和它的 UI 一起藏掉
     crate::gate::pet(&window, "触发隐身")?;
     if let Some(pet) = app.get_webview_window("pet") {
         if hidden {
-            pet.hide().map_err(|e| e.to_string())?;
+            pet.hide()
+                .map_err(|e| HostError::new(INTERNAL, e.to_string()))?;
         } else {
-            pet.show().map_err(|e| e.to_string())?;
+            pet.show()
+                .map_err(|e| HostError::new(INTERNAL, e.to_string()))?;
         }
     }
     super::overlay::set_suppressed(&app, hidden);

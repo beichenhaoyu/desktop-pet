@@ -286,7 +286,7 @@ async function doDeactivate(pluginId: string): Promise<void> {
     // 悬浮窗是这个插件为自己开的，它停了就整扇收掉，不涉及别的插件。
     // 走宿主的回收通道而不是插件面的 overlay_destroy：撤销授权之后能力已经没了，
     // 那条命令会被门禁挡住，窗就永远留在桌面上。
-    await invoke("overlay_reclaim", { pluginId });
+    await hostCall("overlay_reclaim", { pluginId });
   } catch (err) {
     reportError(pluginId, err);
   }

@@ -1,3 +1,4 @@
+use crate::host_error::HostError;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -53,7 +54,7 @@ fn toggle_pet(app: &AppHandle) {
 
 /// 打开（或唤起）设置窗。托盘菜单与回归脚本共用这一个入口。
 #[tauri::command]
-pub async fn settings_show(window: tauri::Window, app: AppHandle) -> Result<(), String> {
+pub async fn settings_show(window: tauri::Window, app: AppHandle) -> Result<(), HostError> {
     // 只让宠物窗请求：插件页面不该有把设置窗弹出来的能力
     crate::gate::pet(&window, "打开设置窗")?;
     open_settings(&app);
