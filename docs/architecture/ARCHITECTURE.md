@@ -58,6 +58,7 @@
 │   │   ├── ids.rs              # 插件 id 的唯一校验实现（同一个 id 又是存储目录名）
 │   │   ├── fsutil.rs           # 落盘公共工具：tmp+pid+rename 原子写
 │   │   ├── plugin_caps.rs      # 能力名单的宿主侧入口（与前端读同一份 json）
+│   │   ├── host_error.rs       # 命令错误的唯一形状 {code,message}（与前端读同一份码表）
 │   │   ├── commands/           # IPC 命令面，按域分文件
 │   │   │   ├── plugins.rs      # 插件清单/启停/撤销授权 + 形象与 overlay 命令
 │   │   │   ├── bus.rs          # bus_publish：origin 由宿主按发起窗口判定
@@ -129,7 +130,8 @@
 │   │   ├── 0003-session-visibility-on-pet-bubble.md
 │   │   ├── 0004-style-src-unsafe-inline-kept.md  # 插件样式注入契约为何暂不收紧
 │   │   ├── 0005-command-layering-thin-command-bodies.md  # 命令留在能力域、命令体收成薄层
-│   │   └── 0006-plugin-host-in-web-worker.md  # 插件进 Worker：身份由宿主分配（L1 方向）
+│   │   ├── 0006-plugin-host-in-web-worker.md  # 插件进 Worker：身份由宿主分配（L1 方向）
+│   │   └── 0007-unified-command-error-codes.md  # 命令错误统一 {code,message}，码表只有一份
 │   └── desktop-pet-优化任务清单.docx   # 外部优化任务清单
 ├── assets/
 │   └── app-icon.png            # 图标母版（generate-app-icon.ps1 的产物）

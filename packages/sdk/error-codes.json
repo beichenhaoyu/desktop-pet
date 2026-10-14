@@ -1,0 +1,23 @@
+{
+  "$comment": "清单 A2 / ADR-0007：IPC 错误码的唯一来源。Rust 侧 `src-tauri/src/host_error.rs` 用 include_str! 内嵌同一份文件，TS 侧 `src/runtime/host-error.ts` import 同一份文件；两侧 const 由 cargo 单测与 tests/unit/unit-error-codes.mjs 逐条对撞 —— 改一边，两边都红（口径同 packages/sdk/plugin-capabilities.json）。",
+  "$shape": "每条命令的 Err 侧序列化成 { code, message }：code 取自本表，message 是人读的文案（迁移期间逐字保持现状，verify 的文本判据靠这一点不回退）。",
+  "$rules": [
+    "同一文案跨命令必须同码（`invalid plugin id` 在 8 处出现，只能有一个码）",
+    "码一旦发布不许改名；要拆细就加新码并把旧的标 deprecated",
+    "未迁移的命令在前端规整成 code = legacy，S3（check:shape 的 string_err 计数）归零后该分支连测试一起删"
+  ],
+  "codes": [
+    { "code": "denied", "meaning": "授权或窗口门禁拒绝：缺能力、缺域名同意、调用窗口不对、同意框答非所窗" },
+    { "code": "not-found", "meaning": "目标不存在：插件没装、形象没装、悬浮层没装、记录查不到" },
+    { "code": "invalid-arg", "meaning": "入参不合法：id/slug/rel/topic/key 等没过词表或形状检查" },
+    { "code": "invalid-state", "meaning": "当前状态不允许这个动作：未初始化、已有联动、重复注册" },
+    { "code": "io", "meaning": "读写文件失败（不含「文件不存在后当空表处理」那条）" },
+    { "code": "network", "meaning": "远端不可达或非 2xx：HTTP 代理、皮肤下载、总线外的出网" },
+    { "code": "parse", "meaning": "磁盘 JSON 或远端响应解析失败：损坏的 store.json、目录接口返回形状不对" },
+    { "code": "device-unavailable", "meaning": "蓝牙设备不在/没服务/连不上（ADR-0007 新加，原先硬塞进 not-found 与 network）" },
+    { "code": "scan-start", "meaning": "扫描启停这一路的失败（适配器拒绝、已经在扫）" },
+    { "code": "consent-timeout", "meaning": "同意框超时未作答" },
+    { "code": "unsupported", "meaning": "当前形态做不到：平台限制、未实现的能力组合" },
+    { "code": "internal", "meaning": "兜底：不属于上面任何一条的宿主内部失败" }
+  ]
+}

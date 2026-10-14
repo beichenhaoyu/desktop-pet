@@ -7,7 +7,9 @@
 // 注册表来源与解析算法同 src-tauri/src/gate_coverage.rs:64（registered_commands）与
 // :79（extract_fn）：命令是否在册由那个 Rust 测试守，这里只管形状。
 //
-// 输出：每条违例一行 `  - <命令>: <说明>`，末行 `RESULT commands=48 s1=K s2=M failing=F`。
+// 输出：每条违例一行 `  - <命令>: <说明>`，末行 `RESULT commands=48 s1=K s2=M string_err=N failing=F`。
+//   S3（string_err）是 A2 的进度读数，**只报不拦**：混合迁移期没迁完的域要能继续发布（ADR-0007），
+//   归零那天再把它升成第四条门禁。
 // 任何一条违例 → process.exitCode = 1（CI 只认退出码）。
 // 加 --report 时额外打印全部命令的体行数直方图，供人审，不改变退出码。
 
@@ -118,7 +120,13 @@ function extractBody(src, name) {
       }
     }
     const startLine = src.slice(0, lineStart).split("\n").length;
-    return { body: src.slice(brace, j + 1), startLine, endLine: src.slice(0, j).split(/\r?\n/).length };
+    // signature：从 `fn 名字(` 那行到函数体第一个 `{` 之间的原文，S3 靠它判 Err 侧类型
+    return {
+      body: src.slice(brace, j + 1),
+      signature: src.slice(lineStart, brace),
+      startLine,
+      endLine: src.slice(0, j).split(/\r?\n/).length,
+    };
   }
 }
 
@@ -212,12 +220,18 @@ for (const qualified of reg) {
   const why = [];
   if (io.length) why.push(`S1 命令体内有 IO 原语: ${io.join(", ")}`);
   if (lines > MAX_BODY_LINES) why.push(`S2 命令体 ${lines} 行 > ${MAX_BODY_LINES}`);
-  rows.push({ name, file, lines, why });
+  rows.push({ name, file, lines, why, signature: found.signature });
   for (const w of why) failures.push(`${qualified}（${file}:${found.startLine}）: ${w}`);
 }
 
 const s1 = rows.filter((r) => r.why.some((w) => w.startsWith("S1"))).length;
 const s2 = rows.filter((r) => r.why.some((w) => w.startsWith("S2"))).length;
+// S3：A2 的进度读数 —— Err 侧还是裸 String 的命令数。
+// **只报不拦**：混合迁移期（ADR-0007）没迁完的域必须能继续发布，拦在这里等于逼人大改。
+// `string_err=0` 那天把它升成第四条门禁，同时删掉 host_error.rs 的 From<HostError> for String
+// 与前端那条 legacy 分支。
+const STRING_ERR = /Result<[^{}]*?,\s*String\s*>/;
+const s3 = rows.filter((r) => STRING_ERR.test(r.signature.replace(/\s+/g, " "))).length;
 
 for (const f of failures) console.log(`  - ${f}`);
 if (process.argv.includes("--report")) {
@@ -228,7 +242,9 @@ if (process.argv.includes("--report")) {
       .map((r) => `${r.name}=${r.lines}`)
       .join(" ")}`
   );
-  console.log(`REPORT median=${sorted[Math.floor(sorted.length / 2)].lines} max=${sorted[0].lines} over_limit=${s2} io=${s1}`);
+  console.log(
+    `REPORT median=${sorted[Math.floor(sorted.length / 2)].lines} max=${sorted[0].lines} over_limit=${s2} io=${s1} string_err=${s3}`
+  );
 }
-console.log(`RESULT commands=${reg.length} s1=${s1} s2=${s2} failing=${failures.length}`);
+console.log(`RESULT commands=${reg.length} s1=${s1} s2=${s2} string_err=${s3} failing=${failures.length}`);
 if (failures.length > 0) process.exitCode = 1;

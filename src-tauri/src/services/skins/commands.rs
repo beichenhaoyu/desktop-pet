@@ -10,7 +10,7 @@ use super::local::{
 /* ================= IPC 命令 ================= */
 
 fn only_settings(window: &tauri::Window) -> Result<(), String> {
-    crate::gate::settings(window, "安装或切换形象")
+    crate::gate::settings(window, "安装或切换形象").map_err(String::from)
 }
 
 /// 当前形象；没装好任何皮肤时返回 null，前端退回程序生成帧

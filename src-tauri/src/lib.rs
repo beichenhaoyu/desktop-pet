@@ -3,6 +3,7 @@ mod fsutil;
 mod gate;
 #[cfg(test)]
 mod gate_coverage;
+mod host_error;
 mod ids;
 mod plugin_caps;
 mod services;

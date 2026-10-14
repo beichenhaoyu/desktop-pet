@@ -466,10 +466,14 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
   r.check("未授权 storage 的读取被宿主拒绝", true, !denyGet.ok && /未授权 storage/.test(String(denyGet.e)));
   const denyDel = await invoke_("store_delete", { pluginId: PROBE_ID, key: "prefs" });
   r.check("未授权 storage 的删除被宿主拒绝", true, !denyDel.ok && /未授权 storage/.test(String(denyDel.e)));
+  // A2/ADR-0007：store_* 已迁到 `{code, message}`。文本判据一条没减，这里只是**多**要求宿主发了码
+  r.check("三条存储命令的拒绝都带 code=denied", "denied|denied|denied", [denySet.code, denyGet.code, denyDel.code].join("|"));
+  r.check("错误负载的形状就是 code 与 message 两个键", true, denyDel.ok === false && typeof denyDel.e === "string" && denyDel.e.length > 0);
   // 旧的手写检查只挡 `..` `/` `\` 与空串，带冒号的盘符 id 放得过；现在与 is_safe_id 同一口径
   for (const [label, badId] of [["盘符式 id", "C:"], ["分隔符", "a/b"], ["过短", "ab"], ["大写", "Todo"]]) {
     const denied = await invoke_("store_get", { pluginId: badId, key: "prefs" });
     r.check(`${label}（${badId}）按非法 id 被拒`, true, !denied.ok && /invalid plugin id/.test(String(denied.e)));
+    r.check(`${label} 的码是 invalid-arg（同一文案跨命令同码）`, "invalid-arg", denied.code);
   }
 
   r.group("撤销授权连带清理插件存储");

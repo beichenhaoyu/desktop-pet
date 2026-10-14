@@ -8,6 +8,7 @@ use tauri::{AppHandle, Manager};
 
 use super::permission::PermissionState;
 use crate::fsutil::write_atomic;
+use crate::host_error::{HostError, INTERNAL, INVALID_ARG, INVALID_STATE, IO, PARSE};
 
 /// 插件隔离 JSON 存储：%APPDATA%/<identifier>/plugins/<plugin_id>/store.json
 /// 每个插件只能读写自己的命名空间，宿主按 plugin_id 落盘。
@@ -42,46 +43,55 @@ impl StoreState {
         Ok(())
     }
 
-    fn plugin_file(&self, plugin_id: &str) -> Result<PathBuf, String> {
+    fn plugin_file(&self, plugin_id: &str) -> Result<PathBuf, HostError> {
         if !crate::ids::is_safe_id(plugin_id) {
-            return Err("invalid plugin id".into());
+            return Err(HostError::new(INVALID_ARG, "invalid plugin id"));
         }
         self.root
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
-            .ok_or_else(|| "store not initialized".to_string())
             .map(|root| root.join(plugin_id).join("store.json"))
+            .ok_or_else(|| HostError::new(INVALID_STATE, "store not initialized"))
     }
 
     /// 删除某插件的全部存储（撤销授权时连带清理，不留孤儿数据）
-    pub fn clear_plugin(&self, plugin_id: &str) -> Result<(), String> {
+    pub fn clear_plugin(&self, plugin_id: &str) -> Result<(), HostError> {
         let path = self.plugin_file(plugin_id)?;
-        let dir = path.parent().ok_or("无法定位插件存储目录")?;
+        let dir = path
+            .parent()
+            .ok_or_else(|| HostError::new(INVALID_STATE, "无法定位插件存储目录"))?;
         match fs::remove_dir_all(dir) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e.to_string()),
+            Err(e) => Err(HostError::io(e)),
         }
     }
 
     /// 读存储。损坏时返回 Err —— 原先 `.ok()` 把解析失败当成空表，
     /// 下一次 store_set 就会用「只有新键」的内容覆盖整个文件，等于静默丢数据。
-    fn read_map(path: &Path) -> Result<Map<String, Value>, String> {
+    fn read_map(path: &Path) -> Result<Map<String, Value>, HostError> {
         match fs::read_to_string(path) {
             Ok(raw) => serde_json::from_str::<Value>(&raw)
                 .map(|v| v.as_object().cloned().unwrap_or_default())
-                .map_err(|e| format!("插件存储文件已损坏 {}: {e}", path.display())),
+                .map_err(|e| {
+                    HostError::new(PARSE, format!("插件存储文件已损坏 {}: {e}", path.display()))
+                }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
-            Err(e) => Err(format!("读取插件存储失败 {}: {e}", path.display())),
+            Err(e) => Err(HostError::new(
+                IO,
+                format!("读取插件存储失败 {}: {e}", path.display()),
+            )),
         }
     }
 
     /// 原子写：临时文件 + rename（见 fsutil）。
     /// 直接 fs::write 若中途断电会留下半截 JSON，下次读即「为空」，再写就清空该插件全部数据。
-    fn write_map(path: &Path, map: &Map<String, Value>) -> Result<(), String> {
-        let json = serde_json::to_string_pretty(map).map_err(|e| e.to_string())?;
-        write_atomic(path, json.as_bytes())
+    fn write_map(path: &Path, map: &Map<String, Value>) -> Result<(), HostError> {
+        let json = serde_json::to_string_pretty(map)
+            .map_err(|e| HostError::new(INTERNAL, e.to_string()))?;
+        // fsutil 的错误已经是「带路径的文案」，这里只补码不改字
+        write_atomic(path, json.as_bytes()).map_err(|e| HostError::new(IO, e))
     }
 }
 
@@ -94,7 +104,7 @@ fn resolve(
     perms: &PermissionState,
     store: &StoreState,
     plugin_id: &str,
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf, HostError> {
     crate::gate::plugin_capability(perms, plugin_id, crate::plugin_caps::STORAGE)?;
     store.plugin_file(plugin_id)
 }
@@ -105,7 +115,7 @@ pub fn store_get(
     perms: tauri::State<PermissionState>,
     plugin_id: String,
     key: String,
-) -> Result<Option<Value>, String> {
+) -> Result<Option<Value>, HostError> {
     let path = resolve(&perms, &state, &plugin_id)?;
     let lock = plugin_lock(&plugin_id);
     let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
@@ -119,7 +129,7 @@ pub fn store_set(
     plugin_id: String,
     key: String,
     value: Value,
-) -> Result<(), String> {
+) -> Result<(), HostError> {
     let path = resolve(&perms, &state, &plugin_id)?;
     let lock = plugin_lock(&plugin_id);
     let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
@@ -134,7 +144,7 @@ pub fn store_delete(
     perms: tauri::State<PermissionState>,
     plugin_id: String,
     key: String,
-) -> Result<(), String> {
+) -> Result<(), HostError> {
     let path = resolve(&perms, &state, &plugin_id)?;
     let lock = plugin_lock(&plugin_id);
     let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
@@ -158,13 +168,15 @@ mod tests {
         state
     }
 
-    /// S1：能力授权收在 Rust 侧 —— 没授权 storage 就连自己的键也读写不了
+    /// S1：能力授权收在 Rust 侧 —— 没授权 storage 就连自己的键也读写不了。
+    /// A2/ADR-0007 之后还要钉住码：门禁拒绝是 `denied`，文案一字不变。
     #[test]
     fn resolve_denies_without_storage_grant() {
         let store = store_rooted_at(tmp_store(&format!("grant-{}", std::process::id())));
         let perms = PermissionState::new();
         let err = resolve(&perms, &store, "todo").unwrap_err();
-        assert!(err.contains("未授权 storage"), "实际: {err}");
+        assert!(err.message.contains("未授权 storage"), "实际: {err}");
+        assert_eq!(err.code, crate::host_error::DENIED, "没授权 = denied 码");
         perms.grant("todo", &["storage".to_string()]);
         assert!(resolve(&perms, &store, "todo").is_ok());
         // 授权按插件分开：别的插件不跟着沾光
@@ -173,6 +185,7 @@ mod tests {
 
     /// 盘符式 id（`C:`）、穿越、分隔符、过短一律按非法 id 拒 —— 与 is_safe_id 同口径。
     /// 原先这里是手写检查（只挡 `..` `/` `\` 与空），`C:` 这种带冒号的能过。
+    /// A2/ADR-0007：非法 id 的码是 `invalid-arg`，与「没授权」的 `denied` 分开（同文案必须同码）。
     #[test]
     fn resolve_rejects_ids_outside_the_vocab() {
         let store = store_rooted_at(tmp_store(&format!("vocab-{}", std::process::id())));
@@ -180,9 +193,10 @@ mod tests {
         for id in ["C:", "../evil", "a/b", r"a\b", "", "ab", "a b", "Todo/../x"] {
             let err = resolve(&perms, &store, id).unwrap_err();
             assert_eq!(
-                "invalid plugin id", err,
+                err.message, "invalid plugin id",
                 "{id} 应按非法 id 被拒，实际: {err}"
             );
+            assert_eq!(err.code, INVALID_ARG, "{id} 的码应是 invalid-arg");
         }
         // 就算授权表里真有这么一条也不会放行：id 合法性排在授权之前
         perms.grant("C:", &["storage".to_string()]);

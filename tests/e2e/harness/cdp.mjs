@@ -158,10 +158,17 @@ export function createReport(title) {
 }
 
 /** 直打宿主命令：绕过 JS 能力桥，验的是 Rust 侧规则本身 */
+/**
+ * 从页面 realm 发一次真实 invoke。
+ * `e` 保持「人读的文案」这一条契约：未迁移的命令 reject 裸字符串，已迁移的 reject `{code,message}`
+ * （ADR-0007），两种形状都取文案原文，所以按文本判的既有断言不必跟着迁移改。
+ * `code` 是这次新增的一列：已迁移命令给出码表里的码，未迁移的是 null（不是 "legacy" ——
+ * 那是前端规整之后的事，脚本要看的就是「宿主到底发没发码」）。
+ */
 export function hostInvoke(c) {
   return async (cmd, args = {}) =>
     c.ev(
-      `(async () => { try { const v = await window.__TAURI_INTERNALS__.invoke(${JSON.stringify(cmd)}, ${JSON.stringify(args)}); return { ok: true, v }; } catch (e) { return { ok: false, e: typeof e === 'string' ? e : (e?.message ?? JSON.stringify(e)) }; } })()`,
+      `(async () => { try { const v = await window.__TAURI_INTERNALS__.invoke(${JSON.stringify(cmd)}, ${JSON.stringify(args)}); return { ok: true, v, code: null }; } catch (e) { return { ok: false, e: typeof e === 'string' ? e : (e?.message ?? JSON.stringify(e)), code: (e && typeof e === 'object' && typeof e.code === 'string') ? e.code : null }; } })()`,
     );
 }
 

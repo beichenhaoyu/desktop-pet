@@ -192,7 +192,8 @@ fn require_granted(
     plugin_id: &str,
     cap: &str,
 ) -> Result<(), String> {
-    crate::gate::plugin_capability(perms, plugin_id, cap)
+    // 还没迁的调用方继续拿原文案（From<HostError> for String），gate 已迁
+    crate::gate::plugin_capability(perms, plugin_id, cap).map_err(String::from)
 }
 
 /// 开始扫描；发现的新设备通过 ble:device-found 事件广播

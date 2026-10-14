@@ -7,6 +7,7 @@ import { PET_ACTIONS, petController, type ActionName } from "../pet/host";
 import { claim, release } from "./resources";
 import { register } from "./subscriptions";
 import { assertPublishable, assertSubscribable } from "./topic-acl";
+import { deniedError, rethrowAsHostError } from "./host-error";
 import {
   AGENT_HOOKS,
   BLE_CONNECT,
@@ -98,7 +99,7 @@ function gated<A extends unknown[], R>(
 ): (...args: A) => Promise<R> {
   return async (...args: A) => {
     if (!(await ensurePermission(manifest, capability))) {
-      throw new Error(`[${manifest.id}] 权限被拒绝: ${capability}`);
+      throw deniedError(`[${manifest.id}] 权限被拒绝: ${capability}`);
     }
     return fn(...args);
   };
@@ -120,9 +121,12 @@ export function createAgentHooksApi(manifest: ManifestLike) {
 export function buildContext(manifest: ManifestLike): PluginContext {
   const pid = manifest.id;
   const storage = {
-    get: (key: string) => invoke("store_get", { pluginId: pid, key }),
-    set: (key: string, value: unknown) => invoke("store_set", { pluginId: pid, key, value }),
-    delete: (key: string) => invoke("store_delete", { pluginId: pid, key }),
+    // store_* 已迁到 `{code, message}`（ADR-0007）。这一层规整让两种形状对调用方同形：
+    // message 逐字不变，多出来的 code 才是新信息，所以未迁移的命令一行都不用动。
+    get: (key: string) => invoke("store_get", { pluginId: pid, key }).catch(rethrowAsHostError),
+    set: (key: string, value: unknown) =>
+      invoke("store_set", { pluginId: pid, key, value }).catch(rethrowAsHostError),
+    delete: (key: string) => invoke("store_delete", { pluginId: pid, key }).catch(rethrowAsHostError),
   };
   return {
     pluginId: pid,
@@ -219,7 +223,7 @@ export function buildContext(manifest: ManifestLike): PluginContext {
           throw new Error(`[${pid}] URL 非法: ${url}`);
         }
         if (!(await ensurePermissions(manifest, [HTTP, `${HTTP_HOST_PREFIX}${host}`]))) {
-          throw new Error(`[${pid}] 域名授权被拒绝: ${host}`);
+          throw deniedError(`[${pid}] 域名授权被拒绝: ${host}`);
         }
         return invoke<HttpResponse>("http_request", {
           pluginId: pid,

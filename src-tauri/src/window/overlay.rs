@@ -208,6 +208,7 @@ fn check_id(plugin_id: &str) -> Result<(), String> {
 fn check_grant(perms: &PermissionState, plugin_id: &str) -> Result<(), String> {
     check_id(plugin_id)?;
     crate::gate::plugin_capability(perms, plugin_id, crate::plugin_caps::OVERLAY)
+        .map_err(String::from)
 }
 
 /// 收掉某插件的悬浮层（移出注册表 + 关窗）。
