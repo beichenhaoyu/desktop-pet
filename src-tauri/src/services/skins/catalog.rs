@@ -1,5 +1,7 @@
 use serde_json::Value;
 
+use crate::host_error::{HostError, INVALID_ARG, NOT_FOUND, PARSE};
+
 /// 公开画廊目录（实测 200、约 863 KB、4800+ 条）
 pub const MANIFEST_URL: &str = "https://petdex.dev/api/manifest/v2";
 /// 默认形象：首次启动且本地什么都没有时装它
@@ -18,16 +20,19 @@ pub(super) const MANIFEST_MAX_BYTES: u64 = 16 << 20; // 目录整份约 1 MB，�
 
 /// 用户输入的名字 → slug。petdex 的 slug 只用小写字母、数字与 `-`/`_`；
 /// 非法字符一律拒绝而不是清洗掉 —— 静默改写会让「输入 A 装成 B」这种误会无法排查。
-pub fn normalize_name(raw: &str) -> Result<String, String> {
+pub fn normalize_name(raw: &str) -> Result<String, HostError> {
     let name = raw.trim().to_ascii_lowercase();
     if name.is_empty() || name.len() > 64 {
-        return Err("名字为空或过长".into());
+        return Err(HostError::new(INVALID_ARG, "名字为空或过长"));
     }
     if !name
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
-        return Err(format!("名字不合法（只允许字母、数字、- 与 _）: {raw}"));
+        return Err(HostError::new(
+            INVALID_ARG,
+            format!("名字不合法（只允许字母、数字、- 与 _）: {raw}"),
+        ));
     }
     Ok(name)
 }
@@ -41,19 +46,23 @@ pub fn is_safe_slug(slug: &str) -> bool {
 }
 
 /// 只接受 https + 白名单主机 + 不含 `..`/绝对路径的相对路径
-pub fn asset_url(base: &str, rel: &str) -> Result<String, String> {
-    let parsed = tauri::Url::parse(base).map_err(|e| format!("assetBase 非法: {e}"))?;
+pub fn asset_url(base: &str, rel: &str) -> Result<String, HostError> {
+    let parsed = tauri::Url::parse(base)
+        .map_err(|e| HostError::new(PARSE, format!("assetBase 非法: {e}")))?;
     if parsed.scheme() != "https" {
-        return Err(format!("图集只走 https，收到 {}", parsed.scheme()));
+        return Err(HostError::new(
+            PARSE,
+            format!("图集只走 https，收到 {}", parsed.scheme()),
+        ));
     }
     let host = parsed
         .host_str()
-        .ok_or_else(|| "assetBase 缺少主机名".to_string())?;
+        .ok_or_else(|| HostError::new(PARSE, "assetBase 缺少主机名"))?;
     if !ASSET_HOSTS.contains(&host) {
-        return Err(format!("图集主机不在白名单: {host}"));
+        return Err(HostError::new(PARSE, format!("图集主机不在白名单: {host}")));
     }
     if rel.is_empty() || rel.starts_with('/') || rel.split('/').any(|s| s == ".." || s == ".") {
-        return Err(format!("图集路径不安全: {rel}"));
+        return Err(HostError::new(PARSE, format!("图集路径不安全: {rel}")));
     }
     Ok(format!("{}/{}", base.trim_end_matches('/'), rel))
 }
@@ -69,7 +78,7 @@ pub struct PetEntry {
 
 /// 从目录里按名字找宠物：精确 slug → 大小写不敏感 slug → 唯一的 displayName 精确匹配。
 /// 命中多条 displayName 时不猜，直接把候选报回去。
-pub fn pick_pet(manifest: &Value, name: &str) -> Result<PetEntry, String> {
+pub fn pick_pet(manifest: &Value, name: &str) -> Result<PetEntry, HostError> {
     let fields: Vec<&str> = manifest
         .get("fields")
         .and_then(Value::as_array)
@@ -79,7 +88,10 @@ pub fn pick_pet(manifest: &Value, name: &str) -> Result<PetEntry, String> {
     let (Some(i_slug), Some(i_display), Some(i_sheet)) =
         (col("slug"), col("displayName"), col("spritesheet"))
     else {
-        return Err("目录响应缺少 fields 里的 slug/displayName/spritesheet 列".into());
+        return Err(HostError::new(
+            PARSE,
+            "目录响应缺少 fields 里的 slug/displayName/spritesheet 列",
+        ));
     };
     let i_json = col("petJson");
     let i_ver = col("spriteVersionNumber");
@@ -88,7 +100,7 @@ pub fn pick_pet(manifest: &Value, name: &str) -> Result<PetEntry, String> {
     let rows = manifest
         .get("pets")
         .and_then(Value::as_array)
-        .ok_or_else(|| "目录响应里没有 pets 数组".to_string())?;
+        .ok_or_else(|| HostError::new(PARSE, "目录响应里没有 pets 数组"))?;
 
     let cell = |row: &Value, idx: usize| -> String {
         row.as_array()
@@ -136,15 +148,21 @@ pub fn pick_pet(manifest: &Value, name: &str) -> Result<PetEntry, String> {
     if by_display.len() > 1 {
         return Err(ambiguous("名称", &want, &by_display));
     }
-    Err(format!("Petdex 画廊里找不到名为 {name} 的桌宠"))
+    Err(HostError::new(
+        NOT_FOUND,
+        format!("Petdex 画廊里找不到名为 {name} 的桌宠"),
+    ))
 }
 
-fn ambiguous(what: &str, want: &str, hits: &[PetEntry]) -> String {
+fn ambiguous(what: &str, want: &str, hits: &[PetEntry]) -> HostError {
     let list = hits
         .iter()
         .take(6)
         .map(|e| e.slug.as_str())
         .collect::<Vec<_>>()
         .join("、");
-    format!("{what}「{want}」匹配到多个宠物，请改用具体的 slug：{list}")
+    HostError::new(
+        INVALID_ARG,
+        format!("{what}「{want}」匹配到多个宠物，请改用具体的 slug：{list}"),
+    )
 }

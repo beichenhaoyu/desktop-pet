@@ -5,23 +5,26 @@
 use std::fs;
 use std::path::Path;
 
+use crate::host_error::{HostError, IO};
+
 /// 原子写：先落同目录临时文件再 rename。
 /// 临时名带 pid —— 固定名会让两个写入者互相覆盖：
 /// 一方还在写 `x.tmp`，另一方已经把同名文件 rename 走了。
-pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), HostError> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("创建目录失败 {parent:?}: {e}"))?;
+        fs::create_dir_all(parent)
+            .map_err(|e| HostError::new(IO, format!("创建目录失败 {parent:?}: {e}")))?;
     }
     let base = path.file_name().and_then(|s| s.to_str()).unwrap_or("file");
     let tmp = path.with_file_name(format!("{base}.{}.tmp", std::process::id()));
     if let Err(e) = fs::write(&tmp, bytes) {
-        return Err(format!("写入临时文件失败: {e}"));
+        return Err(HostError::new(IO, format!("写入临时文件失败: {e}")));
     }
     match fs::rename(&tmp, path) {
         Ok(()) => Ok(()),
         Err(e) => {
             let _ = fs::remove_file(&tmp);
-            Err(format!("替换文件失败: {e}"))
+            Err(HostError::new(IO, format!("替换文件失败: {e}")))
         }
     }
 }

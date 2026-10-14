@@ -74,7 +74,7 @@ fn write_ids(app: &AppHandle, ids: &[String]) -> Result<(), HostError> {
     }
     let json = serde_json::to_string_pretty(&serde_json::json!({ "ids": ids }))
         .map_err(|e| HostError::new(INTERNAL, e.to_string()))?;
-    write_atomic(&path, json.as_bytes()).map_err(|e| HostError::new(IO, e))
+    write_atomic(&path, json.as_bytes())
 }
 
 #[tauri::command]

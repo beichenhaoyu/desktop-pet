@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
 use crate::fsutil::write_atomic;
+use crate::host_error::{HostError, INTERNAL, INVALID_ARG};
 
 use super::catalog::is_safe_slug;
 
@@ -29,9 +30,9 @@ pub(super) struct Meta {
 }
 
 /// 皮肤目录内的路径：slug 非法或会越出 root 时返回 Err
-pub fn skin_dir(root: &Path, slug: &str) -> Result<PathBuf, String> {
+pub fn skin_dir(root: &Path, slug: &str) -> Result<PathBuf, HostError> {
     if !is_safe_slug(slug) {
-        return Err(format!("非法的形象名: {slug}"));
+        return Err(HostError::new(INVALID_ARG, format!("非法的形象名: {slug}")));
     }
     Ok(root.join(slug))
 }
@@ -81,7 +82,7 @@ pub fn active_pointer(root: &Path) -> Option<String> {
     }
 }
 
-pub(super) fn set_active(root: &Path, slug: &str) -> Result<(), String> {
+pub(super) fn set_active(root: &Path, slug: &str) -> Result<(), HostError> {
     write_atomic(
         &root.join("active.json"),
         json!({ "slug": slug }).to_string().as_bytes(),
@@ -91,13 +92,13 @@ pub(super) fn set_active(root: &Path, slug: &str) -> Result<(), String> {
 /* ================= 宿主侧路径与状态 ================= */
 
 /// 皮肤根目录：%APPDATA%/<identifier>/skins。dev 与打包版都可写（不像资源目录那样只读）
-pub fn skins_root(app: &AppHandle) -> Result<PathBuf, String> {
+pub fn skins_root(app: &AppHandle) -> Result<PathBuf, HostError> {
     let dir = app
         .path()
         .app_data_dir()
-        .map_err(|e| format!("拿不到 app_data_dir: {e}"))?
+        .map_err(|e| HostError::new(INTERNAL, format!("拿不到 app_data_dir: {e}")))?
         .join("skins");
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::create_dir_all(&dir).map_err(HostError::io)?;
     Ok(dir)
 }
 
@@ -151,23 +152,23 @@ pub fn plan_active_after_removal(
 
 /// 删除形象目录：幂等（目录本来不在就当删过了），且只允许删 root 的直接子目录 ——
 /// 命令体里不许出现 IO，越界防护与删除动作一起收在这里。
-pub fn remove_skin_dir(root: &Path, slug: &str) -> Result<bool, String> {
+pub fn remove_skin_dir(root: &Path, slug: &str) -> Result<bool, HostError> {
     let dir = skin_dir(root, slug)?;
     if dir.parent() != Some(root) {
-        return Err("非法的形象目录".into());
+        return Err(HostError::new(INVALID_ARG, "非法的形象目录"));
     }
     if !dir.is_dir() {
         return Ok(false);
     }
-    fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::remove_dir_all(&dir).map_err(HostError::io)?;
     Ok(true)
 }
 
 /// 清掉当前形象指针（没有可用形象时）。
-pub fn clear_active(root: &Path) -> Result<(), String> {
+pub fn clear_active(root: &Path) -> Result<(), HostError> {
     match fs::remove_file(root.join("active.json")) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e.to_string()),
+        Err(e) => Err(HostError::io(e)),
     }
 }

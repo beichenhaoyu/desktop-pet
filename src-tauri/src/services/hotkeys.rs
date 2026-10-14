@@ -166,12 +166,14 @@ fn write_saved(app: &AppHandle, accel: &str) -> Result<(), String> {
         .filter(Value::is_object)
         .unwrap_or_else(|| json!({}));
     doc["hotkey"] = Value::String(accel.to_string());
+    // A2 混迁桥：write_saved 还是裸 String 签名（A05 迁移时删掉这行 map_err）
     write_atomic(
         &path,
         serde_json::to_vec_pretty(&doc)
             .map_err(|e| e.to_string())?
             .as_slice(),
     )
+    .map_err(String::from)
 }
 
 /// 注册并落盘。启动时由 setup 调用一次。

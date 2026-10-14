@@ -1,5 +1,7 @@
 use tauri::{AppHandle, Emitter};
 
+use crate::host_error::{HostError, INTERNAL, NOT_FOUND};
+
 use super::catalog::DEFAULT_SLUG;
 use super::download::install_blocking;
 use super::local::{
@@ -9,13 +11,13 @@ use super::local::{
 
 /* ================= IPC 命令 ================= */
 
-fn only_settings(window: &tauri::Window) -> Result<(), String> {
-    crate::gate::settings(window, "安装或切换形象").map_err(String::from)
+fn only_settings(window: &tauri::Window) -> Result<(), HostError> {
+    crate::gate::settings(window, "安装或切换形象")
 }
 
 /// 当前形象；没装好任何皮肤时返回 null，前端退回程序生成帧
 #[tauri::command]
-pub fn pet_skin_active(app: AppHandle) -> Result<Option<SkinInfo>, String> {
+pub fn pet_skin_active(app: AppHandle) -> Result<Option<SkinInfo>, HostError> {
     let Ok(root) = skins_root(&app) else {
         return Ok(None);
     };
@@ -26,7 +28,7 @@ pub fn pet_skin_active(app: AppHandle) -> Result<Option<SkinInfo>, String> {
 }
 
 #[tauri::command]
-pub fn pet_skin_list(app: AppHandle) -> Result<Vec<SkinInfo>, String> {
+pub fn pet_skin_list(app: AppHandle) -> Result<Vec<SkinInfo>, HostError> {
     Ok(installed(&app))
 }
 
@@ -35,12 +37,12 @@ pub async fn pet_skin_install(
     app: AppHandle,
     window: tauri::Window,
     name: String,
-) -> Result<SkinInfo, String> {
+) -> Result<SkinInfo, HostError> {
     only_settings(&window)?;
     let sink = app.clone();
     let info = tauri::async_runtime::spawn_blocking(move || install_blocking(&app, &name))
         .await
-        .map_err(|e| format!("安装任务失败: {e}"))??;
+        .map_err(|e| HostError::new(INTERNAL, format!("安装任务失败: {e}")))??;
     let _ = sink.emit("pet:skin-changed", info.clone());
     Ok(info)
 }
@@ -51,17 +53,22 @@ pub fn pet_skin_use(
     app: AppHandle,
     window: tauri::Window,
     slug: String,
-) -> Result<SkinInfo, String> {
+) -> Result<SkinInfo, HostError> {
     only_settings(&window)?;
     let root = skins_root(&app)?;
-    let info = read_meta(&skin_dir(&root, &slug)?).ok_or_else(|| format!("还没有安装过 {slug}"))?;
+    let info = read_meta(&skin_dir(&root, &slug)?)
+        .ok_or_else(|| HostError::new(NOT_FOUND, format!("还没有安装过 {slug}")))?;
     set_active(&root, &info.slug)?;
     let _ = app.emit("pet:skin-changed", info.clone());
     Ok(info)
 }
 
 #[tauri::command]
-pub fn pet_skin_remove(app: AppHandle, window: tauri::Window, slug: String) -> Result<(), String> {
+pub fn pet_skin_remove(
+    app: AppHandle,
+    window: tauri::Window,
+    slug: String,
+) -> Result<(), HostError> {
     only_settings(&window)?;
     let root = skins_root(&app)?;
     let active = active_pointer(&root);

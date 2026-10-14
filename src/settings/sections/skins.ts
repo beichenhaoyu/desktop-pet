@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { hostCall, hostErrorMessage } from "../../runtime/host-error";
 import { $ } from "../dom";
 
 /* ---------- 桌宠形象（Petdex 图集） ---------- */
@@ -48,8 +48,8 @@ export async function renderSkins(): Promise<void> {
   if (!list) return;
   try {
     const [items, active] = await Promise.all([
-      invoke<SkinInfo[]>("pet_skin_list"),
-      invoke<SkinInfo | null>("pet_skin_active"),
+      hostCall<SkinInfo[]>("pet_skin_list"),
+      hostCall<SkinInfo | null>("pet_skin_active"),
     ]);
     setSkinStatus(
       items.length === 0
@@ -58,7 +58,7 @@ export async function renderSkins(): Promise<void> {
     );
     list.replaceChildren(...items.map((s) => skinRow(s, s.slug === active?.slug)));
   } catch (e) {
-    setSkinStatus(`读取形象失败：${String(e)}`);
+    setSkinStatus(`读取形象失败：${hostErrorMessage(e)}`);
   }
 }
 
@@ -71,10 +71,10 @@ async function runSkinCommand(
   const install = $<HTMLButtonElement>("skin-install");
   if (install) install.disabled = true;
   try {
-    await invoke(command, command === "pet_skin_install" ? { name: arg } : { slug: arg });
+    await hostCall(command, command === "pet_skin_install" ? { name: arg } : { slug: arg });
     setSkinStatus(`${okText}。`);
   } catch (e) {
-    setSkinStatus(`操作失败：${String(e)}`);
+    setSkinStatus(`操作失败：${hostErrorMessage(e)}`);
   } finally {
     if (install) install.disabled = false;
     await renderSkins();

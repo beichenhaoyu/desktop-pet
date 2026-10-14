@@ -90,8 +90,7 @@ impl StoreState {
     fn write_map(path: &Path, map: &Map<String, Value>) -> Result<(), HostError> {
         let json = serde_json::to_string_pretty(map)
             .map_err(|e| HostError::new(INTERNAL, e.to_string()))?;
-        // fsutil 的错误已经是「带路径的文案」，这里只补码不改字
-        write_atomic(path, json.as_bytes()).map_err(|e| HostError::new(IO, e))
+        write_atomic(path, json.as_bytes())
     }
 }
 
