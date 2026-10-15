@@ -1,5 +1,7 @@
 // 心率插件 widget 渲染器（能力由宿主注入 ctx.bus，topic 常量与 index.js 共用一份）
 // 区域约定：badge=宠物旁小字 / overlay=左上角波形图 / settings=设置面板
+// Worker 路线（ADR-0008，旧写法→契约写法的对照表见 PLUGIN_SDK.md 5.1）：这里没有
+// document / window，节点一律由调用点传入的 ctx.dom 建、事件走 node.on、画布由 ctx.onCanvas 交接。
 import { TOPIC_BPM, TOPIC_CMD, TOPIC_DEVICES, TOPIC_STATUS, TOPIC_WIDGET } from "./topics.js";
 
 // 每个挂载实例（badge/overlay/settings）各自一份清理表，互不干扰
@@ -27,7 +29,7 @@ export function unmount(root) {
 
 /* ---------- 宠物旁小字 ---------- */
 function mountBadge(root, ctx, cleanups) {
-  const style = document.createElement("style");
+  const style = ctx.dom.createElement("style");
   style.textContent = `
     .hr-badge {
       display: inline-flex; align-items: baseline; gap: 3px;
@@ -44,16 +46,16 @@ function mountBadge(root, ctx, cleanups) {
     }
     .hr-badge .unit { font-size: 10px; color: rgba(255,255,255,.82); margin-left: 1px; }
   `;
-  const el = document.createElement("div");
+  const el = ctx.dom.createElement("div");
   el.className = "hr-badge";
-  const span = (cls, text) => {
-    const n = document.createElement("span");
+  const span = (dom, cls, text) => {
+    const n = dom.createElement("span");
     n.className = cls;
     n.textContent = text;
     return n;
   };
-  const num = span("num", "--");
-  el.append(span("heart", "♥"), num, span("unit", "BPM"));
+  const num = span(ctx.dom, "num", "--");
+  el.append(span(ctx.dom, "heart", "♥"), num, span(ctx.dom, "unit", "BPM"));
   root.append(style, el);
 
   cleanups.push(
@@ -69,7 +71,7 @@ function mountChart(root, ctx, cleanups) {
   const HEART_PATH =
     "M23.6 2c-3.2 0-6 1.9-7.6 4.6C14.4 3.9 11.6 2 8.4 2 3.8 2 .2 5.7.2 10.2c0 8.1 12.3 16.6 15.8 18.6 3.5-2 15.8-10.5 15.8-18.6C31.8 5.7 28.2 2 23.6 2z";
 
-  const style = document.createElement("style");
+  const style = ctx.dom.createElement("style");
   style.textContent = `
     .hr-card {
       display: flex; align-items: center; gap: 14px;
@@ -111,26 +113,26 @@ function mountChart(root, ctx, cleanups) {
     .hr-chart-wrap canvas { display: block; }
   `;
 
-  const card = document.createElement("div");
+  const card = ctx.dom.createElement("div");
   card.className = "hr-card";
 
   // 心形（随 BPM 节奏跳动）
-  const heart = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  const heart = ctx.dom.createElementNS("http://www.w3.org/2000/svg", "svg");
   heart.setAttribute("viewBox", "0 0 32 32");
   heart.setAttribute("class", "hr-heart");
-  const heartPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  const heartPath = ctx.dom.createElementNS("http://www.w3.org/2000/svg", "path");
   heartPath.setAttribute("d", HEART_PATH);
-  const grad = document.createElementNS("http://www.w3.org/2000/svg", "defs");
-  const gradInner = document.createElementNS("http://www.w3.org/2000/svg", "linearGradient");
+  const grad = ctx.dom.createElementNS("http://www.w3.org/2000/svg", "defs");
+  const gradInner = ctx.dom.createElementNS("http://www.w3.org/2000/svg", "linearGradient");
   gradInner.setAttribute("id", "hrHeartGrad");
   gradInner.setAttribute("x1", "0");
   gradInner.setAttribute("y1", "0");
   gradInner.setAttribute("x2", "0");
   gradInner.setAttribute("y2", "1");
-  const stop1 = document.createElementNS("http://www.w3.org/2000/svg", "stop");
+  const stop1 = ctx.dom.createElementNS("http://www.w3.org/2000/svg", "stop");
   stop1.setAttribute("offset", "0");
   stop1.setAttribute("stop-color", "#ff7a8c");
-  const stop2 = document.createElementNS("http://www.w3.org/2000/svg", "stop");
+  const stop2 = ctx.dom.createElementNS("http://www.w3.org/2000/svg", "stop");
   stop2.setAttribute("offset", "1");
   stop2.setAttribute("stop-color", "#e4173f");
   gradInner.append(stop1, stop2);
@@ -139,24 +141,24 @@ function mountChart(root, ctx, cleanups) {
   heartPath.setAttribute("fill", "url(#hrHeartGrad)");
   heart.append(heartPath);
 
-  const readout = document.createElement("div");
+  const readout = ctx.dom.createElement("div");
   readout.className = "hr-readout";
-  const num = document.createElement("div");
+  const num = ctx.dom.createElement("div");
   num.className = "hr-num";
   num.textContent = "--";
-  const unit = document.createElement("div");
+  const unit = ctx.dom.createElement("div");
   unit.className = "hr-unit";
   unit.textContent = "BPM";
   readout.append(heart, num, unit);
 
-  const wrap = document.createElement("div");
+  const wrap = ctx.dom.createElement("div");
   wrap.className = "hr-chart-wrap";
-  const canvas = document.createElement("canvas");
+  const canvas = ctx.dom.createElement("canvas");
   const W = 200;
   const H = 118;
   const DPR = 2;
-  canvas.width = W * DPR;
-  canvas.height = H * DPR;
+  // 位图尺寸不写在节点上（width / height 不是契约里的 property，宿主对已交接的画布也会拒收），
+  // 留给 onCanvas 拿到的那块画布；节点上只留 CSS 尺寸
   canvas.style.width = `${W}px`;
   canvas.style.height = `${H}px`;
   wrap.append(canvas);
@@ -164,11 +166,24 @@ function mountChart(root, ctx, cleanups) {
   card.append(readout, wrap);
   root.append(style, card);
 
-  const g = canvas.getContext("2d");
+  // 画布控制权交接（宿主在 create 一落地就交出来，可能早于 append 到达）：回调里不碰树、
+  // 也不量尺寸 —— 位图大小用挂载时就定好的 W / H / DPR 常量；交接之前 draw 是空操作
+  let g = null;
+  cleanups.push(
+    ctx.onCanvas((id, off) => {
+      if (id !== canvas.nodeId) return;
+      off.width = W * DPR;
+      off.height = H * DPR;
+      g = off.getContext("2d");
+      draw();
+    }),
+  );
+
   const history = [];
   const MAX = 60;
 
   function draw() {
+    if (!g) return;
     g.setTransform(DPR, 0, 0, DPR, 0, 0);
     g.clearRect(0, 0, W, H);
 
@@ -257,8 +272,9 @@ function mountChart(root, ctx, cleanups) {
       // 一个 NaN 进 history 之后 min/max 全变 NaN，波形要再攒 60 个有效点才自愈
       if (!Number.isFinite(bpm)) return;
       num.textContent = String(bpm);
-      // 心形图标按真实心率节奏跳动
-      card.style.setProperty("--beat", `${(60 / Math.max(30, bpm)).toFixed(2)}s`);
+      // 心形图标按真实心率节奏跳动：契约的 style 是闭集、写不了自定义属性，
+      // 直接把 animation 写到心形节点上（内联样式覆盖样式表里 var(--beat, 1s) 的默认值）
+      heart.style.animation = `hr-beat ${(60 / Math.max(30, bpm)).toFixed(2)}s ease-in-out infinite`;
       history.push(bpm);
       if (history.length > MAX) history.shift();
       draw();
@@ -269,7 +285,7 @@ function mountChart(root, ctx, cleanups) {
 
 /* ---------- 设置面板（设置窗内） ---------- */
 function mountSettings(root, ctx, cleanups) {
-  const style = document.createElement("style");
+  const style = ctx.dom.createElement("style");
   style.textContent = `
     .hr-panel { font-size: 13px; color: #2b2f36; display: flex; flex-direction: column; gap: 10px; }
     .hr-panel label { display: flex; align-items: center; gap: 6px; }
@@ -288,64 +304,109 @@ function mountSettings(root, ctx, cleanups) {
     .hr-panel .sec { font-size: 12px; color: #98a2b3; margin-bottom: -4px; }
   `;
 
-  const panel = document.createElement("div");
+  const panel = ctx.dom.createElement("div");
   panel.className = "hr-panel";
-  panel.innerHTML = `
-    <div class="sec">蓝牙设备</div>
-    <div class="row">
-      <select class="devices"><option value="">— 点击「扫描」查找设备 —</option></select>
-    </div>
-    <div class="row">
-      <button class="scan">扫描</button>
-      <button class="connect">连接</button>
-      <button class="disconnect">断开</button>
-    </div>
-    <div class="sec">显示方式</div>
-    <div class="radios">
-      <label><input type="radio" name="hr-mode" value="badge" checked />宠物旁小字</label>
-      <label><input type="radio" name="hr-mode" value="overlay" />桌面左上角波形图</label>
-    </div>
-    <div class="status">就绪</div>
-  `;
-  root.append(style, panel);
+  // 原 innerHTML 模板逐节点拆开（契约没有 html op）：15 个元素 + 9 处 textContent。
+  // 建节点时就把引用存住 —— Worker 里没有 querySelector，$ 那套查询整个不在了
+  const secDevices = ctx.dom.createElement("div");
+  secDevices.className = "sec";
+  secDevices.textContent = "蓝牙设备";
 
-  const $ = (sel) => panel.querySelector(sel);
-  const statusEl = $(".status");
-  const devicesSel = $(".devices");
+  const devicesRow = ctx.dom.createElement("div");
+  devicesRow.className = "row";
+  const devicesSel = ctx.dom.createElement("select");
+  devicesSel.className = "devices";
+  const placeholder = ctx.dom.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "— 点击「扫描」查找设备 —";
+  devicesSel.append(placeholder);
+  devicesRow.append(devicesSel);
+  // 设备项的引用自己存着（去重与「按值找名」都不再查询 DOM）
+  const deviceOptions = [placeholder];
+
+  const actionsRow = ctx.dom.createElement("div");
+  actionsRow.className = "row";
+  const scanBtn = ctx.dom.createElement("button");
+  scanBtn.className = "scan";
+  scanBtn.textContent = "扫描";
+  const connectBtn = ctx.dom.createElement("button");
+  connectBtn.className = "connect";
+  connectBtn.textContent = "连接";
+  const disconnectBtn = ctx.dom.createElement("button");
+  disconnectBtn.className = "disconnect";
+  disconnectBtn.textContent = "断开";
+  actionsRow.append(scanBtn, connectBtn, disconnectBtn);
+
+  const secMode = ctx.dom.createElement("div");
+  secMode.className = "sec";
+  secMode.textContent = "显示方式";
+
+  const radiosBox = ctx.dom.createElement("div");
+  radiosBox.className = "radios";
+  // 这组 radio 原来靠 name 分组再 querySelectorAll 找回：改成建的时候就把引用 push 进数组，
+  // 切模式与回显时遍历它写 checked（name 属性仍保留，宿主侧就是同一组单选框）
+  const modeRadios = [];
+  const makeRadio = (dom, value, labelText, checked) => {
+    const input = dom.createElement("input");
+    input.type = "radio";
+    input.setAttribute("name", "hr-mode");
+    input.value = value;
+    input.checked = checked;
+    const label = dom.createElement("label");
+    // 文字放进一个 span，而不是写 `label.textContent`：`text` 是一次整段赋值，
+    // 写在 append 之后会把 radio 冲掉，写在之前又把「圆点在左、文字在右」翻成反向。
+    // 建 span 与待办 / agent 桥那两个插件同式，视觉次序与原模板一致。
+    const text = dom.createElement("span");
+    text.textContent = labelText;
+    label.append(input, text);
+    modeRadios.push(input);
+    radiosBox.append(label);
+  };
+  makeRadio(ctx.dom, "badge", "宠物旁小字", true);
+  makeRadio(ctx.dom, "overlay", "桌面左上角波形图", false);
+
+  const statusEl = ctx.dom.createElement("div");
+  statusEl.className = "status";
+  statusEl.textContent = "就绪";
+
+  panel.append(secDevices, devicesRow, actionsRow, secMode, radiosBox, statusEl);
+  root.append(style, panel);
 
   function setStatus(text, level = "info") {
     statusEl.textContent = text;
     statusEl.className = "status" + (level === "info" ? "" : ` ${level}`);
   }
 
-  $(".scan").addEventListener("click", () => ctx.bus.publish(TOPIC_CMD, { action: "scan" }));
-  $(".connect").addEventListener("click", () => {
-    const id = devicesSel.value;
-    if (!id) {
+  // Worker 里读不到真元素：select 的当前值靠宿主在 change 快照里回推，这里记一份给连接按钮用
+  let selectedDeviceId = "";
+  scanBtn.on("click", () => ctx.bus.publish(TOPIC_CMD, { action: "scan" }));
+  connectBtn.on("click", () => {
+    if (!selectedDeviceId) {
       setStatus("请先扫描并选择设备", "error");
       return;
     }
-    // 设备名就在选中项的文本里，点连接时现取：原来声明了 selectedName 却没有任何地方赋值，
-    // 连接状态、回显与持久化里的设备名恒为 null
-    const name = devicesSel.selectedOptions[0]?.textContent ?? null;
-    ctx.bus.publish(TOPIC_CMD, { action: "connect", deviceId: id, deviceName: name });
+    // 设备名就在选中项的文本里，点连接时现取（引用都存着，不用查询）
+    const name = deviceOptions.find((o) => o.value === selectedDeviceId)?.textContent ?? null;
+    ctx.bus.publish(TOPIC_CMD, { action: "connect", deviceId: selectedDeviceId, deviceName: name });
   });
-  $(".disconnect").addEventListener("click", () => ctx.bus.publish(TOPIC_CMD, { action: "disconnect" }));
-  // 命中的就是上面模板 radios 段里写的 <input type="radio" name="hr-mode">（唯一匹配），
-  // checked/value 是 HTMLInputElement 专有属性，选择器保证这里拿到的一定是它，按此收窄
-  (/** @type {NodeListOf<HTMLInputElement>} */ (panel.querySelectorAll('input[name="hr-mode"]'))).forEach((radio) => {
-    radio.addEventListener("change", () => {
+  disconnectBtn.on("click", () => ctx.bus.publish(TOPIC_CMD, { action: "disconnect" }));
+  devicesSel.on("change", () => {
+    selectedDeviceId = devicesSel.value;
+  });
+  for (const radio of modeRadios) {
+    radio.on("change", () => {
       if (radio.checked) ctx.bus.publish(TOPIC_CMD, { action: "mode", value: radio.value });
     });
-  });
+  }
 
   cleanups.push(
     ctx.bus.subscribe(TOPIC_DEVICES, (d) => {
-      // 设备 id 来自广播，不能拼进选择器
-      if ([...devicesSel.options].some((o) => o.value === d.id)) return;
-      const opt = document.createElement("option");
+      // 设备 id 来自广播：只做值比对，文本一律走 textContent
+      if (deviceOptions.some((o) => o.value === d.id)) return;
+      const opt = ctx.dom.createElement("option");
       opt.value = d.id;
       opt.textContent = `${d.name ?? "未命名设备"}${d.rssi != null ? `（${d.rssi} dBm）` : ""}`;
+      deviceOptions.push(opt);
       devicesSel.append(opt);
     }),
   );
@@ -358,8 +419,7 @@ function mountSettings(root, ctx, cleanups) {
     ctx.bus.subscribe(TOPIC_WIDGET, (d) => {
       if (!d || typeof d !== "object") return;
       const want = d.mode === "overlay" ? "overlay" : "badge";
-      // 同上：命中的也是那组 radio（模板里唯一的 input[name="hr-mode"]），收窄到 HTMLInputElement 才可写 checked
-      for (const radio of /** @type {NodeListOf<HTMLInputElement>} */ (panel.querySelectorAll('input[name="hr-mode"]'))) {
+      for (const radio of modeRadios) {
         radio.checked = radio.value === want;
       }
       if (d.connected) setStatus(`已连接 ${d.deviceName ?? "设备"}`, "ok");

@@ -50,23 +50,35 @@ const eventValueFor = (event) =>
  *
  * 每个插件登记一份「有内容」的假 payload（空数组不算喂到），由 PM 在验收每张迁移卡时对着
  * 该插件自己发的那条总线补。喂进去之后新增的 op 一样逐条过门禁。
+ * 一个插件往往订了好几个 topic，每个 handler 认的形状不同，所以按 topic 后缀给；
+ * 没命中后缀就退到 `*`。一条都匹配不上 ⇒ 断言直接红，逼着每张迁移卡把自己的数据形状补进来。
  */
 const BUS_POKE = {
   "com.pet.todo": {
-    openCount: 1,
-    doneCount: 0,
-    tasks: [{ id: "a", text: "写周报", done: false, line: "(A) 写周报", projects: ["工作"] }],
+    "*": {
+      openCount: 1,
+      doneCount: 0,
+      tasks: [{ id: "a", text: "写周报", done: false, line: "(A) 写周报", projects: ["工作"] }],
+    },
   },
   // 一份 payload 喂三个区：badge / overlay 读 state-label-steps-title-detail，settings 读两个开关
   "com.pet.agent-bridge": {
-    state: "running",
-    label: "编辑文件",
-    steps: 3,
-    title: "补迁移冒烟",
-    detail: "tests/unit/unit-widget-migrations.mjs",
-    toolName: "Edit",
-    showTitle: true,
-    showDetail: true,
+    "*": {
+      state: "running",
+      label: "编辑文件",
+      steps: 3,
+      title: "补迁移冒烟",
+      detail: "tests/unit/unit-widget-migrations.mjs",
+      toolName: "Edit",
+      showTitle: true,
+      showDetail: true,
+    },
+  },
+  "com.pet.hr-ble": {
+    bpm: { bpm: 96 },
+    devices: { id: "AA:BB:CC:DD:EE:FF", name: "Polar H10", rssi: -61 },
+    status: { text: "已连接 Polar H10", level: "ok" },
+    widget: { mode: "overlay", connected: true, deviceName: "Polar H10" },
   },
 };
 
@@ -114,7 +126,8 @@ async function smoke(dir, region, module = null) {
       }
       if (msg.t === "call") {
         calls.push(msg.method);
-        if (msg.method === "bus.subscribe" && typeof msg.sub === "number") subs.push(msg.sub);
+        if (msg.method === "bus.subscribe" && typeof msg.sub === "number")
+          subs.push({ sub: msg.sub, topic: String(msg.args?.[0] ?? "") });
         // 逢 call 必回：真宿主怎么回，这里就怎么回，否则 mount 里的调用会把冒烟吊死
         queueMicrotask(() =>
           runtime.hostMessage({ t: "result", seq: msg.seq, ok: true, value: replyFor(msg.method) }),
@@ -155,10 +168,16 @@ async function smoke(dir, region, module = null) {
   // 1) 先把数据喂进去。列表类节点是数据驱动的：不喂的时候它们压根不存在，
   //    里面的监听也无从触发 —— 顺序反了会得到「触发了 1 个监听却没有新增 op」这种假红。
   //    见 BUS_POKE 上方那段（这条口径是被一次存活的变异逼出来的）。
-  const poke = BUS_POKE[manifest.id] ?? null;
+  const table = BUS_POKE[manifest.id] ?? null;
+  const pokes = subs
+    .map((s) => ({
+      sub: s.sub,
+      payload: table ? (table[String(s.topic).split(":").pop()] ?? table["*"] ?? null) : null,
+    }))
+    .filter((p) => p.payload !== null);
   const opsBeforePoke = ops.length;
-  for (const s of subs) {
-    runtime.hostMessage({ t: "bus", sub: s, payload: poke ?? {} });
+  for (const p of pokes) {
+    runtime.hostMessage({ t: "bus", sub: p.sub, payload: p.payload });
   }
   await settle();
   const opsAfterPoke = ops.length;
@@ -200,7 +219,7 @@ async function smoke(dir, region, module = null) {
     listenerCountBeforeEvents,
     canvasCount: canvasIds.length,
     subCount: subs.length,
-    hasPoke: poke !== null,
+    pokeCount: pokes.length,
     opsAfterMount,
     opsBeforePoke,
     opsAfterPoke,
@@ -240,7 +259,11 @@ function assertEventsRendered(r, label) {
  *  「冒烟绿」只覆盖了 mount 那一半 —— A10 那次存活的变异就是这么漏过去的。 */
 function assertPokeRendered(r, label) {
   assert.ok(r.subCount > 0, `${label} 一条订阅都没有，喂不进数据`);
-  assert.equal(r.hasPoke, true, `${label} 没在 BUS_POKE 里登记假 payload，数据驱动那段渲染跑不到`);
+  assert.equal(
+    r.pokeCount,
+    r.subCount,
+    `${label} 有 ${r.subCount - r.pokeCount} 个订阅没在 BUS_POKE 里匹配到 payload（按 topic 后缀补）`,
+  );
   assert.ok(r.opsAfterPoke > r.opsBeforePoke, `${label} 喂了 payload 却没多发一条 op`);
 }
 
