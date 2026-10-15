@@ -13,6 +13,7 @@ import {
   waitUntil,
   writeEnabledIds,
 } from "./harness/cdp.mjs";
+import { waitWidgetRealm } from "./harness/widget-realm.mjs";
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
 const PID = "com.pet.todo";
@@ -97,6 +98,11 @@ try {
     `!!document.querySelector('#widget-badge div[data-plugin-id=${JSON.stringify(PID)}]')`,
     25_000,
   ));
+  r.check(
+    "badge 插槽的 realm 戳是 worker（todo 在迁移台账里）",
+    "worker",
+    (await waitWidgetRealm(c, PID, "badge", "worker", 20_000)).actual,
+  );
   r.check(
     "插件确实订阅了自己的 cmd topic",
     true,

@@ -16,6 +16,7 @@ import {
   waitUntil,
   writeEnabledIds,
 } from "./harness/cdp.mjs";
+import { waitWidgetRealm } from "./harness/widget-realm.mjs";
 import { NET_ID, PROBE_ID, SPOOF_DIR, removeFixtures, writeFixtures } from "./harness/fixtures.mjs";
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
@@ -967,6 +968,11 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
     "widget 挂载成功（说明 ./topics.js 在 petplugin 下能解析）",
     true,
     await waitUntil(c, `!!document.querySelector('#widget-badge > div[data-plugin-id="com.pet.hr-ble"]')`),
+  );
+  r.check(
+    "hr-ble 的 badge 插槽 realm 戳是 worker（它在迁移台账里）",
+    "worker",
+    (await waitWidgetRealm(c, "com.pet.hr-ble", "badge", "worker", 20_000)).actual,
   );
   await c.ev(`window.__wh.unmount('com.pet.hr-ble')`);
 

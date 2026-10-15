@@ -20,6 +20,7 @@ import {
   waitUntil,
   writeEnabledIds,
 } from "./harness/cdp.mjs";
+import { waitWidgetRealm } from "./harness/widget-realm.mjs";
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
 const AGENT_ID = "com.pet.agent-bridge";
@@ -677,6 +678,11 @@ try {
       20_000,
     );
     r.check("插件页挂出「Qoder hook 接入」块", true, panelReady);
+    r.check(
+      "插件页插槽的 realm 戳是 worker（agent-bridge 在迁移台账里）",
+      "worker",
+      (await waitWidgetRealm(settings.client, AGENT_ID, "settings", "worker", 20_000)).actual,
+    );
 
     // ① 未装：样例里只有别人的 hook，managed=0
     const absent = await waitUntil(settings.client, stateExpr("absent"), 20_000);
