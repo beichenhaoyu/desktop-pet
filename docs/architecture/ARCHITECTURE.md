@@ -113,7 +113,7 @@
 │   ├── unit/                   # node:test 单测（运行时、能力、manifest schema、Worker 通道契约、行情源等）
 │   ├── e2e/                    # verify-*.mjs 端到端断言 + harness/（CDP 与夹具）
 │   └── fixtures/               # 只在回归运行时装进 plugins/ 的取证插件（l1-probe，见 ADR-0006）
-├── tools/                      # dev-debug.mjs（供断言脚本连 CDP）、generate-app-icon.ps1
+├── tools/                      # dev-debug.mjs（供断言脚本连 CDP）、wait-cdp.mjs（就绪等待）、win-zorder.ps1（真窗 z 序取证）、generate-app-icon.ps1
 ├── docs/
 │   ├── architecture/
 │   │   └── ARCHITECTURE.md     # 本架构文档
@@ -135,7 +135,8 @@
 │   │   ├── 0006-plugin-host-in-web-worker.md  # 插件进 Worker：身份由宿主分配（L1 方向）
 │   │   ├── 0007-unified-command-error-codes.md  # 命令错误统一 {code,message}，码表只有一份
 │   │   ├── 0008-widget-host-in-web-worker-render-commands.md  # widget 进 Worker：虚拟节点 + 批量渲染指令 + 反向事件通道
-│   │   └── 0009-dispatch-workspace-not-in-repo.md  # 派单工作区不入库；被引用的取证输入收进 docs/process
+│   │   ├── 0009-dispatch-workspace-not-in-repo.md  # 派单工作区不入库；被引用的取证输入收进 docs/process
+│   │   └── 0010-badge-visibility-overlay-position-and-window-layering.md  # 徽标只仲裁可见性、overlay 归插件定位、本体压住 overlay
 │   └── desktop-pet-优化任务清单.docx   # 外部优化任务清单
 ├── assets/
 │   └── app-icon.png            # 图标母版（generate-app-icon.ps1 的产物）
