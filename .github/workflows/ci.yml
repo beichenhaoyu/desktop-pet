@@ -37,7 +37,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          # 与开发机同大版本（本机 24.9.0）。曾钉 '22'：run #10 在 node 22.23.3 上挂在
+          # `npm run unit`，报的是测试运行器解不开子进程报告
+          # （Unable to deserialize cloned data …，247 条断言其实全绿），本地便携版量过是间歇缺陷。
+          # 口径与复现方式见 docs/process/CONVENTIONS.md「CI 的 node 必须与本仓开发机同大版本」一条。
+          node-version: '24'
           cache: npm
 
       - name: 缓存 cargo 依赖

@@ -86,6 +86,15 @@
 - 面板（分时/K线/五档）只在设置页活着时刷：`PANEL_TTL_MS` 90 秒，由设置页 widget 每 60 秒发一次 `sync` 续期（`watchView(ctx, render, { beatMs })`），badge/overlay 不续期 —— 人走了额外出网要自己停。
 - `ctx.bus.subscribe` 这个 API **本身**就要在 manifest 声明 `bus:subscribe`，不声明会在激活时被拒（`com.pet.todo 未在 manifest 声明这些能力: bus:subscribe`）；ACL 放宽的只是「自己前缀不需要额外授权」，别把两者混为一谈
 - **验证**：离线常驻单测有十份文件，合计 `npm run unit` = **1094 个用例**：`unit:astock`（`tests/unit/unit-market.mjs` 247 + `tests/unit/unit-aux.mjs` 186）、`unit:runtime`（`src/` 运行时纯逻辑 107 条，含 C1 的启停清单迁移，靠 `tests/unit/ts-loader.mjs` 把 .ts 现场转译进 `node --test`，并把 `@tauri-apps/api/*` 换成 `tests/unit/tauri-stub.mjs`）、`unit:worker-host`（L1 的 Worker 通道契约 118 条：22 个方法表、派发表完备、Worker 侧不许带进裸 IPC）
+- **CI 的 node 必须与本仓开发机同大版本（2026-10-15 实测）**：`ci.yml` 曾钉 `node-version: '22'`，
+  run #10（2026-10-14 17:12，node 22.23.3）挂在第 9 步 `npm run unit`，报
+  `Unable to deserialize cloned data due to invalid or unsupported version.`，`failureType: 'uncaughtException'`，
+  栈全在 `node:internal/test_runner/runner` 的 `processRawBuffer` —— **那是 node 测试运行器解不开子进程回传的序列化报告，不是断言失败**
+  （`unit-market.mjs` 里 247 条全 `ok`，总账 `tests 977 / pass 976 / fail 1`，那 1 是文件级包装）。
+  本地用同一个 22.23.3 便携版量过：单文件 `--test unit-market.mjs` **5/5 必红**，
+  而 CI 那条九文件 `--test-concurrency=1` 的命令形状本地 **3/3 绿**；node 24.9.0 两种形状各 5/5 全绿
+  → 判定为 **node 22 报告通道的负载相关间歇缺陷**，修法是把 CI 对齐到 24，不是改套件判据。
+  复现口径记下来，下次别靠猜：`temp/` 里解压官方便携版跑同一条命令做 A/B（用完删，不碰 nvm 的符号链接）
 - **跑运行时回归的两条前置（都是踩过才记的）**：
   ① `verify:agent` 的写盘组要求宿主被 `PET_AGENT_CONFIG_FILES="<仓库>\\temp\\a9a\\cfg-a.json;<仓库>\\temp\\a9a\\cfg-b.json" npm run dev:debug` 指到 temp 样例；
   不带这个变量起实例时**整组自跳**，守卫「目标文件都在 temp/ 下」当场判红（读数会变成 `54 passed / 1 failed`，看着像回归、其实是启动方式不对；带对了是 **72/0**）。
