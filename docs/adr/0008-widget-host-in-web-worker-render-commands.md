@@ -5,7 +5,8 @@
 - **日期**：2026-10-15
 - **相关**：[ADR-0006](0006-plugin-host-in-web-worker.md)（插件进 Worker，阶段一已落地）、
   [ADR-0004](0004-style-src-unsafe-inline-kept.md)、`docs/architecture/ARCHITECTURE.md` 的 widget 宿主一节、
-  取证输入 `.dispatch/arch-p2/reference/T16-gaps.md`（本 ADR 的每一条都对得上它的编号）
+  取证输入 [docs/process/T16-WIDGET-REALM-GAPS.md](../process/T16-WIDGET-REALM-GAPS.md)（本 ADR 的每一条都对得上它的编号；
+  原件 `.dispatch/arch-p2/reference/T16-gaps.md` 在派单工作区、不入库，收进库是为了让引用打得开）
 
 ## 背景
 

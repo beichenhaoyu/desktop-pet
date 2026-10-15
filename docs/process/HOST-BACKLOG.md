@@ -33,10 +33,10 @@ MVP 范围：<这一轮只做什么>
 |---|---|---|---|---|---|---|
 | S1 | 发布 0.2.0 便携包 | 工程发布 | **搁置**（用户 2026-10-11 定的口径：等 B2/B3/B4/A9 落地后一起出包，省一次重编与一轮 `verify:release`；版本号改动与文档提交同样压到那时） | — | — | — |
 | B2 | `agent:hooks` 受控能力：钩子配置从设置窗移交到插件页 | 本体功能 + 安全边界 | **已放行**（第二轮返工后 PM 全量重跑：cargo 72、`verify` **189/0**、`verify:agent` 53、`verify:release` 12、build 0；三条打回问题都修在脚本侧，根因见卡 §10 与提交说明） | — | `7b9b558` | — |
-| A9a | agent 桥：把 hook 装/卸入口接到自己的插件页（**补 B2 留下的空窗**） | 插件 | **已放行**（`.dispatch/A股盯盘质量加固/cards/A9a-插件页承接hook入口.md`；PM 重跑 `verify:agent` 53→**71**、`verify` 189 不变、cargo 72、build 0；HEAD 的 54 条断言标题逐条核对仍全在） | B2（已满足） | `f3be069` | — |
-| B3 | 本体气泡常驻状态行 + 节点台词分层 | 本体功能 | **已写执行卡**（`.dispatch/A股盯盘质量加固/cards/B3-气泡常驻状态行.md`，**批次 4**；T04 已回，几何结论见 ../adr/0003 修订） | ~~T04~~ 已解 | — | — |
+| A9a | agent 桥：把 hook 装/卸入口接到自己的插件页（**补 B2 留下的空窗**） | 插件 | **已放行**（`.dispatch/A股盯盘质量加固/cards/A9a-插件页承接hook入口.md`，派单工作区、不入库，R4 口径；PM 重跑 `verify:agent` 53→**71**、`verify` 189 不变、cargo 72、build 0；HEAD 的 54 条断言标题逐条核对仍全在） | B2（已满足） | `f3be069` | — |
+| B3 | 本体气泡常驻状态行 + 节点台词分层 | 本体功能 | **已写执行卡**（`.dispatch/A股盯盘质量加固/cards/B3-气泡常驻状态行.md`，派单工作区、不入库，R4 口径；**批次 4**；T04 已回，几何结论见 ../adr/0003 修订） | ~~T04~~ 已解 | — | — |
 | B4 | Agent 适配器注册表 + 单联动事务（卸旧装新） | 本体功能 | 待排（**批次 5**）；T03 的两条缺陷已并入方案约束第 8 条 | B2（已满足） | — | — |
-| A10 | A股封板判定改用交易所涨跌停价 | 插件缺陷 | **已放行**（`.dispatch/A股盯盘质量加固/cards/A10-封板判定与权重注释.md`，批次 2；单测 397 条、6 处变异抽查全杀掉、`verify:astock` 的 10 条红与它无关） | — | `1cd4b5b` | — |
+| A10 | A股封板判定改用交易所涨跌停价 | 插件缺陷 | **已放行**（`.dispatch/A股盯盘质量加固/cards/A10-封板判定与权重注释.md`，派单工作区、不入库，R4 口径；批次 2；单测 397 条、6 处变异抽查全杀掉、`verify:astock` 的 10 条红与它无关） | — | `1cd4b5b` | — |
 | A11 | `verify:astock` 源归属断言改回源无关（回归套件的测试缺陷） | 工程/回归 | **已放行**（第二轮：PM 现场复现 **154 passed / 0 failed**，且是在**与执行者不同的网络形态**下——PM 这轮 preflight 七台主机全"可达"、新浪 5100ms 通了，而执行者那轮新浪不可达；判定层靠 `attempted` 的尝试记录把"东财 API 失败→下移腾讯"判成绿，预算档位自动放宽到 [3,12]。变异抽查 4/4 全杀掉） | B2（已满足） | 本次提交 | — |
 | A9b | agent 桥：去掉会话状态卡 + 多 Agent 单选（依赖本体新能力） | 插件 | 待排（**批次 6**），**等 B3/B4 放行** | B3 B4 | — | — |
 
@@ -217,7 +217,7 @@ MVP 范围：<这一轮只做什么>
      保留「装了但条数不对 → 报『需要修复』而不是『已安装』」这一档。
   7. `PET_AGENT_CONFIG_FILES` 覆盖入口保留，并让它能带适配器 id（测试要在不碰真实用户配置的前提下造出第二个适配器）。
   8. **条目路径与当前 exe 不一致要单独成档**（T03 实测的两条缺陷，见
-     `.dispatch/A股盯盘质量加固/work/T03/hook-path-audit.md` 的 F13–F17/F19–F20）：
+     `.dispatch/A股盯盘质量加固/work/T03/hook-path-audit.md` 的 F13–F17/F19–F20，派单工作区、不入库，R4 口径）：
      `is_managed` 只认 `--pet-hook` 子串、不看路径，所以换 exe（dev 产物 ↔ 便携包）后条数仍是 12，
      `installed` 仍为 `true`，而 `snapshot()` 回给前端的 `exe` 是**当前** exe —— 界面会指着一条并不存在的安装说"已安装"。
      `snapshot()` 要新增逐文件判定（条目里的 exe 路径是否存在、是否等于 `current_exe()`），把这档叫作「路径过期」，
@@ -257,7 +257,7 @@ MVP 范围：<这一轮只做什么>
 | 插件纯函数（`plugins/com.pet.todo/todo-txt.js`；hr-ble 的 BPM 解析在 Rust，归 cargo test） | `npm run unit:plugins` | plugins **53**（Q4；`npm run unit` 合计 **811**） |
 | 任何新增脚本 / 协议源 / CSP / 打包相关 | `npm run verify:release` | 12 |
 | Cargo 依赖变动 | `cargo tree -p tauri` 必须仍是 **2.12.0**，且 `npm run verify:release` | — |
-| 文档与磁盘一致性（改 `ARCHITECTURE.md` §4 目录树、README 目录速览、搬文件/建删模块、改 ADR 链接、动 `AGENTS.md`） | `npm run check:docs`（CI 里 `npm run unit` 之后一步，见 `.github/workflows/ci.yml`） | **rules=7 failing=0**、退出码 0。七条：R-A md 相对链接可达 / R-B §4 树对 `src-tauri/src/services/` 双向（`disk=12 doc=12`）/ R-C 速览点名的插件 id 齐 / R-D 反引号路径 token 存在 / R-E 链接文字与目标名一致 / R-F `AGENTS.md` ≤6000 字节 / R-G **§4 全树双向**（正向逐条 existsSync、反向按顶层目录与领域成员点名，目录级）。R7（`e2e63c7`）交付前六条、R8 补出 R-G：清单 32 项那句「删一个模块而文档未改时 CI 变红」从那一刻起才对**整棵树**成立，此前只对 services 成立。**加规则不许削既有读数**，且新增例外一律进 `EXEMPT_*` 常量表带出处理由 |
+| 文档与磁盘一致性（改 `ARCHITECTURE.md` §4 目录树、README 目录速览、搬文件/建删模块、改 ADR 链接、动 `AGENTS.md`、往文档里写路径坐标） | `npm run check:docs`（CI 里 `npm run unit` 之后一步，见 `.github/workflows/ci.yml`） | **rules=8 failing=0**、退出码 0。八条：R-A md 相对链接可达 / R-B §4 树对 `src-tauri/src/services/` 双向（`disk=12 doc=12`）/ R-C 速览点名的插件 id 齐 / R-D 反引号路径 token 存在 / R-E 链接文字与目标名一致 / R-F `AGENTS.md` ≤6000 字节 / R-G **§4 全树双向**（正向逐条 existsSync、反向按顶层目录；`tree=99`）/ R-H **坐标对读者可达**（清单 R4）：反引号里的盘符绝对路径直接判红，指向派单工作区 `.dispatch/…` 的引用必须同行写「不入库」，现场读数 `checked=19 exempted=2 broken=0`（豁免常量只有一条＝仓库外那份历史重写备份目录，`exempted=2` 是它在两处出现；豁免带出处、进 `EXEMPT_TOKENS`）。R7（`e2e63c7`）交付前六条、R8 补出 R-G、R4 补出 R-H：清单 32 项那句「删一个模块而文档未改时 CI 变红」从那一刻起才对**整棵树**成立，此前只对 services 成立。**加规则不许削既有读数**，且新增例外一律进 `EXEMPT_*` 常量表带出处理由 |
 | 命令层形状（新增或改动任何 `#[tauri::command]`） | `npm run check:shape`（CI 里跟在 `check:docs` 之后） | **commands=48 s1=0 s2=0 string_err=0 failing=0**。三条机械判据：S1 命令体禁 IO 原语、S2 命令体非空行 ≤20（A1 / [ADR-0005](../adr/0005-command-layering-thin-command-bodies.md)）、S3 命令 Err 侧必须是 `HostError` 的 `{code, message}`（A2 收口后升成拦截项，2026-10-14）。首跑 8 处违例已全部修掉，读数中位数 9 行、最大 20 行；「业务规则要住在可单测的函数里」这一维靠 `cargo test --lib` 的点名新测试与评审，不靠这条 CI（机械判据不判断径） |
 | IPC 错误形状（A2 / [ADR-0007](../adr/0007-unified-command-error-codes.md)：命令 Err 侧、`packages/sdk/error-codes.json`、`src/runtime/host-error.ts`） | `npm run check:shape`（S3 拦截项）+ `npm run unit:errors` + `cargo test --lib`（`host_error.rs` 单测） | 码表 12 个，两侧对撞 cargo 4 条 + unit:errors 13 条；**2026-10-14（A07）收口**：`string_err=0`、`From<HostError> for String` 混迁桥已删且 `cargo check --all-targets` 全绿（无残余转换的机器证明） |
 
@@ -290,7 +290,7 @@ MVP 范围：<这一轮只做什么>
 - 原子写只用 `src-tauri/src/fsutil.rs::write_atomic` 一份实现，别再复制第四份。
 - **`npm run dev:debug` 被中断后 vite 子进程会活着留在 1420**（2026-10-12 实测两次）：下一次启动直接
   `Error: Port 1420 is already in use`，看起来像"端口冲突"其实是自己留的孤儿。收尾查
-  `netstat -ano | grep :1420`，按 PID + `CommandLine` 里的 `D:\test\desktop-pet\node_modules` 确认归属后再停；
+  `netstat -ano | grep :1420`，按 PID + `CommandLine` 里的 `<仓库根>\node_modules` 确认归属后再停；
   宠物进程同理（TaskStop 只收 npm/tauri 那一层）。
 - **hook 配置写回会整文件重排键序**：`agent_hooks.rs:122/133` 用 `serde_json::to_string_pretty` 重写整个
   `settings.json`，serde_json 默认按 BTreeMap 排键（`HEAD` 起就是这样，不是某张卡引入的回归）。

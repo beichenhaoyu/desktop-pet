@@ -1,6 +1,6 @@
 // tools/check-docs.mjs — 文档与磁盘一致性门禁（优化清单第 32 项；卡 R7 交付物）
 //
-// 七条规则（R-A…R-F 口径见 .dispatch/arch-p2/work/T04/check-docs-rules.md 与卡 R7 §3；R-G 见卡 R8 §2）：
+// 八条规则（R-A…R-F 口径见 .dispatch/arch-p2/work/T04/check-docs-rules.md（工作区、不入库）与卡 R7 §3；R-G 见卡 R8 §2；R-H 见清单 R4）：
 //   R-A 正式文档里的 md 相对链接可达（http(s):/mailto:/纯 #片段 除外）
 //   R-B ARCHITECTURE.md §4 树对 src-tauri/src/services/ 的覆盖双向成立
 //   R-C README「目录速览」的 plugins/ 行点名四个插件 id
@@ -9,9 +9,11 @@
 //   R-F AGENTS.md 字节数 ≤ 6000（上限由 PM 定，勿改回 5000）
 //   R-G §4 树全量双向核对：树还原出的每条相对路径逐条 existsSync（树有、磁盘无 → 红）；
 //       磁盘顶层目录与领域成员（目录级口径）必须在树里（磁盘有、树无 → 红）
+//   R-H 坐标必须对读者可达：反引号里以盘符开头的机器绝对路径 → 红；
+//       指向派单工作区 `.dispatch/…`（.gitignore 整目录不入库）的引用必须同行写「不入库」→ 否则红
 //
 // 退出码语义：任何一条规则为假 → process.exitCode = 1（CI 只认退出码，不打退出码等于没门禁）。
-// 末尾固定打一行 `RESULT rules=7 failing=K`；--json 输出同样一份汇总的 JSON 形态。
+// 末尾固定打一行 `RESULT rules=8 failing=K`；--json 输出同样一份汇总的 JSON 形态。
 //
 // 例外全部是显式的常量表（EXEMPT_*），每条带出处与理由；口径论证见
 // .dispatch/arch-p2/work/R7/exemptions.md。不许用"看起来不像路径"这类模糊启发式。
@@ -71,6 +73,8 @@ const EXEMPT_TOKENS = new Map([
   ['src/lib/sprite-atlas.ts', '同上（上游仓库源码路径，README.md:104）'],
   ['packages/petdex-cli/src/hooks/bubble-runner.ts', '同上（上游仓库源码路径，README.md:104）'],
   ['plugins/llm-token-usage', '示例插件按用户决定暂缓、目录未建（2026-10-10 决定；CONVENTIONS.md:83 已标注「暂缓」，AGENTS.md 明说未做）'],
+  // R-H 的 H1 例外：仓库外的备份落点。这条绝对路径本身就是内容（「备份不在这个库里」），不是文档坐标。
+  ['D:/test/git-purge-backup-20261015', '2026-10-15 历史重写的仓库外备份目录（清单 R4，CONVENTIONS「派单工作区不入库」一条）：它按定义在库外，绝对路径就是它的含义'],
 ]);
 // 按 (文档, token) 精确豁免：A01 拆分（2026-10-12）把 services/agent.rs、services/skins.rs 拆成
 // 目录（agent/、skins/）之前写下的「文件:行号」坐标引用，保留原坐标（文档冻结期不改，PM 决定是改形态还是留记录）。
@@ -404,6 +408,48 @@ function ruleG() {
   }
 }
 
+// ---- R-H：文档里的坐标必须对读者可达（清单 R4）----
+// 两条子判据，都只按形状判，不用「看着像不像」的启发式：
+//   H1 反引号 token 以盘符开头（`D:\…`、`c:/…`）→ 红。机器绝对路径只对写它的那台机器成立，
+//      CI 全新 checkout 与第三方助手都打不开；S6 那句「仓库内 grep 不到 D:/test」由这条钉住。
+//   H2 首段是 `.dispatch`（派单工作区，.gitignore 整目录覆盖）的 token 必须**同行**含「不入库」→ 否则红。
+//      R-D 按设计看不见它（判定要求首段命中七个入库顶层目录），所以「文档把唯一证据点写到库外」
+//      这件事只有这条拦得住。引用本身可以留（历史坐标有价值），但必须当场写明它在库外、读者去哪儿找。
+function ruleH(docs) {
+  const failures = [];
+  let checked = 0;
+  let exempted = 0;
+  for (const doc of docs) {
+    for (const [i, line] of linesOf(doc).entries()) {
+      for (const m of line.matchAll(/`([^`\n]+)`/g)) {
+        const raw = m[1].trim();
+        const norm = raw.replace(/\\/g, '/');
+        const isDrive = /^[A-Za-z]:[\\/]/.test(raw);
+        const isWorkspace = norm.split('/')[0] === '.dispatch';
+        if (!isDrive && !isWorkspace) continue;
+        if (EXEMPT_TOKENS.has(norm)) {
+          exempted += 1;
+          continue; // 显式例外表：带出处的常量，不是启发式
+        }
+        checked += 1;
+        if (isDrive) {
+          failures.push(`${doc}:${i + 1} 机器绝对路径进了文档（改成仓库根相对路径）: ${raw.slice(0, 90)}`);
+          continue;
+        }
+        if (!line.includes('不入库')) {
+          failures.push(`${doc}:${i + 1} 指向派单工作区却没在同一行写「不入库」: ${raw.slice(0, 90)}`);
+        }
+      }
+    }
+  }
+  return {
+    name: 'R-H',
+    ok: failures.length === 0,
+    failures,
+    detail: `checked=${checked} exempted=${exempted} broken=${failures.length}`,
+  };
+}
+
 // ---- 跑 ----
 function safeRule(name, fn) {
   try {
@@ -422,6 +468,7 @@ const results = [
   safeRule('R-E', () => ruleE(docs)),
   safeRule('R-F', () => ruleF()),
   safeRule('R-G', () => ruleG()),
+  safeRule('R-H', () => ruleH(docs)),
 ];
 const failing = results.filter((r) => !r.ok).length;
 

@@ -168,7 +168,7 @@ MVP 范围：<这一轮只做什么>
   所以阶段二必须等 B1 的干净解码，并且解析器要写成**校验不通过就判该源失败并下移**：
   段数必须等于 88（新浪 32）、现价/昨收必须是有限正数、`3` 段必须能对上自选列表里的代码。
 
-- **必读**：`D:\test\desktop-pet\docs\plugin-dev\PLUGIN-HANDBOOK.md`、`docs/plugin-dev/PLUGIN_SDK.md` §3 能力表、
+- **必读**：`docs/plugin-dev/PLUGIN-HANDBOOK.md`、`docs/plugin-dev/PLUGIN_SDK.md` §3 能力表、
   参考实现 `plugins/com.pet.astock/market.js`（纯函数分层、`parseKlineLine` 的列序注释）与 `throttle.js`（节制范式）。
 - **边界**：只准改 `plugins/com.pet.astock/` 内的 `market.js`、`index.js`、`rules.js`、`widget.js` 与
   `tests/e2e/verify-astock.mjs`。**不得**改 `src/`、`src-tauri/`、`tauri.conf.json`、其他插件目录。
@@ -270,12 +270,12 @@ MVP 范围：<这一轮只做什么>
 ### 2.1 卡片 B1 `宿主 http 能力` —— 响应按 charset 解码 · 状态：**已放行**（`341b944`，评审 2026-10-09）· 曾是 A8 阶段二的前置（阶段一不等它）
 - **任务**：`ctx.http.request` 对非 UTF-8 响应（`charset=GBK` / `GB18030`）返回正确字符串，UTF-8 行为一字不变。
 - **任务类型**：**这是本体改动**，§0 模板里「不得改 `src/`、`src-tauri/`」那条边界在本卡片内被下面的白名单覆盖。
-  **只准动这些文件**，其余一律不碰：
-  - `D:\test\desktop-pet\src-tauri\src\services\http.rs`
-  - `D:\test\desktop-pet\src-tauri\Cargo.toml`、`D:\test\desktop-pet\src-tauri\Cargo.lock`
-  - `D:\test\desktop-pet\src\runtime\bridge.ts`
-  - `D:\test\desktop-pet\docs\plugin-dev\PLUGIN_SDK.md`
-  - `D:\test\desktop-pet\scripts\verify.mjs`（或新加 `tests/e2e/verify-http.mjs` + package.json 一条脚本）
+  **只准动这些文件**（路径按仓库根，不写机器绝对路径 —— R4 之后这条由 `npm run check:docs` 的 R-H 拦），其余一律不碰：
+  - `src-tauri/src/services/http.rs`
+  - `src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`
+  - `src/runtime/bridge.ts`
+  - `docs/plugin-dev/PLUGIN_SDK.md`
+  - `scripts/verify.mjs`（历史坐标：E1 之后它已挪成 `tests/e2e/verify-isolation.mjs` 那套，本卡当年新增的是 `tests/e2e/verify-http.mjs`）
   不得改 `tauri.conf.json`、CSP、`plugins/` 下任何文件、其他 Rust service 模块。
 - **为什么必须动本体**：`http.rs:176` 现在是 `body: String::from_utf8_lossy(&buf).into_owned()`。
   乱码在这一步产生，插件侧拿到已经是坏字符串，**没有纯插件解法**（`resp.body` 是 string，字节早就丢了；

@@ -124,7 +124,8 @@
 │   │   └── PLUGIN-BACKLOG.md   # 插件域任务卡、派单模板、已否决项
 │   ├── process/
 │   │   ├── CODE-REVIEW.md      # 本体评审意见与结论
-│   │   └── HOST-BACKLOG.md     # 本体/构建/文档域任务卡与验收证据矩阵
+│   │   ├── HOST-BACKLOG.md     # 本体/构建/文档域任务卡与验收证据矩阵
+│   │   └── T16-WIDGET-REALM-GAPS.md # ADR-0008 的取证输入：从派单工作区收进库（清单 R4）
 │   ├── adr/
 │   │   ├── 0001-agent-hooks-capability-in-plugin-page.md
 │   │   ├── 0002-single-agent-linkage-uninstall-then-install.md
@@ -133,7 +134,8 @@
 │   │   ├── 0005-command-layering-thin-command-bodies.md  # 命令留在能力域、命令体收成薄层
 │   │   ├── 0006-plugin-host-in-web-worker.md  # 插件进 Worker：身份由宿主分配（L1 方向）
 │   │   ├── 0007-unified-command-error-codes.md  # 命令错误统一 {code,message}，码表只有一份
-│   │   └── 0008-widget-host-in-web-worker-render-commands.md  # widget 进 Worker：虚拟节点 + 批量渲染指令 + 反向事件通道
+│   │   ├── 0008-widget-host-in-web-worker-render-commands.md  # widget 进 Worker：虚拟节点 + 批量渲染指令 + 反向事件通道
+│   │   └── 0009-dispatch-workspace-not-in-repo.md  # 派单工作区不入库；被引用的取证输入收进 docs/process
 │   └── desktop-pet-优化任务清单.docx   # 外部优化任务清单
 ├── assets/
 │   └── app-icon.png            # 图标母版（generate-app-icon.ps1 的产物）

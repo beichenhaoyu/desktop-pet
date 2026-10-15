@@ -17,6 +17,11 @@
   评审时按 REVIEW §7 的格式输出，「已核不成立」一节必须写，**断言只许变严不许变松**。
   规划方不凭「看起来缺」自行开需求卡，**候选插件 A1–A7 已被用户否决（2026-10-10）**：不要主动提"再加个 XX 插件"，新需求等用户直接提。
 
+- **派单工作区 `.dispatch/` 不入库（清单 S6 → R4，2026-10-15 定）**：`.dispatch/<功能名>/` 里放台账 `ledger.md`、`cards/`（任务卡）、`results/`（执行回传）、`work/`（取证与变异脚本）、`prompts/`（启动语），`.gitignore` 整目录覆盖；2026-10-15 的历史重写把旧副本连同整目录从库里摘掉了，仓库外的备份在 `D:/test/git-purge-backup-20261015`。三条后果，都是别人踩过的：
+  ① **新波次的功能名一律 ASCII**（`arch-p2` 这种）。已有的中文目录（`.dispatch/A股盯盘质量加固/`，工作区、不入库）属历史波次，保留原名不改——改名会让备份与旧引用两头对不上。
+  ② **入库文档不许把唯一证据点写在工作区里**。被 ADR／评审／BACKLOG 当依据引用的取证件要收进库（例：`docs/process/T16-WIDGET-REALM-GAPS.md` 就是 ADR-0008 的输入，原来只在工作区，谁都打不开）；台账与卡片这类过程稿留在工作区，确实要留历史坐标的，**同一行写明「不入库」**。这条由 `npm run check:docs` 的 **R-H** 机器拦，它同时拦反引号里的盘符绝对路径（文档坐标一律按仓库根相对写，CI 与第三方才打得开）。
+  ③ 进度事实源是本地 `ledger.md`，它不在库里 ⇒ 换机器先取备份；交给外部助手的只有 docs 下那三份接口文档，不是卡片原文。
+
 - **便携包出到 `release-package/`，不要出到 `dist/`**：`dist/` 是 Vite 的输出目录，任何 `npm run build` / `tauri build`
   都会把它清空 —— 已经因此丢过两次成品包。产物 = `release-package/DesktopPet-<版本>/`（exe + 旁边的 `plugins/` + 更新说明.txt）
   + 同名 zip，`.gitignore` 已覆盖。重出前先核 `src-tauri/target/release/desktop-pet.exe` 的 mtime 晚于
