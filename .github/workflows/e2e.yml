@@ -107,15 +107,18 @@ jobs:
           $pet = Get-Process -Name "desktop-pet" -ErrorAction SilentlyContinue
           if ($pet) { throw "desktop-pet is already running (PID $($pet.Id -join ',')): the single-instance lock would make the dev instance exit; quit it, then re-run" }
 
+      # 不能用 Start-Process -NoNewWindow + -Redirect*：在 runner 里那样起，tauri dev 跑完 BeforeDevCommand
+      # 就停住，连 cargo run 都不进（run 38773601446，dev.err 停在 Running BeforeDevCommand；同一份 env
+      # 在交互终端里手动起一切正常）。改成给它一个真控制台窗口（最小化），重定向交给 cmd 做。
       - name: 起 dev 实例（Vite + WebView2 远程调试端口）
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path temp | Out-Null
-          $dev = Start-Process -FilePath "npm.cmd" -ArgumentList "run", "dev:debug" `
-            -RedirectStandardOutput "temp/dev.log" -RedirectStandardError "temp/dev.err" `
-            -NoNewWindow -PassThru
+          $dev = Start-Process -FilePath "cmd.exe" `
+            -ArgumentList "/d", "/c", "npm run dev:debug > temp\dev.log 2> temp\dev.err" `
+            -WindowStyle Minimized -PassThru
           $dev.Id | Out-File -FilePath "temp/dev.pid" -Encoding ascii
-          Write-Host "dev:debug PID $($dev.Id)"
+          Write-Host "dev:debug wrapper PID $($dev.Id)"
 
       - name: 等宠物页在 CDP 上可见
         run: node tools/wait-cdp.mjs --port=${{ env.CDP_PORT }} --timeout=900
