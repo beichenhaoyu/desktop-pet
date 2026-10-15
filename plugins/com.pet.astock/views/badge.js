@@ -4,7 +4,9 @@ import { watchView } from "./watch.js";
 /* ================= badge：宠物旁小字 ================= */
 
 export function mountBadge(root, ctx, cleanups) {
+  const dom = ctx.dom;
   addStyle(
+    dom,
     root,
     `
     .astock-badge {
@@ -17,9 +19,9 @@ export function mountBadge(root, ctx, cleanups) {
     .up { color: #ff6b6b; } .down { color: #4ade80; } .flat { color: #cbd2dc; }
     `,
   );
-  const box = tag("div", "astock-badge");
-  const nm = text("盯盘", "nm");
-  const pc = text("", "flat");
+  const box = tag(dom, "div", "astock-badge");
+  const nm = text(dom, "盯盘", "nm");
+  const pc = text(dom, "", "flat");
   box.append(nm, pc);
   root.append(box);
 

@@ -1,0 +1,148 @@
+# A3（优化清单第 41 项）：CDP 运行时套件的可选手动门。
+#
+# **诚实标注：这份工作流还没在真实 runner 上跑绿过。**写它的时候本机的 GitHub 连接器整体 503，
+# 发不出 workflow_dispatch，所以「手动触发可跑通 verify / verify:agent」这条判据要等第一次真 run 才算数。
+# 到那一步请把这里的「未证明」改成 run 号 —— 别只改成「应该能跑」。
+#
+# 与 ci.yml 的分工（口径抄自 CONVENTIONS）：
+#   - ci.yml 只跑零 GUI、零联网的部分，是每次 push/PR 必须绿的门；
+#   - 这里的每一步都要真实 webview 与桌面会话（CDP 9223 + 单实例锁 + 会起窗口），默认不自动跑。
+#
+# 本机已跑过的等价复演（2026-10-15，Windows 开发机，按本文件的步骤顺序）：
+#   起 `npm run dev:debug`（带 PET_AGENT_CONFIG_FILES）→ `node tools/wait-cdp.mjs` 就绪（READY，退 0；
+#   对着空端口跑则 TIMEOUT，退 1 —— 两支都实测过）→ `npm run verify` **270/0** → `npm run verify:agent` **77/0**。
+# 那一段证的是「步骤与 env 的形状对得上」；**证不了的只有 runner 本身**：GitHub 的 Windows 会话里
+# WebView2 能不能起真 webview、能不能拿到 CDP 端点。
+#
+# 一条只有本机才有的坑（runner 上不会犯，写在这是为了让下次看到红的人别误判）：
+# `verify:agent` 的「本轮会话状态」那组对**并发 agent 会话**敏感。同一台开发机上装了全局 Qoder hook，
+# 主会话每调一次工具就往宿主共享的 inbox 写一条（`PET_AGENT_CONFIG_FILES` 只重定向 hook 配置文件，
+# **不重定向 inbox**）。边跑这套件边在会话里干活 → 实测 71/6 红；什么都不等它跑完 → 77/0。
+# 判据是同环境重跑两次，不是改判据。
+#
+# 不在默认清单里的套件与原因（别顺手加）：
+#   verify:game    全屏置顶窗 + 定时器，桌面堆（desktop heap）风险；
+#   verify:release 自己起 release exe 并占 9224，还要 3~4 分钟 tauri build；
+#   verify:astock / verify:http / verify:skin 出网（行情、GBK 源、petdex.dev），数据形态随时段漂。
+name: E2E（手动触发）
+
+# 这份门只需要读代码：不写任何状态、不发评论、不动包
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      suites:
+        description: "要跑的套件，逗号分隔，名字照 package.json 里的 npm script"
+        required: false
+        default: "verify,verify:agent"
+
+concurrency:
+  # 单实例锁 + 固定 CDP 端口：同一 ref 上并跑两个 e2e 只会互相抢 9223
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cdp:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    env:
+      CARGO_TERM_COLOR: always
+      # 套件与等待脚本都读这一个端口；固定值，不暴露成输入 —— 端口一漂，红的就不是被测行为
+      CDP_PORT: "9223"
+      # verify:agent 的写盘组只碰这两份样例：路径不在仓库根下时那组会整组跳过，
+      # 而守卫「目标文件都在 temp/ 下」当场判红（这是设计，不是缺陷）
+      PET_AGENT_CONFIG_FILES: ${{ github.workspace }}\temp\a9a\cfg-a.json;${{ github.workspace }}\temp\a9a\cfg-b.json
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装 Rust 工具链（rust-toolchain.toml 钉 1.98.1）
+        run: |
+          rustup set profile minimal
+          rustup show
+
+      - uses: actions/setup-node@v4
+        with:
+          # 必须与开发机同大版本，理由见 ci.yml 里那段 node 22 的教训
+          node-version: "24"
+          cache: npm
+
+      - name: 缓存 cargo 依赖
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      # 把编译时间挡在「就绪等待」之外：不预编的话，dev 首次编译会落进 wait-cdp 的窗口里，
+      # 那种超时红看着像「webview 起不来」，其实根本没轮到它
+      - name: 预编 debug 二进制（顺带证明这条链路能编出来）
+        run: npx tauri build --debug --no-bundle
+
+      - name: 起 dev 实例（Vite + WebView2 远程调试端口）
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path temp | Out-Null
+          $dev = Start-Process -FilePath "npm.cmd" -ArgumentList "run", "dev:debug" `
+            -RedirectStandardOutput "temp/dev.log" -RedirectStandardError "temp/dev.err" `
+            -NoNewWindow -PassThru
+          $dev.Id | Out-File -FilePath "temp/dev.pid" -Encoding ascii
+          Write-Host "dev:debug 的 PID $($dev.Id)"
+
+      - name: 等宠物页在 CDP 上可见
+        run: node tools/wait-cdp.mjs --port=${{ env.CDP_PORT }} --timeout=900
+
+      - name: 跑 CDP 运行时套件
+        shell: pwsh
+        env:
+          SUITES: ${{ inputs.suites }}
+        run: |
+          # 白名单是这条工作流的一部分，不是装饰：verify:game 有全屏置顶窗 + 定时器的桌面堆风险，
+          # verify:release 要自己占 9224 并再编一次，astock/http/skin 出网且数据形态随时段漂。
+          # 顺带把输入钉死成 npm script 名 —— 否则输入字符串会直接进 shell。
+          $allowed = @("verify", "verify:agent", "verify:worker", "verify:todo")
+          $failed = @()
+          foreach ($s in ($env:SUITES -split ",")) {
+            $name = $s.Trim()
+            if (-not $name) { continue }
+            if ($allowed -notcontains $name) { throw "套件 $name 不在这条工作流的白名单里（可跑的：$($allowed -join ', ')）" }
+            Write-Host "`n===== npm run $name ====="
+            npm run $name
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "$name 退出码 $LASTEXITCODE"
+              $failed += $name
+            }
+          }
+          if ($failed.Count -gt 0) { throw "红着的套件：$($failed -join ', ')" }
+
+      - name: 失败时把 dev 实例的日志打成 artifact
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dev-log
+          path: |
+            temp/dev.log
+            temp/dev.err
+          if-no-files-found: ignore
+
+      # 只按本次起的进程树收：taskkill /PID 是从 temp/dev.pid 读回来的那个，
+      # 不按映像名一刀切（/IM 会把别人起的同一份 exe 一起带走，这是硬规矩）
+      - name: 收尾关实例
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path "temp/dev.pid") {
+            $pid0 = (Get-Content "temp/dev.pid" -Raw).Trim()
+            if ($pid0) { taskkill /PID $pid0 /T /F 2>&1 | Out-Null }
+          }
+          Get-CimInstance Win32_Process -Filter "Name='desktop-pet.exe'" |
+            Where-Object { $_.ExecutablePath -like "$env:GITHUB_WORKSPACE*" } |
+            ForEach-Object { Write-Host "收残留 PID $($_.ProcessId)"; Stop-Process -Id $_.ProcessId -Force }

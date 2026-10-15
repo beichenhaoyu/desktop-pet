@@ -9,6 +9,7 @@ import { argv, env } from "node:process";
 
 import { attach, createReport, hostInvoke, listPages, openSettingsInvoker, readEnabledIds, reloadAndWait, waitUntil, writeEnabledIds } from "./harness/cdp.mjs";
 import { NET_ID, PROBE_ID, removeFixtures, writeFixtures } from "./harness/fixtures.mjs";
+import { WIDGET_HOST_REALM_FLAG, waitWidgetRealm } from "./harness/widget-realm.mjs";
 
 const skipBuild = argv.includes("--skip-build");
 const PORT = Number(env.CDP_PORT ?? 9224);
@@ -53,6 +54,12 @@ try {
     // 脚手架探针的入口把事实写进 `window.__probes` / `__probeActivated`，断言在页面 realm 读它们，
     // 所以把它们留在宿主 realm（真实插件与下面的 zz.l1-probe 不受这条影响，仍走 Worker）
     await c.ev(`localStorage.setItem(${JSON.stringify(REALM_FLAG)}, ${JSON.stringify(`${PROBE_ID},${NET_ID}`)})`);
+    // widget 自阶段二收口起也默认进 Worker；这份探针的 widget 测的正是**页面自身代码**在打包版
+    // CSP 下的行为（eval / <style> 注入），所以要一起点名留在宿主 realm。
+    // 下面那条 zz.l1-probe 不受影响 —— 它就是用来证打包版 Worker 里 petplugin + CSP 走得通的。
+    await c.ev(
+      `localStorage.setItem(${JSON.stringify(WIDGET_HOST_REALM_FLAG)}, ${JSON.stringify(PROBE_ID)})`,
+    );
 
     r.group("CSP 是否随文档下发（Tauri 用响应头，不是 meta 标签）");
     const header = await c.ev(
@@ -165,6 +172,28 @@ try {
     r.check("借表内方法发别人的 topic 被前缀归属拦下", false, l1Facts?.forged?.publishAsOther?.ok);
     r.check("跨插件读不到别人的存储", null, l1Facts?.crossPluginRead);
 
+    /**
+     * widget 自阶段二收口起也默认进 Worker，而打包版的 CSP 是**另一套**（响应头下发、
+     * 没有 dev 那层 Vite 直出），所以这条必须在这里各证一遍，不能拿第⑧组的 dev 读数代替。
+     */
+    const widgetArrived = await waitUntil(c, l1KeyIs("widgetFacts.realm", '"worker"'), 90_000);
+    if (!widgetArrived) r.info("widget 实得的 realm", String((await readL1WidgetFacts(c))?.realm));
+    r.check("探针 widget 在打包版 CSP 下的 Worker realm 里挂载", true, widgetArrived);
+    const wFacts = await readL1WidgetFacts(c);
+    r.check(
+      "打包版 widget 路线里没有 document 也没有 window",
+      "false|false",
+      `${wFacts?.hasDocument}|${wFacts?.hasWindow}`,
+    );
+    r.check("打包版 widget 路线上 ctx.dom 在（渲染只能走指令通道）", true, wFacts?.hasDom);
+    // 逢 call 必回在打包版同样要成立：不回包时这个 widget 只是永远起不来，不会报错
+    r.check("打包版同样逢 call 必回：表外方法收到的是拒绝", "answered:denied", wFacts?.forbidden);
+    r.check(
+      "插槽壳上的 realm 戳在打包版也是 worker",
+      "worker",
+      (await waitWidgetRealm(c, L1_ID, "badge", "worker", 60_000)).actual,
+    );
+
     // 复装之前先把插件目录整个删掉（这也会让宿主把它的授权收走，pump 继续负责点同意框），
     // 再按「leaf.js 先落盘、manifest.json 最后」的顺序装回去 ——
     // 装回时 leaf 的内容就已经是 leaf-v2，新 Worker 取到的必须是新的那一份
@@ -178,10 +207,18 @@ try {
     if (!refreshed) r.info("复装后实得的 leaf", String((await readL1Facts(c))?.leaf));
     r.check("换一个 Worker 后取到新内容（no-store 在打包版 Worker 路径上成立）", true, refreshed);
     await c.ev(`localStorage.removeItem(${JSON.stringify(REALM_FLAG)})`).catch(() => undefined);
+    await c.ev(`localStorage.removeItem(${JSON.stringify(WIDGET_HOST_REALM_FLAG)})`).catch(() => undefined);
 
     r.group("无 CSP 违规");
     const violations = c.noise.filter((n) => n.startsWith("CSP:"));
     r.check("违规条数", 0, violations.length);
+    /**
+     * 只钉「widget 起不来」这一类，不做「一条 console.error 都不许有」：
+     * 上面那 24 条断言全绿的同时，日志里正躺着两条 widget 404 —— 打包版的 widget 路线
+     * 曾经没有任何断言看着，靠这条兜住「装载失败但套件说绿」。
+     */
+    const widgetFails = c.noise.filter((n) => /widget 起不来/.test(n));
+    r.check("打包版没有 widget 装载失败", 0, widgetFails.length);
     for (const n of c.noise.filter((n) => !n.startsWith("CSP:"))) console.log("   " + n);
 
     // 恢复用户那份清单（写仍然只认设置窗）
@@ -239,6 +276,9 @@ function installL1Probe(leafValue) {
   mkdirSync(L1_DIR, { recursive: true });
   writeFileSync(join(L1_DIR, "leaf.js"), `export const LEAF_MARKER = ${JSON.stringify(leafValue)};\n`);
   copyFileSync(join(L1_FIXTURE, "index.js"), join(L1_DIR, "index.js"));
+  // widget.js 必须一起装：manifest 声明了它，翻默认后宿主会去 Worker 里 import 它。
+  // 这份夹具以前只装 index.js，打包版的 widget 装载一直 404，而这套件里没有一条断言看它。
+  copyFileSync(join(L1_FIXTURE, "widget.js"), join(L1_DIR, "widget.js"));
   copyFileSync(join(L1_FIXTURE, "manifest.json"), join(L1_DIR, "manifest.json"));
 }
 
@@ -252,6 +292,13 @@ function l1KeyIs(key, want) {
 async function readL1Facts(c) {
   return c
     .ev(`(async () => { try { return await window.__TAURI_INTERNALS__.invoke('store_get', { pluginId: ${JSON.stringify(L1_ID)}, key: 'facts' }) ?? null; } catch { return null; } })()`)
+    .catch(() => null);
+}
+
+/** widget 那份自报由入口经总线中继进同一个隔离存储（closed shadow 里没有别的出口） */
+async function readL1WidgetFacts(c) {
+  return c
+    .ev(`(async () => { try { return await window.__TAURI_INTERNALS__.invoke('store_get', { pluginId: ${JSON.stringify(L1_ID)}, key: 'widgetFacts' }) ?? null; } catch { return null; } })()`)
     .catch(() => null);
 }
 

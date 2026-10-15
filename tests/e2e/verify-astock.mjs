@@ -48,6 +48,8 @@ import {
   sourceLabelOf,
   tencentCodeOf,
 } from "../../plugins/com.pet.astock/market.js";
+import { decodePng, inkCount } from "./harness/png.mjs";
+import { waitWidgetRealm } from "./harness/widget-realm.mjs";
 import {
   allHosts,
   availableFor,
@@ -568,21 +570,38 @@ try {
     20_000,
   );
   r.check("插件页挂上了画布", true, widgetReady);
-  /** 从 closed shadow root 里取画布，数非背景像素 —— 「没报错」不等于「画出来了」 */
-  const inkOf = () =>
+  r.check(
+    "插件页插槽的 realm 戳是 worker（默认路线）",
+    "worker",
+    (await waitWidgetRealm(settings.client, PID, "settings", "worker", 20_000)).actual,
+  );
+  /**
+   * 「图真的画出来了」只能数像素，但 widget 进 Worker 之后画布控制权已经交给 Worker，
+   * 主线程 `getContext` 必抛（InvalidStateError —— 这本身就是交接成功的证据，A12 预言过这条会红）。
+   * 所以改成：从 DOM 读位图尺寸（`cv.width` 仍可读写，只有上下文取不到），
+   * 墨迹则对**合成后的画面**截一张画布区域的图，自己解 PNG 再数。
+   */
+  const boxOf = () =>
     settings.client.ev(`(async () => {
       const { widgetHost } = await import('/src/runtime/widget-host.ts');
       const rec = (widgetHost.mounted.get(${JSON.stringify(PID)}) ?? [])[0];
       const cv = rec?.shadow?.querySelector('canvas');
-      if (!cv) return { ok: false, reason: 'no canvas' };
-      const g = cv.getContext('2d');
-      const px = g.getImageData(0, 0, cv.width, cv.height).data;
-      let ink = 0;
-      for (let i = 0; i < px.length; i += 4) {
-        if (Math.abs(px[i] - 17) > 12 || Math.abs(px[i + 1] - 19) > 12 || Math.abs(px[i + 2] - 26) > 12) ink++;
-      }
-      return { ok: true, ink, w: cv.width, h: cv.height, cssW: cv.clientWidth };
+      if (!cv) return null;
+      const b = cv.getBoundingClientRect();
+      return { x: b.x, y: b.y, w: b.width, h: b.height, dpr: window.devicePixelRatio, bitmapW: cv.width, bitmapH: cv.height };
     })()`);
+  const inkOf = async () => {
+    const box = await boxOf();
+    if (!box) return { ok: false, ink: 0 };
+    await settings.client.send("Page.enable");
+    const cap = await settings.client.send("Page.captureScreenshot", {
+      format: "png",
+      clip: { x: box.x, y: box.y, width: box.w, height: box.h, scale: box.dpr },
+    });
+    if (cap.error) throw new Error(`截图失败：${cap.error.message ?? JSON.stringify(cap.error)}`);
+    const img = decodePng(cap.result.data);
+    return { ok: true, ink: inkCount(img), w: box.bitmapW, h: box.bitmapH, cssW: box.w, shotW: img.width };
+  };
   const trendInk = await inkOf();
   r.check("分时画布按 DPR 建了位图（不是 0 尺寸）", true, trendInk.ok === true && trendInk.w >= trendInk.cssW);
   // 竞价阶段分时可能只有 1 个点（画一个点而不是折线），完全没数据时画的是提示行

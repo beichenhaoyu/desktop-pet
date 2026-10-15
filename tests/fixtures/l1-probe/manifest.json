@@ -3,6 +3,11 @@
   "name": "L1 Worker 探针",
   "version": "0.0.1",
   "entry": "index.js",
-  "permissions": ["storage", "bus:publish", "bus:subscribe"],
-  "description": "ADR-0006 / L1 原型的取证插件：把 Worker realm 里能观察到的一切写进自己的隔离存储，供 tests/e2e/verify-worker.mjs 读取。不是产品插件。"
+  "permissions": [
+    "storage",
+    "bus:publish",
+    "bus:subscribe"
+  ],
+  "description": "ADR-0006 / ADR-0008 的取证插件：把入口与 widget 各自所在 realm 的事实写进自己的隔离存储，供 tests/e2e/verify-worker.mjs 读取。不是产品插件。",
+  "widget": "widget.js"
 }

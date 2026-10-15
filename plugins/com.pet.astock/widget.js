@@ -31,4 +31,8 @@ export function unmount(root) {
   scopes.delete(root);
 }
 
+// Worker 路线的停用钩子名是 `deactivate(root)`（宿主 realm 调的是 `unmount(root)`）：
+// 两条路共用同一份收尾，定时器与 Worker 侧注册的退订都靠它清
+export const deactivate = unmount;
+
 export { PID };

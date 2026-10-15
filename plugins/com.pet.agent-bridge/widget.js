@@ -41,18 +41,18 @@ function watch(ctx, cleanups, render) {
 
 /* ---------- 宠物旁小字 ---------- */
 function mountBadge(root, ctx, cleanups) {
-  const style = document.createElement("style");
+  const style = ctx.dom.createElement("style");
   style.textContent = `
     .ag-badge { display:inline-flex; align-items:center; gap:5px; padding:3px 9px;
       border-radius:9px; font-size:11px; color:#eaf1f8;
       background:rgba(10,14,20,.55); border:1px solid rgba(255,255,255,.12); }
     .ag-badge .dot { width:7px; height:7px; border-radius:50%; background:#9aa4b2; }
   `;
-  const el = document.createElement("div");
+  const el = ctx.dom.createElement("div");
   el.className = "ag-badge";
-  const dot = document.createElement("i");
+  const dot = ctx.dom.createElement("i");
   dot.className = "dot";
-  const text = document.createElement("span");
+  const text = ctx.dom.createElement("span");
   el.append(dot, text);
   root.append(style, el);
 
@@ -64,7 +64,7 @@ function mountBadge(root, ctx, cleanups) {
 
 /* ---------- 桌面左上角大卡 ---------- */
 function mountCard(root, ctx, cleanups) {
-  const style = document.createElement("style");
+  const style = ctx.dom.createElement("style");
   style.textContent = `
     .ag-card { width: 300px; padding: 12px 14px 13px; border-radius: 14px;
       background: rgba(16,18,24,.9); border:1px solid rgba(255,255,255,.1);
@@ -82,20 +82,20 @@ function mountCard(root, ctx, cleanups) {
       white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .ag-card.idle { opacity:.62; }
   `;
-  const el = document.createElement("div");
+  const el = ctx.dom.createElement("div");
   el.className = "ag-card idle";
-  const title = document.createElement("div");
+  const title = ctx.dom.createElement("div");
   title.className = "title";
-  const row = document.createElement("div");
+  const row = ctx.dom.createElement("div");
   row.className = "row";
-  const dot = document.createElement("i");
+  const dot = ctx.dom.createElement("i");
   dot.className = "dot";
-  const label = document.createElement("span");
+  const label = ctx.dom.createElement("span");
   label.className = "label";
-  const steps = document.createElement("span");
+  const steps = ctx.dom.createElement("span");
   steps.className = "steps";
   row.append(dot, label, steps);
-  const detail = document.createElement("div");
+  const detail = ctx.dom.createElement("div");
   detail.className = "detail";
   el.append(title, row, detail);
   root.append(style, el);
@@ -114,24 +114,26 @@ function mountCard(root, ctx, cleanups) {
 
 /* ---------- 设置面板：隐私开关 ---------- */
 function mountSettings(root, ctx, cleanups) {
-  const style = document.createElement("style");
+  const style = ctx.dom.createElement("style");
   style.textContent = `
     .ag-set { font-size:12px; color:#475467; display:grid; gap:6px; }
     .ag-set label { display:flex; align-items:center; gap:6px; }
     .ag-set .note { color:#98a2b3; font-size:11px; }
   `;
-  const box = document.createElement("div");
+  const box = ctx.dom.createElement("div");
   box.className = "ag-set";
 
   const mk = (key, text, note) => {
-    const label = document.createElement("label");
-    const input = document.createElement("input");
+    const label = ctx.dom.createElement("label");
+    const input = ctx.dom.createElement("input");
     input.type = "checkbox";
     input.dataset.key = key;
-    label.append(input, document.createTextNode(text));
+    const span = ctx.dom.createElement("span");
+    span.textContent = text;
+    label.append(input, span);
     box.append(label);
     if (note) {
-      const p = document.createElement("div");
+      const p = ctx.dom.createElement("div");
       p.className = "note";
       p.textContent = note;
       box.append(p);
@@ -140,7 +142,7 @@ function mountSettings(root, ctx, cleanups) {
   };
   const title = mk("showTitle", "显示会话标题（首条输入前 48 字）");
   const detail = mk("showDetail", "显示命令 / 路径摘要");
-  const note = document.createElement("div");
+  const note = ctx.dom.createElement("div");
   note.className = "note";
   note.textContent = "默认都关：只显工具名与步数。开了就等于把会话内容常驻显示在桌面上。";
   box.append(note);
@@ -152,13 +154,13 @@ function mountSettings(root, ctx, cleanups) {
       showTitle: title.checked,
       showDetail: detail.checked,
     });
-  title.addEventListener("change", send);
-  detail.addEventListener("change", send);
+  title.on("change", send);
+  detail.on("change", send);
   // 面板是新建的、配置是早就存在的：开口要一次当前值，否则两个开关都显示成关
   ctx.bus.publish(TOPIC_CMD, { action: "sync" });
   cleanups.push(() => {
-    title.removeEventListener("change", send);
-    detail.removeEventListener("change", send);
+    title.off("change");
+    detail.off("change");
   });
 
   // 回显当前开关：payload 里带着 config，避免面板重开后显示成默认值
@@ -175,7 +177,7 @@ function mountSettings(root, ctx, cleanups) {
 /* ---------- 设置面板：Qoder hook 接入（settings 区专属能力 agent:hooks，见 ADR-0001） ---------- */
 function mountHookPanel(root, ctx) {
   const api = ctx.host && ctx.host.agentHooks;
-  const style = document.createElement("style");
+  const style = ctx.dom.createElement("style");
   style.textContent = `
     .hk-box { margin-top:12px; padding-top:10px; border-top:1px dashed rgba(71,84,103,.3);
       font-size:12px; color:#475467; display:grid; gap:6px; }
@@ -185,16 +187,16 @@ function mountHookPanel(root, ctx) {
     .hk-box .hk-status { white-space:pre-wrap; word-break:break-all; }
     .hk-box .hk-status.warn { color:#b54708; }
   `;
-  const box = document.createElement("div");
+  const box = ctx.dom.createElement("div");
   box.className = "hk-box";
-  const hd = document.createElement("div");
+  const hd = ctx.dom.createElement("div");
   hd.className = "hk-hd";
   hd.textContent = "Qoder hook 接入";
-  const st = document.createElement("div");
+  const st = ctx.dom.createElement("div");
   st.className = "hk-status";
   st.dataset.state = "loading";
   st.textContent = "正在读取状态…";
-  const actions = document.createElement("div");
+  const actions = ctx.dom.createElement("div");
   actions.className = "hk-actions";
   box.append(hd, st, actions);
   root.append(style, box);
@@ -250,11 +252,11 @@ function mountHookPanel(root, ctx) {
     }
   };
   const button = (text, cls, fn) => {
-    const b = document.createElement("button");
+    const b = ctx.dom.createElement("button");
     b.type = "button";
     b.className = cls;
     b.textContent = text;
-    b.addEventListener("click", () => void fn());
+    b.on("click", () => void fn());
     return b;
   };
   actions.append(

@@ -16,13 +16,14 @@ import { mountWatchList } from "./settings/watch-list.js";
 import { watchView } from "./watch.js";
 
 export function mountSettings(root, ctx, cleanups) {
-  addStyle(root, SETTINGS_CSS);
+  const dom = ctx.dom;
+  addStyle(dom, root, SETTINGS_CSS);
 
-  const wrap = tag("div", "wrap");
+  const wrap = tag(dom, "div", "wrap");
   root.append(wrap);
 
   // 用户刚操作过 → 状态行保留操作结果几秒，不被下一轮回显盖掉
-  const statusLine = tag("div", "status");
+  const statusLine = tag(dom, "div", "status");
   const status = {
     at: 0,
     line: statusLine,
@@ -41,8 +42,8 @@ export function mountSettings(root, ctx, cleanups) {
     autoPicked: false, // 首次自动选中只做一次
     /** 分节外壳：标题 + 内容节点（A/B/C/D 四节都在用，所以只能由壳提供） */
     section: (title, ...nodes) => {
-      const box = tag("div", "sec");
-      const t = tag("div", "sec-t");
+      const box = tag(dom, "div", "sec");
+      const t = tag(dom, "div", "sec-t");
       t.textContent = title;
       box.append(t, ...nodes);
       return box;
@@ -53,7 +54,7 @@ export function mountSettings(root, ctx, cleanups) {
   const watchList = mountWatchList(ctx, state);
   const prefs = mountPrefs(ctx, state);
   mountDepth(ctx, state); // 先于 board：盘面分节要把深度表的节点放进右列
-  const board = mountBoard(ctx, state);
+  const board = mountBoard(ctx, state, cleanups);
 
   wrap.append(statusLine, add.section, watchList.section, board.section, ...prefs.sections);
 
@@ -80,10 +81,9 @@ export function mountSettings(root, ctx, cleanups) {
     ctx.bus.subscribe(TOPIC_STATUS, (s) => status.set(s.text, s.level ?? "info")),
   );
 
-  // 设置窗可以拉伸，画布位图尺寸跟着 CSS 尺寸走，所以要重画一次
-  const onResize = () => board.drawChart();
-  window.addEventListener("resize", onResize);
-  cleanups.push(() => window.removeEventListener("resize", onResize));
+  // 设置窗可以拉伸：尺寸 / dpr / 画布量得的宽高由宿主观测后推（替代原来的 window resize），
+  // 每次推送都按最新 layout 重画一次
+  cleanups.push(ctx.onLayout((layout) => board.drawChart(layout)));
 
   board.renderPanel(null);
 }

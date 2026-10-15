@@ -16,6 +16,7 @@ import {
   waitUntil,
   writeEnabledIds,
 } from "./harness/cdp.mjs";
+import { waitWidgetRealm } from "./harness/widget-realm.mjs";
 import { NET_ID, PROBE_ID, SPOOF_DIR, removeFixtures, writeFixtures } from "./harness/fixtures.mjs";
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
@@ -217,6 +218,10 @@ try {
   // 入口一进 Worker 那些全局就没有对象了。把探针显式留在宿主 realm，真实插件不受这条影响。
   // 收尾会 removeItem（见 finally），别让它留在用户的 WebView 配置里。
   await c.ev(`localStorage.setItem('host:realm-plugin-host', ${JSON.stringify(`${PROBE_ID},${NET_ID}`)})`);
+  // widget 从阶段二收口起也默认进 Worker，同理：这份探针的 widget 要测的是**页面自身代码**在
+  // CSP 下的行为（eval、<style> 注入、`getComputedStyle`），并且结果同样写 `window.__probes`。
+  // 放进 Worker 那些就不成立了 —— 这条同时也是「例外名单真管用」的现场证据。
+  await c.ev(`localStorage.setItem('host:widget-realm-plugin-host', ${JSON.stringify(PROBE_ID)})`);
 
   // 起点必须自己清干净：Vite 已不 watch plugins/，页面不会因 fixture 写入而重载，
   // 上一轮（尤其是崩溃的那轮）遗留的挂载会抑制本轮 mount，看起来像「探针没执行」
@@ -335,6 +340,11 @@ try {
     );
   }
   r.check("探针 widget 由宿主挂载成功", true, mountedByHost);
+  r.check(
+    "探针插槽的 realm 戳是 host（widget 那份例外名单在真实装载路径上管用）",
+    "host",
+    (await waitWidgetRealm(c, PROBE_ID, "badge", "host", 20_000)).actual,
+  );
   r.check("入口 index.js 的 activate() 被调用", true, await c.ev(`(window.__probeActivated ?? 0) >= 1`));
 
   r.group("启停清单归宿主：清掉 WebView 存储也不丢（C1）");
@@ -967,6 +977,11 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
     "widget 挂载成功（说明 ./topics.js 在 petplugin 下能解析）",
     true,
     await waitUntil(c, `!!document.querySelector('#widget-badge > div[data-plugin-id="com.pet.hr-ble"]')`),
+  );
+  r.check(
+    "hr-ble 的 badge 插槽 realm 戳是 worker（默认路线）",
+    "worker",
+    (await waitWidgetRealm(c, "com.pet.hr-ble", "badge", "worker", 20_000)).actual,
   );
   await c.ev(`window.__wh.unmount('com.pet.hr-ble')`);
 
@@ -1757,6 +1772,7 @@ export function unmount() {}
   removeFixtures(PLUGINS_DIR);
   // 探针留在宿主 realm 那条例外只服务于本套件的页面全局断言，不该活到下一轮真实使用里
   await c?.ev(`localStorage.removeItem('host:realm-plugin-host')`).catch(() => undefined);
+  await c?.ev(`localStorage.removeItem('host:widget-realm-plugin-host')`).catch(() => undefined);
   settings?.close();
   c?.close();
   // 等 websocket 真正关掉再退出，否则 Windows 上 Node 会在 stderr 抛一句 libuv 断言

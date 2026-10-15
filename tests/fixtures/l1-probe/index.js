@@ -101,6 +101,11 @@ export async function activate(context) {
   await ctx.bus.subscribe(`${ID}:cmd`, async (payload) => {
     await ctx.storage.set("last", { echo: payload, facts: { leaf: LEAF_MARKER, entryUrl: import.meta.url } });
   });
+  // widget 的自报走总线回来（closed shadow root 里读不到 DOM），这条订阅同时就是
+  // 「widget 在一个 realm、入口在另一个 realm，两者能不能中继」这条断言本身
+  await ctx.bus.subscribe(`${ID}:widget-facts`, async (payload) => {
+    await ctx.storage.set("widgetFacts", payload);
+  });
   await ctx.storage.set("booted", true);
 }
 

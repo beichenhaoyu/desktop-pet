@@ -4,7 +4,9 @@ import { watchView } from "./watch.js";
 /* ================= overlay：桌面左上角盯盘卡 ================= */
 
 export function mountOverlay(root, ctx, cleanups) {
+  const dom = ctx.dom;
   addStyle(
+    dom,
     root,
     `
     .card {
@@ -22,19 +24,21 @@ export function mountOverlay(root, ctx, cleanups) {
     .empty { color: #9aa3b2; }
     `,
   );
-  const card = tag("div", "card");
-  const phase = text("");
-  const updated = text("");
-  const head = tag("div", "hd");
+  const card = tag(dom, "div", "card");
+  const phase = text(dom, "");
+  const updated = text(dom, "");
+  const head = tag(dom, "div", "hd");
   head.append(phase, updated);
-  const body = tag("div");
+  const body = tag(dom, "div");
   card.append(head, body);
   root.append(card);
 
   const rowOf = (q, name, cls) => {
-    const row = tag("div", `row ${cls ?? ""}`);
-    row.append(text(q?.name ?? name, "nm"), text(fmtPrice(q?.price), "pr"), text(fmtPct(q?.pct), toneOf(q)));
-    row.lastChild.className = `pc ${toneOf(q)}`;
+    const row = tag(dom, "div", `row ${cls ?? ""}`);
+    // 百分比那个 span 存住引用再改类名：契约里没有 lastChild（旧代码用的是它）
+    const pc = text(dom, fmtPct(q?.pct), toneOf(q));
+    pc.className = `pc ${toneOf(q)}`;
+    row.append(text(dom, q?.name ?? name, "nm"), text(dom, fmtPrice(q?.price), "pr"), pc);
     return row;
   };
 
@@ -45,7 +49,7 @@ export function mountOverlay(root, ctx, cleanups) {
       body.replaceChildren();
       const list = d.watch ?? [];
       if (!list.length) {
-        body.append(text("还没有自选股，去插件页添加", "empty"));
+        body.append(text(dom, "还没有自选股，去插件页添加", "empty"));
         return;
       }
       for (const item of list) body.append(rowOf(d.quotes?.[item.secid], item.name));

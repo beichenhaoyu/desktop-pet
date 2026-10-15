@@ -119,7 +119,7 @@ topic 形如 `<插件 id>:<名字>`，`<插件 id>` 前缀归该插件所有；�
 ```js
 export function mount(root, ctx) {
   // root 是 closed ShadowRoot，你的 DOM 全在里面，宿主样式互不影响
-  // ctx = { pluginId, region, bus }
+  // ctx = { pluginId, region, bus }（Worker 路线再加 dom / onLayout / onCanvas，见 5.1）
   // region: 'badge'（宠物旁）| 'overlay'（悬浮层）| 'settings'（设置窗）
 }
 export function unmount(root) { /* 用 root 找回自己那份清理表 */ }
@@ -135,6 +135,50 @@ export function unmount(root) { /* 用 root 找回自己那份清理表 */ }
 `settings` 区出现在**设置窗的插件页**里：侧栏一个插件一条，点进去之后，宿主给的是壳（插件名/版本/id/描述、启停开关、权限列表与「撤销授权」），中间那块「插件页面」整个交给你渲染。宿主不解释其内容，也不会在插件停用时保留它 —— 未启用的插件不会挂载，用户看不到你的页面时也不会挂着你的实例。想让插件页里放展示型内容（不只是表单）也完全可以，这块区域就是你的插件页。
 
 `ctx.bus` 是宿主注入的**受限视图**，只有 `publish`/`subscribe` 两个方法，且每次调用都按上面第 4 节的规则校验。
+
+### 5.1 渲染契约（Worker 路线，ADR-0008）
+
+widget 默认就跑在自己的模块 Worker 里：那里**没有 `window` / `document` / `localStorage`**，
+渲染靠发指令。宿主侧留着一把逃生门 —— `localStorage` 的 `host:widget-realm-plugin-host`
+（逗号分隔插件 id）能把某个 widget 放回宿主 realm，只服务「还没照下面这张表改写的老 widget」，
+不是给你调风格用的配置项。两条路各跑各的：留在宿主 realm 时 `ctx.dom` / `onLayout` / `onCanvas`
+**是 undefined**，照契约写的 widget 会白屏。
+哪个 realm 在跑可以从插槽壳上看：`div[data-plugin-id="<id>"]` 的 `data-widget-realm` 是 `host` 还是 `worker`。
+
+进 Worker 之后 `ctx` 多三个键，写代码时按「只有这一面」来写：
+
+| 旧写法 | 契约写法 | 差在哪 |
+|---|---|---|
+| `document.createElement("span")` | `ctx.dom.createElement("span")` | 标签名要在白名单里，表外**当场拒收**（不报错，是不渲染） |
+| `el.innerHTML = "<b>…</b>"` | 逐节点 `createElement` + `append` | **没有 `html` 指令**：插件能注入任意标记就等于把安全边界打开 |
+| `root.querySelector(".x")` | 自己留着那个节点的引用 | 没有查询语义。要按状态找节点，就把句柄存进挂载实例的表里（第 2 条清理表同一份） |
+| `el.addEventListener("keydown", h)` | `el.on("keydown", e => …)` | 回调收到的是**快照**不是事件对象：`e.key`，`value` / `checked` 读 `e.target` |
+| `e.preventDefault()` | `el.on("keydown", h, { preventDefault: true })` | 拦不拦由**订阅时**声明，handler 里改不了 |
+| `document.createTextNode("x")` | 包一层 `span`，把文字写进它的 `textContent` | 契约里**没有文本节点**这个概念，也没有对应 op；行内文字用 span 等价 |
+| `window.addEventListener("resize", …)` | `ctx.onLayout(l => …)` | 尺寸与 dpr 由宿主观测后推给你，你量不了自己 |
+| `canvas.getContext("2d")` | `ctx.onCanvas((id, cv) => cv.getContext("2d"))` | 画布控制权交接给 Worker，交接后主线程再也画不了它 |
+
+节点句柄（`WidgetNode`）是个**闭集**：`textContent` / `className` / `classList` / `dataset` / `style.属性` /
+`value` `checked` `disabled` `readOnly` `placeholder` `type` `id` / `setAttribute` / `append` / `appendChild` /
+`replaceChildren` / `remove` / `on` / `off` / `nodeId`。没有 `children`、没有 `firstChild`、
+没有 `getBoundingClientRect`、没有 `style.cssText`。注意 `id` 有两写：写的是 DOM 的 `id` property，
+`dataset.x` 才是 `data-x` 属性 —— 迁移时 `setAttribute("id", …)` 换成 `.id = …`，别写成 `dataset.id`。词表的唯一真相是 `src/runtime/widget-protocol.ts` 那五张名单（标签 / SVG / 属性 /
+样式属性 / 事件），本文只指路不抄表 —— 抄了就会漂。
+
+三条容易踩的：
+
+1. **别指望扩面**。widget 的调用面比入口窄：只有 `bus.publish` / `bus.subscribe`，加上 settings 区的
+   `agentHooks.*`。`storage` / `http` / `pet.*` 在 Worker 路线里也拿不到 —— 它们在宿主 realm 里同样拿不到，
+   搬迁不扩权。要开得先改 ADR。
+2. **表外名字是静默拒收**，不是异常。宿主拒收 64 次后这个挂载实例自锁。调试时在控制台看 `console.debug`
+   那几条（拒收是正常契约路径，所以不打 `warn`）。
+3. **批次在微任务里合并**。一次 `mount()` 里连发 50 条指令是一条消息，不必自己攒；但也别指望它同步落地，
+   量不到自己刚写的节点。
+4. **要读用户输入的当前值，必须订阅 `input`**。快照会把 `value` / `checked` 写回节点，但宿主只对
+   **登记过监听**的节点回推事件；没订阅 `input`，你在 `keydown` 里读到的还是旧值。
+   「回车提交输入框」那种写法就栽在这里（A10 实测踩到）。
+5. **停用钩子两个名字都认**：`unmount(root)`（宿主 realm 一直用的）与 `deactivate(root)`（Worker 侧新名），
+   两个都导出时只调 `deactivate` —— 调两次等于重复退订。老插件迁进来不必改导出名。
 
 ## 6. 共享资源
 

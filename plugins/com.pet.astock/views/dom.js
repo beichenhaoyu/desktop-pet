@@ -1,29 +1,32 @@
 // Widget 三个区域共用的小件：样式注入、元素构造、行情格式化。
 
 /* ================= 共用小工具 ================= */
-export function addStyle(root, css) {
-  const node = document.createElement("style");
+// Worker 路线里没有 document，建节点统一从 `ctx.dom` 走。dom 由调用方逐层传入，
+// **不用模块级变量存它** —— 同一份文件同时挂在 badge / overlay / settings 三个区，
+// 模块级状态会让三个实例互相指错。
+export function addStyle(dom, root, css) {
+  const node = dom.createElement("style");
   node.textContent = css;
   root.append(node);
 }
-export function tag(name, cls) {
-  const node = document.createElement(name);
+export function tag(dom, name, cls) {
+  const node = dom.createElement(name);
   if (cls) node.className = cls;
   return node;
 }
-export function text(content, cls) {
-  const node = tag("span", cls);
+export function text(dom, content, cls) {
+  const node = tag(dom, "span", cls);
   node.textContent = String(content ?? "");
   return node;
 }
-export function button(label, cls) {
-  const node = tag("button", cls);
+export function button(dom, label, cls) {
+  const node = tag(dom, "button", cls);
   node.type = "button";
   node.textContent = label;
   return node;
 }
-export function input(type, cls) {
-  const node = tag("input", cls);
+export function input(dom, type, cls) {
+  const node = tag(dom, "input", cls);
   node.type = type;
   return node;
 }
@@ -54,8 +57,8 @@ export const PHASE_TEXT = {
   closed: "已收盘",
   weekend: "周末休市",
 };
-export function cell(child) {
-  const td = tag("td");
+export function cell(dom, child) {
+  const td = tag(dom, "td");
   td.append(child);
   return td;
 }

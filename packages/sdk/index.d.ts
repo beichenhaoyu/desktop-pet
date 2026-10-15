@@ -5,11 +5,12 @@
 //   src/runtime/bridge.ts 的 buildContext()（:110）。失败形态**一律 Promise reject**
 //   （gated 的 throw 在 async 体内，bridge.ts:82-93）。
 // - WidgetContext：widget.js 的 `mount(root, ctx)` 收到的对象，宿主注入实现是
-//   src/runtime/widget-host.ts 的 doMount()（:91-105）。widget 侧总线方法是**同步函数**，
+//   src/runtime/widget-host.ts 的 doMount()（:149-164）。widget 侧总线方法是**同步函数**，
 //   违规**同步 throw**（src/runtime/topic-acl.ts:43-55）；且 `ctx.host` 只在 settings 区存在
-//   （widget-host.ts:97）。把两面合并等于给插件一把宠物窗里拿不到的钥匙。
+//   （widget-host.ts:155-163）。阶段二的渲染契约三个键（dom / onLayout / onCanvas）只在
+//   Worker 路线注入，见 ADR-0008。把两面合并等于给插件一把宠物窗里拿不到的钥匙。
 //
-// 行号为 2026-10-12 落笔时的现场；行为口径另见 docs/PLUGIN_SDK.md 与 T01 取证报告
+// 行号为 2026-10-15 现场；行为口径另见 docs/PLUGIN_SDK.md 与 T01 取证报告
 // （.dispatch/arch-p2/work/T01/sdk-surface.md）。
 
 import type { StandardTopic } from "./topics.js";
@@ -152,16 +153,110 @@ export interface WidgetBus {
   subscribe(topic: string, handler: (payload: unknown) => void): () => void;
 }
 
-/** widget.js `mount(root, ctx)` 收到的上下文（宿主注入 widget-host.ts:91-105）。
+/** widget 能听的事件（闭集，src/runtime/widget-protocol.ts 的 WIDGET_EVENTS）。
+ * 要按别的键触发就换这四个之一 —— 契约不为你临时开第五种。 */
+export type WidgetEventName = "click" | "change" | "input" | "keydown";
+
+/** 回给 handler 的**快照**，永远不是真事件对象（跨 realm 传不了，也不该传）。
+ * `value` / `checked` 由宿主回推后写进 `target`，所以读它们走 `e.target.value`；
+ * `preventDefault` 不在这里 —— 它在 `on()` 的第三个参数里事先声明（ADR-0008 决策 3）。 */
+export interface WidgetEvent {
+  target: WidgetNode;
+  /** 只有 keydown 带 */
+  key?: string;
+}
+
+/**
+ * 渲染契约的节点句柄（ADR-0008 决策 1）。Worker 侧是虚拟节点、宿主侧是真元素，
+ * 两边都**只保证这一面**：没有 `querySelector` / `innerHTML` / `children` /
+ * `getBoundingClientRect` —— 关闭集是契约的一部分，不是没做完。
+ */
+export interface WidgetNode {
+  /** 宿主只承认它按 create/adopt 见过的 id；不是你随意编的坐标 */
+  readonly nodeId: number;
+  readonly tag: string;
+  textContent: string;
+  /** 类名的唯一真相；`setAttribute("class", …)` 也走它 */
+  className: string;
+  readonly classList: {
+    add(...names: string[]): void;
+    remove(...names: string[]): void;
+    toggle(name: string, force?: boolean): boolean;
+    contains(name: string): boolean;
+  };
+  /** 只收字符串值（dataset 的 attr 语义），写 undefined 等于删 */
+  readonly dataset: Record<string, string | undefined>;
+  /** 逐属性赋值，一条属性一个值；没有 `cssText` */
+  readonly style: Record<string, string | number>;
+  /** 表单那几个 property 是真 property，不是 attribute */
+  value: string;
+  checked: boolean;
+  disabled: boolean;
+  readOnly: boolean;
+  placeholder: string;
+  type: string;
+  id: string;
+  setAttribute(name: string, value: string | null): void;
+  append(...nodes: WidgetNode[]): void;
+  appendChild(node: WidgetNode): WidgetNode;
+  replaceChildren(...nodes: WidgetNode[]): void;
+  remove(): void;
+  /** `opts.preventDefault` 必须在这里声明，handler 里改不了 */
+  on(event: WidgetEventName, handler: (e: WidgetEvent) => void, opts?: { preventDefault?: boolean }): void;
+  off(event: WidgetEventName): void;
+}
+
+/** 建节点用的那一面：迁移时把 `document.createElement` 换成 `ctx.dom.createElement`，其余不动。 */
+export interface WidgetDom {
+  /** 标签名要在白名单里（widget-protocol.ts 的 WIDGET_HTML_TAGS / WIDGET_SVG_TAGS），表外当场拒 */
+  createElement(tag: string): WidgetNode;
+  createElementNS(ns: string, tag: string): WidgetNode;
+}
+
+/** 宿主替插件量到的画布 CSS 像素尺寸（旧代码里的 `canvas.clientWidth` / `clientHeight`）。
+ *  两个都要：K 线图的高不是常量，插件没写死 CSS 高度，只发宽就等于让它一直走兜底值。 */
+export interface WidgetMeasured {
+  w: number;
+  h: number;
+}
+
+/** 尺寸与 dpr 由宿主观测后推（Worker 里没有 window，也不许量自己）。
+ * `measured` 按 nodeId 存画布尺寸。 */
+export interface WidgetLayout {
+  width: number;
+  height: number;
+  dpr: number;
+  measured: Record<string, WidgetMeasured>;
+}
+
+/** 画布那一面：Worker 路线拿到的是 OffscreenCanvas，`getContext("2d")` 之后只能在这个 Worker 里画。 */
+export interface WidgetCanvasLike {
+  width: number;
+  height: number;
+  getContext(kind: "2d"): unknown;
+}
+
+/** widget.js `mount(root, ctx)` 收到的上下文（宿主注入 widget-host.ts:149-162）。
  * 同一份 widget 文件会在 badge / overlay / settings 三个区分别挂载，按 `ctx.region` 区分行为。 */
 export interface WidgetContext {
-  /** = manifest.id（widget-host.ts:92） */
+  /** = manifest.id（widget-host.ts:150） */
   readonly pluginId: string;
-  /** 当前挂载区（widget-host.ts:93） */
+  /** 当前挂载区（widget-host.ts:151） */
   readonly region: WidgetRegion;
-  /** topic-acl.ts:37-55 的受限视图（widget-host.ts:94 注入） */
+  /** topic-acl.ts:37-55 的受限视图（widget-host.ts:152 注入） */
   bus: WidgetBus;
-  /** **仅 settings 区存在**（widget-host.ts:97-105）：badge / overlay 区是 undefined，
+  /** **仅 settings 区存在**（widget-host.ts:155-163）：badge / overlay 区是 undefined，
    * 宠物窗的 PluginContext 里根本没有这个键。 */
   host?: { agentHooks: AgentHooksApi };
+  /**
+   * 阶段二渲染契约的三个键：widget **默认就跑在 Worker 路线**，所以正常情况下三个都有。
+   * 唯一拿不到的情况是宿主把该插件点名进了「留在宿主 realm」的例外名单
+   * （`localStorage` 的 `host:widget-realm-plugin-host`，给还没照契约写的第三方 widget 留的逃生门）。
+   * 在那条路上它们是 undefined，照契约写的 widget 会白屏 —— 所以点名是排障手段，不是配置项。
+   */
+  dom?: WidgetDom;
+  /** 对应旧代码的 `window.addEventListener("resize", …)`；返回退订函数 */
+  onLayout?: (handler: (layout: WidgetLayout) => void) => () => void;
+  /** 对应旧代码的 `canvas.getContext("2d")`：画布控制权由宿主交接过来，回调给你那块画布 */
+  onCanvas?: (handler: (id: number, canvas: WidgetCanvasLike) => void) => () => void;
 }
