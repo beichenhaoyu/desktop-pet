@@ -10,42 +10,48 @@ import { kltDisplay, kltOptionValue, pickLimit, rawPctOf } from "./util.js";
 
 /**
  * 挂「盘面」分节。
- * @param {{bus: {publish: Function}}} ctx
+ * @param {{bus: {publish: Function}, dom: object, onCanvas: Function}} ctx
  * @param {any} state 装配壳建的共享状态（用到 lastView / lastPanel / depth / section，见 work/M4b/closures.md）
+ * @param {Array<Function>} cleanups 本挂载实例的清理表（onCanvas 的退订进这里）
  * @returns {{section: HTMLElement, renderPanel: Function, drawChart: Function}}
  */
-export function mountBoard(ctx, state) {
-  const panelName = text("点下面一行自选股看盘口与曲线", "nm");
-  const panelSub = text("", "muted");
-  const panelErr = text("", "muted");
-  const chartTabs = tag("div", "tabs");
-  const kltSel = tag("select", "klt");
-  const panelRefresh = button("刷新");
-  const canvas = tag("canvas", "cv");
-  const chartBox = tag("div", "chart");
+export function mountBoard(ctx, state, cleanups) {
+  const dom = ctx.dom;
+  const panelName = text(dom, "点下面一行自选股看盘口与曲线", "nm");
+  const panelSub = text(dom, "", "muted");
+  const panelErr = text(dom, "", "muted");
+  const chartTabs = tag(dom, "div", "tabs");
+  const kltSel = tag(dom, "select", "klt");
+  const panelRefresh = button(dom, "刷新");
+  const canvas = tag(dom, "canvas", "cv");
+  const chartBox = tag(dom, "div", "chart");
   chartBox.append(canvas);
   let chartKind = "trend";
+  /** 宿主交接来的可画对象（Worker 路线是 OffscreenCanvas）；没有它之前什么都画不了 */
+  let canvasOff = null;
+  /** 最近一次 layout 推送（尺寸 / dpr / 各画布量得的宽高） */
+  let lastLayout = null;
 
   for (const p of KLINE_PERIODS) {
-    const opt = tag("option");
+    const opt = tag(dom, "option");
     opt.value = kltOptionValue(p);
     opt.textContent = p.label;
     kltSel.append(opt);
   }
-  kltSel.onchange = () => ctx.bus.publish(TOPIC_CMD, { action: "klt", value: Number(kltSel.value) });
-  panelRefresh.onclick = () => ctx.bus.publish(TOPIC_CMD, { action: "panel" });
+  kltSel.on("change", () => ctx.bus.publish(TOPIC_CMD, { action: "klt", value: Number(kltSel.value) }));
+  panelRefresh.on("click", () => ctx.bus.publish(TOPIC_CMD, { action: "panel" }));
 
   const tabButtons = [];
   for (const [kind, label] of [
     ["trend", "分时"],
     ["kline", "K线"],
   ]) {
-    const b = button(label, "tab");
-    b.onclick = () => {
+    const b = button(dom, label, "tab");
+    b.on("click", () => {
       chartKind = kind;
       syncTabs();
       drawChart();
-    };
+    });
     chartTabs.append(b);
     tabButtons.push([kind, b]);
   }
@@ -55,15 +61,30 @@ export function mountBoard(ctx, state) {
   }
   syncTabs();
 
-  function drawChart() {
+  // 画布控制权交接（宿主按 create op 就交，可能早于第一次 layout）：位图尺寸写在交接来的
+  // 这块画布上、绘图也只在这里做；拿到手时若已有 layout，立刻补画一次
+  cleanups.push(
+    ctx.onCanvas((id, off) => {
+      if (id !== canvas.nodeId) return;
+      canvasOff = off;
+      drawChart();
+    }),
+  );
+
+  function drawChart(layout) {
+    if (layout) lastLayout = layout;
+    if (!canvasOff || !lastLayout) return; // 还没交接 / 还没量过：等另一条回调再画
     const p = state.lastPanel;
-    // clientWidth 要有值才能定画布位图尺寸；面板刚挂上时可能还没排版，给个兜底宽度
-    const cssWidth = canvas.clientWidth || 300;
-    const cssHeight = canvas.clientHeight || 132;
+    // CSS 尺寸由宿主量好下发（旧代码的 canvas.clientWidth / clientHeight）；
+    // 查不到这个 id 或还没排版（0）时才退回兜底常量 —— 与旧写法同口径
+    const m = lastLayout.measured?.[String(canvas.nodeId)];
+    const cssWidth = m?.w || 300;
+    const cssHeight = m?.h || 132;
+    const dpr = lastLayout.dpr || 1;
     if (chartKind === "kline") {
-      drawKline(canvas, p?.kline?.bars, { width: cssWidth, height: cssHeight, dpr: window.devicePixelRatio || 1 });
+      drawKline(canvasOff, p?.kline?.bars, { width: cssWidth, height: cssHeight, dpr });
     } else {
-      drawTrend(canvas, p?.trend, { width: cssWidth, height: cssHeight, dpr: window.devicePixelRatio || 1 });
+      drawTrend(canvasOff, p?.trend, { width: cssWidth, height: cssHeight, dpr });
     }
   }
 
@@ -101,15 +122,15 @@ export function mountBoard(ctx, state) {
     state.depth.render(live);
   }
 
-  const hd = tag("div", "panel-hd");
+  const hd = tag(dom, "div", "panel-hd");
   hd.append(panelName, panelSub);
-  const tools = tag("div", "row");
+  const tools = tag(dom, "div", "row");
   tools.append(chartTabs, kltSel, panelRefresh);
-  const left = tag("div", "chart-col");
+  const left = tag(dom, "div", "chart-col");
   left.append(tools, chartBox, panelErr);
-  const right = tag("div", "depth-col");
+  const right = tag(dom, "div", "depth-col");
   right.append(state.depth.table);
-  const grid = tag("div", "panel-grid");
+  const grid = tag(dom, "div", "panel-grid");
   grid.append(left, right);
 
   return { section: state.section("盘面（分时 / K线 / 五档）", hd, grid), renderPanel, drawChart };

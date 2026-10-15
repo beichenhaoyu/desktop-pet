@@ -20,69 +20,79 @@ const MODE_TEXT = { badge: "宠物旁小字", overlay: "桌面左上角盯盘卡
 
 /**
  * 挂「显示方式 / 刷新与提醒 / 最近提醒」三个分节。
- * @param {{bus: {publish: Function}}} ctx
+ * @param {{bus: {publish: Function}, dom: object}} ctx
  * @param {any} state 装配壳建的共享状态（用到 status / section，见 work/M4b/closures.md）
  * @returns {{sections: HTMLElement[], render: Function, renderAlerts: Function}}
  *   `sections` 按原 append 次序给出：显示方式 → 刷新与提醒 → 最近提醒。
  */
 export function mountPrefs(ctx, state) {
+  const dom = ctx.dom;
   /* ---------- 显示方式 ---------- */
   const modeInputs = {};
-  const radios = tag("div", "radios");
+  const radios = tag(dom, "div", "radios");
   for (const value of ["badge", "overlay", "off"]) {
-    const box = input("radio");
-    box.name = "astock-mode";
+    const box = input(dom, "radio");
+    box.setAttribute("name", "astock-mode"); // radio 分组靠 name attribute；契约里它走 attr 而不是 property
     box.value = value;
-    box.onchange = () => {
+    box.on("change", () => {
       if (box.checked) ctx.bus.publish(TOPIC_CMD, { action: "config", value: { mode: value } });
-    };
-    const label = tag("label");
-    label.append(box, document.createTextNode(MODE_TEXT[value]));
+    });
+    const label = tag(dom, "label");
+    label.append(box, text(dom, MODE_TEXT[value])); // 契约里没有文本节点，行内文字一律包一层 span
     radios.append(label);
     modeInputs[value] = box;
   }
 
   /* ---------- 刷新与提醒 ---------- */
-  const intervalInput = input("text", "num");
+  const intervalInput = input(dom, "text", "num");
   intervalInput.placeholder = "20";
-  const intervalBtn = button("应用");
-  intervalBtn.onclick = () => {
+  // Worker 里没有 document.activeElement：用插件自己的标记复现「用户正在输入就别覆盖」
+  // （input 置位、change 在失焦/回车时复位）
+  let editing = false;
+  intervalInput.on("input", () => {
+    editing = true;
+  });
+  intervalInput.on("change", () => {
+    editing = false;
+  });
+  const intervalBtn = button(dom, "应用");
+  intervalBtn.on("click", () => {
     const n = Number(intervalInput.value);
     if (!Number.isFinite(n) || n < 10) return state.status.set("间隔至少 10 秒", "error");
     ctx.bus.publish(TOPIC_CMD, { action: "config", value: { intervalSec: Math.round(n) } });
-  };
-  const refreshBtn = button("立刻刷新");
-  refreshBtn.onclick = () => ctx.bus.publish(TOPIC_CMD, { action: "refresh" });
-  const testBtn = button("试一条提醒");
-  testBtn.onclick = () => ctx.bus.publish(TOPIC_CMD, { action: "testAlert" });
+  });
+  const refreshBtn = button(dom, "立刻刷新");
+  refreshBtn.on("click", () => ctx.bus.publish(TOPIC_CMD, { action: "refresh" }));
+  const testBtn = button(dom, "试一条提醒");
+  testBtn.on("click", () => ctx.bus.publish(TOPIC_CMD, { action: "testAlert" }));
 
-  const alertsBox = input("checkbox");
-  alertsBox.onchange = () => ctx.bus.publish(TOPIC_CMD, { action: "config", value: { alertsOn: alertsBox.checked } });
-  const petBox = input("checkbox");
-  petBox.onchange = () => ctx.bus.publish(TOPIC_CMD, { action: "config", value: { petOn: petBox.checked } });
-  const showIndexBox = input("checkbox");
-  showIndexBox.onchange = () => ctx.bus.publish(TOPIC_CMD, { action: "config", value: { showIndex: showIndexBox.checked } });
-  const indexSel = tag("select");
+  const alertsBox = input(dom, "checkbox");
+  alertsBox.on("change", () => ctx.bus.publish(TOPIC_CMD, { action: "config", value: { alertsOn: alertsBox.checked } }));
+  const petBox = input(dom, "checkbox");
+  petBox.on("change", () => ctx.bus.publish(TOPIC_CMD, { action: "config", value: { petOn: petBox.checked } }));
+  const showIndexBox = input(dom, "checkbox");
+  showIndexBox.on("change", () => ctx.bus.publish(TOPIC_CMD, { action: "config", value: { showIndex: showIndexBox.checked } }));
+  const indexSel = tag(dom, "select");
   for (const idx of INDEXES) {
-    const opt = tag("option");
+    const opt = tag(dom, "option");
     opt.value = idx.secid;
     opt.textContent = idx.name;
     indexSel.append(opt);
   }
-  indexSel.onchange = () => ctx.bus.publish(TOPIC_CMD, { action: "config", value: { indexSecid: indexSel.value } });
+  indexSel.on("change", () => ctx.bus.publish(TOPIC_CMD, { action: "config", value: { indexSecid: indexSel.value } }));
 
-  const alertList = tag("div", "alerts");
-  const netLine = tag("div", "muted");
+  const alertList = tag(dom, "div", "alerts");
+  const netLine = tag(dom, "div", "muted");
 
-  const row = tag("div", "row");
-  row.append(text("盘中间隔 "), intervalInput, text("秒 "), intervalBtn, refreshBtn, testBtn);
-  const checks = tag("div", "checks");
-  const l1 = tag("label");
-  l1.append(alertsBox, document.createTextNode("系统通知"));
-  const l2 = tag("label");
-  l2.append(petBox, document.createTextNode("宠物反应"));
-  const l3 = tag("label");
-  l3.append(showIndexBox, document.createTextNode("带指数"));
+  const row = tag(dom, "div", "row");
+  row.append(text(dom, "盘中间隔 "), intervalInput, text(dom, "秒 "), intervalBtn, refreshBtn, testBtn);
+  const checks = tag(dom, "div", "checks");
+  const l1 = tag(dom, "label");
+  l1.append(alertsBox, text(dom, "系统通知"));
+  const l2 = tag(dom, "label");
+  l2.append(petBox, text(dom, "宠物反应"));
+  const l3 = tag(dom, "label");
+  l3.append(showIndexBox, text(dom, "带指数"));
   checks.append(l1, l2, l3, indexSel);
 
   /* ---------- 回灌 ---------- */
@@ -107,7 +117,7 @@ export function mountPrefs(ctx, state) {
     }
 
     for (const [value, box] of Object.entries(modeInputs)) box.checked = modeOf(cfg) === value;
-    if (document.activeElement !== intervalInput) intervalInput.value = String(intervalOf(cfg));
+    if (!editing) intervalInput.value = String(intervalOf(cfg));
     alertsBox.checked = prefChecked(cfg.alertsOn);
     petBox.checked = prefChecked(cfg.petOn);
     showIndexBox.checked = prefChecked(cfg.showIndex);
@@ -118,12 +128,12 @@ export function mountPrefs(ctx, state) {
     alertList.replaceChildren();
     const hits = (d.recent ?? []).filter((a) => a?.message);
     if (!hits.length) {
-      const empty = tag("span", "muted");
+      const empty = tag(dom, "span", "muted");
       empty.textContent = "今天还没有触发过提醒。";
       alertList.append(empty);
     } else {
       for (const a of hits) {
-        const rowNode = tag("div");
+        const rowNode = tag(dom, "div");
         rowNode.textContent = `${clockOf(a.at)} · ${a.message}`;
         alertList.append(rowNode);
       }

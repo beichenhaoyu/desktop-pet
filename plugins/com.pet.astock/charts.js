@@ -29,6 +29,8 @@ const VOLUME_RATIO = 0.22;
 /**
  * 按 CSS 尺寸与设备像素比准备好画布。
  * DPR 变了要重设 width/height（Canvas 的位图尺寸改了就清空内容），所以每次重绘都调它。
+ * `canvas` 是「可画的那块画布」：Worker 路线里是宿主经 onCanvas 交接来的 OffscreenCanvas，
+ * 位图尺寸与 2d 上下文都只在这块对象上弄，不去查询虚拟节点。
  */
 export function prepareCanvas(canvas, cssWidth, cssHeight, dpr = 1) {
   const scale = Math.max(1, Math.min(3, dpr || 1));

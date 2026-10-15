@@ -76,6 +76,17 @@ describe("词表是闭集：多一个名字等于扩大攻击面", () => {
     assert.ok(WIDGET_ATTRS.includes("class"));
   });
 
+  it("表族 6 个标签在表内：astock 的自选表与五档表靠它们，且是从 helper 调用面量的", () => {
+    // 两轮按 `createElement("字面量")` 数词表都没看见它们 —— astock 把建元素收进自己的 tag(name) 小件
+    for (const t of ["table", "thead", "tbody", "tr", "th", "td"]) {
+      assert.equal(isWidgetTag(t), true, `${t} 不在标签表里`);
+    }
+    // 但补表族不等于开导航面：这三个同族里最像 div 的之外一律仍表外
+    for (const t of ["col", "colgroup", "caption"]) {
+      assert.equal(isWidgetTag(t), false, `${t} 没在实测里出现，不该顺手开`);
+    }
+  });
+
   it("标签白名单不开导航与资源加载能力", () => {
     for (const forbidden of ["script", "iframe", "object", "embed", "a", "form", "link", "meta", "base"]) {
       assert.equal(isWidgetTag(forbidden), false, `${forbidden} 被当成了合法标签`);

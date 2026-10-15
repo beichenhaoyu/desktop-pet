@@ -80,6 +80,30 @@ const BUS_POKE = {
     status: { text: "已连接 Polar H10", level: "ok" },
     widget: { mode: "overlay", connected: true, deviceName: "Polar H10" },
   },
+  "com.pet.astock": {
+    // 一份 `*:widget` 视图喂三个区：badge 读 watch + quotes[secid] + config.showIndex，
+    // overlay 与设置页读同一份再加 rows / depth / net。形状按 core.js 的 pushState 抄。
+    widget: {
+      config: { showIndex: true, indexSecid: "1.000001", card: true, notify: true, intervalSec: 20 },
+      watch: [{ secid: "1.600000", code: "sh600000", name: "浦发银行", rule: "≥10" }],
+      quotes: {
+        "1.600000": { name: "浦发银行", price: 9.85, pct: 1.23 },
+        "1.000001": { name: "上证指数", price: 3210.5, pct: 0.44 },
+      },
+      recent: [],
+      error: null,
+      updatedAt: 1,
+      quoteAt: 1,
+      net: { strikes: 0, cooldownLeftSec: 0, noProgress: 0, intervalSec: 20, sources: {} },
+    },
+    panel: {
+      code: "sh600000",
+      kline: { bars: [{ t: "2026-10-15", o: 9.7, h: 9.9, l: 9.6, c: 9.85, v: 120000 }] },
+      trend: [{ t: "09:30", p: 9.72 }, { t: "10:00", p: 9.85 }],
+    },
+    suggest: { rows: [{ code: "sz000001", name: "平安银行" }] },
+    status: { text: "行情已更新", level: "ok" },
+  },
 };
 
 /** 画布替身：`getContext("2d")` 回来的一切调用都是空操作，属性写全部吞掉。
@@ -153,12 +177,23 @@ async function smoke(dir, region, module = null) {
     await new Promise((res) => setTimeout(res, 20));
   };
   const fired = new Set();
+  // 真运行时里回调抛出的异常会被 Worker 全局接住，宿主用 `worker.onerror` 把它结算成挂载失败。
+  // 离线这侧得自己接：一条 throw 直接把测试进程打崩，读数就成了「没跑完」而不是某条红 ——
+  // A12 的 MW-B（把绘图目标从交接画布换成虚拟节点）正是这种情况，接住之后才有归因。
+  const errors = [];
+  const send = (msg) => {
+    try {
+      runtime.hostMessage(msg);
+    } catch (error) {
+      errors.push(String(error?.message ?? error));
+    }
+  };
   const dispatchListeners = async () => {
     for (const l of [...listeners]) {
       const key = `${l.id}:${l.event}`;
       if (fired.has(key)) continue;
       fired.add(key);
-      runtime.hostMessage({ t: "event", id: l.id, event: l.event, value: eventValueFor(l.event) });
+      send({ t: "event", id: l.id, event: l.event, value: eventValueFor(l.event) });
     }
     await settle();
   };
@@ -177,7 +212,7 @@ async function smoke(dir, region, module = null) {
     .filter((p) => p.payload !== null);
   const opsBeforePoke = ops.length;
   for (const p of pokes) {
-    runtime.hostMessage({ t: "bus", sub: p.sub, payload: p.payload });
+    send({ t: "bus", sub: p.sub, payload: p.payload });
   }
   await settle();
   const opsAfterPoke = ops.length;
@@ -191,7 +226,7 @@ async function smoke(dir, region, module = null) {
   const callsAfterEvents = calls.length;
 
   // 3) layout 与 handoff：图表类的绘制入口在这两个回调里
-  runtime.hostMessage({
+  send({
     t: "layout",
     width: 320,
     height: 120,
@@ -200,14 +235,14 @@ async function smoke(dir, region, module = null) {
   });
   await settle();
   for (const id of canvasIds) {
-    runtime.hostMessage({ t: "handoff", id, off: stubCanvas() });
+    send({ t: "handoff", id, off: stubCanvas() });
   }
   await settle();
   // 上面两步可能又登记了新监听，补一轮
   await dispatchListeners();
 
   // 收尾让插件自己清定时器：留着的测试进程不退出，看起来像挂死而不是断言失败
-  runtime.hostMessage({ t: "deactivate" });
+  send({ t: "deactivate" });
   await settle();
   return {
     ops,
@@ -216,6 +251,7 @@ async function smoke(dir, region, module = null) {
     bootError,
     booted,
     listenCount: listeners.length,
+    errors,
     listenerCountBeforeEvents,
     canvasCount: canvasIds.length,
     subCount: subs.length,
@@ -236,6 +272,7 @@ function assertClean(r, label) {
   assert.equal(r.booted, true, `${label} 没有 booted 回执`);
   assert.ok(r.ops.length > 0, `${label} 一条 op 都没发，等于没渲染`);
   assert.deepEqual(r.badOps, [], `${label} 有 ${r.badOps.length} 条 op 过不了宿主门禁`);
+  assert.deepEqual(r.errors, [], `${label} 的回调抛出过：${r.errors.join(" / ")}`);
 }
 
 /**

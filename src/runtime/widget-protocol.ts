@@ -18,7 +18,11 @@
 /** HTML 标签白名单。逐个对应实测次数：div 19 / style 8 / span 4 / i 2 / option 1 / label 1 /
  *  input 1 / canvas 1 / button 1；ul/li/p/h3/small/img 是 `innerHTML` 那一处改写要落地的结构，
  *  随迁移卡逐条加，不加注释里的任何一个（`a` / `form` / `iframe` / `object` / `link` / `meta` /
- *  `base` / `script` 一律不开：前四个能造成导航或资源加载，后四个是文档级标记，本就不该出现在插件手里）。 */
+ *  `base` / `script` 一律不开：前四个能造成导航或资源加载，后四个是文档级标记，本就不该出现在插件手里）。
+ *  **表族 6 个是 A12 迁移时才补上的**：astock 把建元素全收进自己的 `tag(name, cls)` 小件，
+ *  按 `createElement("字面量")` 数词表的那两轮都看不见它们（`views/settings/depth.js` 的
+ *  `tag("table","depth")` / `tag("tbody")` / `tag("td")`，另有 `views/dom.js` 的 `cell()` helper）。
+ *  语义上与 div/span 同族：不成导航、不载资源、无脚本面。 */
 export const WIDGET_HTML_TAGS = [
   "div",
   "span",
@@ -36,6 +40,12 @@ export const WIDGET_HTML_TAGS = [
   "li",
   "canvas",
   "style",
+  "table",
+  "thead",
+  "tbody",
+  "tr",
+  "th",
+  "td",
 ] as const;
 
 /** SVG 标签白名单：hr-ble 那颗心用到的 5 个（svg / path / defs / linearGradient / stop），
@@ -270,6 +280,7 @@ export const WIDGET_WORKER_MIGRATED: readonly string[] = [
   "com.pet.agent-bridge",
   "com.pet.todo",
   "com.pet.hr-ble",
+  "com.pet.astock",
 ];
 
 /** 进不进 Worker：迁移台账 ∪ 开发态点名。台账形参只为离线单测能压到「命中台账」这一支。 */
