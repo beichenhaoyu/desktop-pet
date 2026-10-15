@@ -266,7 +266,7 @@ export const WIDGET_WORKER_FLAG = "host:widget-worker-plugin-host";
  * 根本不存在。所以一片迁移落地就得当场记账，全部记完再由收口片翻默认、删名单。
  * 名单由 PM 在验收每张迁移卡时追加，执行者不许自己改这一处（四张卡都要动它就成了串行点）。
  */
-export const WIDGET_WORKER_MIGRATED: readonly string[] = [];
+export const WIDGET_WORKER_MIGRATED: readonly string[] = ["com.pet.agent-bridge"];
 
 /** 进不进 Worker：迁移台账 ∪ 开发态点名。台账形参只为离线单测能压到「命中台账」这一支。 */
 export const widgetUsesWorker = (
