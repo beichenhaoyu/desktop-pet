@@ -27,6 +27,8 @@ plugins/
 | `entry` | 是 | `^[\w.-]+\.js$`，不能带路径分隔符 |
 | `widget` | 否 | 同上 |
 | `permissions` | 否 | 能力名数组，见第 3 节 |
+| `apiVersion` | 否 | 整数，缺省 1；宿主认识 `1`、`2`。**带 `widget` 的插件要写 `2`**，表示 widget 照第 5.1 节的渲染契约写 —— 仍是 1 的 widget 不会进 Worker，插槽里显示迁移提示 |
+| `minHostVersion` | 否 | 三段以内数字版本，高于当前宿主时拒绝加载 |
 
 ## 2. 生命周期
 
@@ -143,7 +145,12 @@ widget 默认就跑在自己的模块 Worker 里：那里**没有 `window` / `do
 （逗号分隔插件 id）能把某个 widget 放回宿主 realm，只服务「还没照下面这张表改写的老 widget」，
 不是给你调风格用的配置项。两条路各跑各的：留在宿主 realm 时 `ctx.dom` / `onLayout` / `onCanvas`
 **是 undefined**，照契约写的 widget 会白屏。
-哪个 realm 在跑可以从插槽壳上看：`div[data-plugin-id="<id>"]` 的 `data-widget-realm` 是 `host` 还是 `worker`。
+哪个 realm 在跑可以从插槽壳上看：`div[data-plugin-id="<id>"]` 的 `data-widget-realm` 是 `host`、`worker` 还是 `blocked`。
+
+**照契约写完要在 manifest 声明 `"apiVersion": 2`。** 宿主按这个声明分流，判定在加载 widget 之前：
+没声明（或写 1）又没被点名留宿主 realm 的 widget，代码一行都不执行，宿主在插槽里放一张说明卡
+（`data-widget-realm="blocked"`；badge 区只显示一行「⚠ widget 需迁移」，全文在悬停提示与控制台 `warn` 里），
+而不是让它进 Worker 撞上 `document is not defined`、插槽被收掉、用户只看见一块白。
 
 进 Worker 之后 `ctx` 多三个键，写代码时按「只有这一面」来写：
 

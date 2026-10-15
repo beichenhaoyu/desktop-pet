@@ -3,6 +3,7 @@
   "name": "Agent 桥",
   "version": "0.4.0",
   "entry": "index.js",
+  "apiVersion": 2,
   "widget": "widget.js",
   "permissions": [
     "bus:publish",

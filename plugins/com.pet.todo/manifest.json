@@ -3,6 +3,7 @@
   "name": "待办",
   "version": "0.1.0",
   "entry": "index.js",
+  "apiVersion": 2,
   "widget": "widget.js",
   "permissions": [
     "storage",

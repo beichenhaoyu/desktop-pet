@@ -11,6 +11,8 @@ import {
   WIDGET_CALL_METHODS,
   isWidgetCallAllowed,
   widgetUsesWorker,
+  legacyWidgetReason,
+  WIDGET_CONTRACT_API_VERSION,
   WIDGET_HOST_REALM_FLAG,
 } from "../../src/runtime/widget-protocol.ts";
 import { createWidgetRuntime } from "../../src/runtime/widget-worker.ts";
@@ -464,5 +466,58 @@ describe("隔离：Worker 侧不许把 IPC 入口带进 bundle", () => {
 
   it("自举有守卫，所以 node 里 import 它不会炸", () => {
     assert.match(WORKER_SRC, /typeof self !== "undefined"/);
+  });
+});
+
+describe("旧接口 widget 先拦下、给可读原因（apiVersion 2 = 渲染契约）", () => {
+  const SCHEMA = JSON.parse(readFileSync(new URL("../../packages/sdk/manifest.schema.json", import.meta.url), "utf8"));
+  const v1 = { id: "com.pet.old", widget: "widget.js" };
+
+  it("契约版本号是 2，且 schema 认识它", () => {
+    assert.equal(WIDGET_CONTRACT_API_VERSION, 2);
+    assert.ok(SCHEMA.properties.apiVersion.supported.includes(WIDGET_CONTRACT_API_VERSION));
+  });
+
+  it("缺 apiVersion 的 widget 要进 Worker → 拦下，原因里有插件 id、版本、迁移方法与逃生门", () => {
+    const reason = legacyWidgetReason(v1, null);
+    assert.ok(reason);
+    for (const piece of ["com.pet.old", "apiVersion 1", "ADR-0008", '"apiVersion": 2', WIDGET_HOST_REALM_FLAG]) {
+      assert.ok(reason.includes(piece), `原因里缺「${piece}」：${reason}`);
+    }
+  });
+
+  it("显式 apiVersion 1 同样拦下", () => {
+    assert.ok(legacyWidgetReason({ ...v1, apiVersion: 1 }, null));
+  });
+
+  it("声明到契约版本 → 放行", () => {
+    assert.equal(legacyWidgetReason({ ...v1, apiVersion: 2 }, null), null);
+  });
+
+  it("点名留在宿主 realm 的旧 widget 不拦（逃生门照旧能用）", () => {
+    assert.equal(legacyWidgetReason(v1, "com.pet.old"), null);
+  });
+
+  it("没有 widget 的插件与拦截无关", () => {
+    assert.equal(legacyWidgetReason({ id: "com.pet.old" }, null), null);
+  });
+
+  it("四个自带插件与 Worker 探针夹具都声明了契约版本（否则翻默认后它们自己先被拦）", () => {
+    for (const rel of [
+      "../../plugins/com.pet.agent-bridge/manifest.json",
+      "../../plugins/com.pet.astock/manifest.json",
+      "../../plugins/com.pet.hr-ble/manifest.json",
+      "../../plugins/com.pet.todo/manifest.json",
+      "../fixtures/l1-probe/manifest.json",
+    ]) {
+      const m = JSON.parse(readFileSync(new URL(rel, import.meta.url), "utf8"));
+      assert.equal(legacyWidgetReason(m, null), null, `${m.id} 会被当成旧接口拦下`);
+    }
+  });
+
+  it("宿主在加载 widget 之前做判定（先 import 再拦等于旧代码已经执行过一遍）", () => {
+    const at = WIDGET_HOST_SRC.indexOf("legacyWidgetReason(manifest");
+    const load = WIDGET_HOST_SRC.indexOf("pluginFileVersion(manifest.id");
+    assert.ok(at > 0 && load > 0 && at < load, "拦截判定必须在取 widget 文件之前");
   });
 });
