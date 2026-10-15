@@ -4,7 +4,7 @@
 //   1) hook 分支 —— 真的用 exe 跑一次 `--pet-hook <phase>`，验证 stdin 落成一行 JSONL；
 //   2) 采集→归一化→宠物 —— 往收件目录追加事件，断言宠物动作、台词、总线 topic 与去重。
 // 不依赖 petdex，也不需要 Qoder 真跑起来：事件是按其 hook 形状直接造的。
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { argv, env } from "node:process";
 import { spawnSync } from "node:child_process";
@@ -23,6 +23,12 @@ import {
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
 const AGENT_ID = "com.pet.agent-bridge";
+// 探针插件：只为钉住「声明 agent:hooks 的插件第一次调用必经同意框」这条宿主规则。
+// 规则与用户此刻有没有授权过真实的 Agent 插件无关 —— 探针起手必然没授权，所以那一扇框
+// 是必然要弹的；运行时自建自删，全程不碰 com.pet.agent-bridge 的授权状态。
+const PROBE_ID = "zz.agentconsent";
+const PLUGINS_DIR = resolve(import.meta.dirname, "../../plugins");
+const PROBE_DIR = join(PLUGINS_DIR, PROBE_ID);
 const EXE = join(import.meta.dirname, "../../src-tauri/target/debug/desktop-pet.exe");
 // 没有 APPDATA 就拼不出收件目录，断言会打在 cwd 下一个同名相对路径上 ——
 // 那种失败和「宿主真的没收到事件」长得一模一样，必须当场拒绝开跑
@@ -42,7 +48,11 @@ function emitPhase(phase, payload = {}) {
   return line;
 }
 
-/** 授权只能走真实同意框，且各能力的框分批弹，所以后台持续应答整个测试期间 */
+/**
+ * 授权只能走真实同意框，且各能力的框分批弹，所以后台持续应答整个测试期间。
+ * 每扇框连主人一起记（{ who, caps }）：别的插件也可能同时弹自己的框，
+ * 断言要按探针 id 过滤再判，别拿总数当证据。
+ */
 function makeConsentPump(seen) {
   let stopped = false;
   const run = async (deadlineMs) => {
@@ -60,7 +70,10 @@ function makeConsentPump(seen) {
       try {
         const cs = await attach(PORT, (t) => t.webSocketDebuggerUrl === target.webSocketDebuggerUrl, 8_000);
         try {
-          seen.push(await cs.ev(`[...document.querySelectorAll('#cap-list li')].map(li => li.textContent)`));
+          seen.push({
+            who: String(await cs.ev(`document.getElementById('plugin-name')?.textContent ?? ''`)),
+            caps: await cs.ev(`[...document.querySelectorAll('#cap-list li')].map(li => li.textContent)`),
+          });
           await cs.ev(`document.getElementById('btn-allow').click()`);
         } finally {
           cs.close();
@@ -90,6 +103,28 @@ try {
 
 try {
   if (!existsSync(INBOX)) throw new Error(`收件目录不存在：${INBOX}（宿主没起来？）`);
+
+  // ---------- 0) 探针插件：先落盘再连页面 ----------
+  // 照 verify-http.mjs 的做法：先写 index.js、最后才写 manifest.json —— manifest 是宿主认账
+  // 的信号，先写它会让 watcher 看到一个入口缺失的半装插件。写完等 watcher 扫到它。
+  mkdirSync(PROBE_DIR, { recursive: true });
+  writeFileSync(join(PROBE_DIR, "index.js"), "export function activate() {}\nexport function deactivate() {}\n");
+  writeFileSync(
+    join(PROBE_DIR, "manifest.json"),
+    JSON.stringify(
+      {
+        id: PROBE_ID,
+        name: "Agent 授权探针",
+        version: "0.0.0",
+        entry: "index.js",
+        permissions: ["agent:hooks"],
+        description: "验证用探针：从设置页走桥调 agentHooks.status()，钉住声明 agent:hooks 的插件首次调用必经同意框。",
+      },
+      null,
+      2,
+    ),
+  );
+  await sleep(1500); // 让 plugins 目录 watcher 扫到它
 
   // ---------- 1) hook 分支：exe 收 stdin 并落盘 ----------
   r.group("hook 接收分支（起一个真实的 exe --pet-hook）");
@@ -152,6 +187,63 @@ try {
   const token = `agent-${Date.now()}`;
   await c.ev(`window.__verifyToken = ${JSON.stringify(token)}; true`);
   pumpDone = consentPump.run(600_000); // 应答窗口必须比整轮长：宿主对同意框有 60 秒超时即视为拒绝 // 宿主对同意框有 60 秒超时即视为拒绝，应答窗口必须比整轮测试更长
+
+  r.group("探针：agent:hooks 首次调用必经同意框（与真实插件的授权状态无关）");
+  // 上一轮中途挂掉可能留下探针的残留授权或一扇没点掉的同意框 —— 残留授权会让首次调用
+  // 不弹框，开着的老框会被 pump 记到探针头上。起手先排空，并把「排空了」钉成断言。
+  if (!settings) settings = await openSettingsInvoker(PORT, c);
+  const probeCapsInTable = async () => {
+    const table = (await settings.invoke("permission_list")).v ?? {};
+    return Object.entries(table)
+      .filter(([id]) => id === PROBE_ID)
+      .flatMap(([, caps]) => caps);
+  };
+  let probeResidual = await probeCapsInTable();
+  for (let i = 0; i < 40 && probeResidual.length; i++) {
+    await settings.invoke("permission_revoke", { pluginId: PROBE_ID }).catch(() => undefined);
+    await sleep(250);
+    probeResidual = await probeCapsInTable();
+  }
+  r.check("起手时表里没有探针的残留授权", [], probeResidual);
+  let probeConsents = 1;
+  for (let i = 0; i < 40; i++) {
+    probeConsents = (await listPages(PORT).catch(() => [])).filter((t) => /consent/.test(t.url)).length;
+    if (!probeConsents) break;
+    await sleep(250);
+  }
+  r.check("起手时没有还开着的同意框", 0, probeConsents);
+
+  // 授权表是宿主的事实，但 **JS 桥还有一层 `granted` 缓存，按页面文档实例存在**（bridge.ts 的模块级
+  // Map）。宿主侧 revoke 掉探针的授权后，同一份设置页文档里的缓存仍然认为它已授权 —— 首调会直接命中
+  // 缓存、根本不发 permission_request，于是这条断言变成「设置页自上次授权后重建过没有」的函数。
+  // 实测：连跑三次是 绿 / 红 / 绿（红的那一轮复用上一轮的设置页文档）。
+  // 这里显式重建一次文档，让缓存回到冷状态，断言才真的只依赖宿主事实。
+  await reloadAndWait(settings.client);
+  await waitUntil(settings.client, `!!window.__TAURI_INTERNALS__`, 15_000);
+
+  // 从设置页 realm 构造探针的 agentHooks 通道再调 status()：agent_hooks_* 带 pluginId 的调用
+  // 除设置窗门禁外还要逐项校验 agent:hooks 已授权（commands/agent.rs 的 assert_caller），
+  // 而桥在放行前会先 permission_request —— 探针起手必然没授权，所以这扇框必然要弹。
+  // 宿主把 agentHooks 注入为 ctx.host 只发生在 widget-host 的 settings 区真实 widget 上；
+  // 探针没有 widget，这里直接用 widget-host.ts:97 注入的同一个工厂 createAgentHooksApi。
+  const probeStatus = `(async () => {
+    const { createAgentHooksApi } = await import('/src/runtime/bridge.ts');
+    const api = createAgentHooksApi({ id: ${JSON.stringify(PROBE_ID)}, name: 'Agent 授权探针', permissions: ['agent:hooks'] });
+    try { await api.status(); return { ok: true }; } catch (e) { return { ok: false, e: String(e?.message ?? e) }; }
+  })()`;
+  const probeBoxes = () => grantedCaps.filter((x) => x.who.includes(PROBE_ID));
+  await settings.client.ev(probeStatus);
+  r.check(
+    "探针首次调用弹出的同意框列出了 agent:hooks",
+    true,
+    probeBoxes().some((x) => x.caps.some((c) => String(c).includes("agent:hooks"))),
+  );
+  // 第二次调用同一条能力：授权已在表里（且桥有会话内缓存），不该再弹框。
+  // 按探针自己的框数对比，别的插件 concurrent 弹框不进这条证据。
+  const beforeSecond = probeBoxes().length;
+  await settings.client.ev(probeStatus);
+  await sleep(2000); // 若实现错成「每次都弹框」，给泵留出把它记下来的时间
+  r.check("同一能力第二次调用不再弹框", beforeSecond, probeBoxes().length);
 
   /** 本插件那扇悬浮窗：标签 overlay-<id>，但 Tauri 不允许点号，id 里的点被编码成 `_`
    *  （与 Rust 的 overlay_label 同式：id 词表里没有下划线，所以这是一一对应）；
@@ -638,12 +730,10 @@ try {
     }
     r.check("卸载不动别人条目（与 verify-isolation 同口径：按键排序规范串）", expectForeign, `${foreignOf(cfgA)}|${foreignOf(cfgB)}`);
 
-    // ⑤ agent:hooks 的授权经过同意框（声明后由激活 / 首次调用触发，pump 已应答并记录）
-    r.check(
-      "agent:hooks 的授权弹过同意框",
-      true,
-      grantedCaps.some((caps) => caps.some((x) => String(x).includes("agent:hooks"))),
-    );
+    // ⑤ 旧断言「agent:hooks 的授权弹过同意框」已删除：它写的是「这一轮跑动期间真实 Agent
+    // 插件的授权弹过框」，用户本就启用并授权 com.pet.agent-bridge 时收尾门控原样保留授权，
+    // 这一轮不弹框，断言随继承状态红绿交替。同一宿主规则（声明 agent:hooks 的插件第一次
+    // 调用必经同意框）改由上面探针组的首调断言钉住（起手必然没授权，那一扇框必然弹）。
   }
 
   r.group("收尾前的完整性");
@@ -661,6 +751,20 @@ try {
   consentPump.stop();
   await pumpDone?.catch(() => undefined);
   if (c) {
+    // 探针收尾：先撤销授权（撤销只认设置窗，目录一删宿主就把它当孤儿了），再删目录，
+    // 最后断言授权已被 prune_orphan_grants 回收。顺序不能反。
+    if (!settings) settings = await openSettingsInvoker(PORT, c).catch(() => null);
+    const probeRevoked = settings
+      ? await settings.invoke("permission_revoke", { pluginId: PROBE_ID }).catch(() => undefined)
+      : { ok: false, e: "设置窗没开起来" };
+    r.info("探针授权撤销", JSON.stringify(probeRevoked?.ok ?? false));
+    rmSync(PROBE_DIR, { recursive: true, force: true });
+    await sleep(1500); // 等 watcher 跑一轮，prune_orphan_grants 把孤儿授权回收掉
+    // 这条断言不许因「设置窗没开起来」而静默消失——那样总条数会悄悄少一条，看起来像套件本来就少一条。
+    const probeTable = settings
+      ? ((await settings.invoke("permission_list").catch(() => ({ v: {} }))).v ?? {})
+      : { [PROBE_ID]: ["设置窗没开起来，无法确认授权已回收"] };
+    r.check("探针下线后授权被回收", [], Object.keys(probeTable).filter((id) => id === PROBE_ID));
     const wasEnabled = origEnabled.includes(AGENT_ID);
     {
       // 原样恢复用户那份清单。先前这里会把 agent-bridge 从清单里摘掉，
@@ -696,6 +800,8 @@ try {
     await sleep(1200);
   } else {
     settings?.close();
+    // 页面没连上就中断的场合，探针目录也要删掉，别给后面所有套件留一个孤儿插件
+    rmSync(PROBE_DIR, { recursive: true, force: true });
   }
   const failed = r.summary();
   c?.close();
