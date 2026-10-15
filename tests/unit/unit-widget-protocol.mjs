@@ -29,6 +29,7 @@ import { WidgetRenderSession, createDomFacade } from "../../src/runtime/widget-n
 
 const PROTO_SRC = readFileSync(new URL("../../src/runtime/widget-protocol.ts", import.meta.url), "utf8");
 const NODE_SRC = readFileSync(new URL("../../src/runtime/widget-node.ts", import.meta.url), "utf8");
+const SDK_SRC = readFileSync(new URL("../../packages/sdk/index.d.ts", import.meta.url), "utf8");
 
 /** 只认真实 import 形态：注释里写 @tauri-apps 不算命中（这条口径在 unit-worker-host 里被证过一次）。 */
 const importsTauri = (src) => /from\s+"@tauri-apps|import\(\s*"@tauri-apps/.test(src);
@@ -420,5 +421,59 @@ describe("隔离：这两个模块不许把 IPC 入口带进 Worker", () => {
   it("节点文件只 import 协议，不 import 任何运行时模块", () => {
     const specs = [...NODE_SRC.matchAll(/from\s+"([^"]+)"/g)].map((m) => m[1]);
     assert.deepEqual(specs, ["./widget-protocol"]);
+  });
+});
+
+/** 四张插件迁移卡是照 `packages/sdk/index.d.ts` 写代码的，那份类型面漂了就等于按假契约迁移。 */
+describe("SDK 类型面与协议词表同源", () => {
+  /** 从 .d.ts 里取出 `export type X = "a" | "b";` 的成员（只认真实声明形态） */
+  const unionMembers = (name) => {
+    const m = SDK_SRC.match(new RegExp(`export type ${name} =([^;]+);`));
+    return m ? [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]).sort() : null;
+  };
+
+  it("WidgetEventName 与协议的 WIDGET_EVENTS 是同一个集合", () => {
+    assert.deepEqual(unionMembers("WidgetEventName"), [...WIDGET_EVENTS].sort());
+  });
+
+  it("渲染契约那三个键在 SDK 里都声明成可选（Worker 路线才有）", () => {
+    for (const key of ["dom?: WidgetDom", "onLayout?:", "onCanvas?:"]) {
+      assert.equal(SDK_SRC.includes(key), true, `SDK 缺 ${key}`);
+    }
+  });
+
+  it("SDK 不承诺 innerHTML / querySelector（承诺了就有插件按它写）", () => {
+    assert.equal(/innerHTML\??:/.test(SDK_SRC), false);
+    assert.equal(/querySelector\(/.test(SDK_SRC), false);
+  });
+
+  it("SDK 的 WidgetNode 成员不超过协议允许的调用面", () => {
+    const body = SDK_SRC.match(/export interface WidgetNode \{([\s\S]*?)\n\}/)?.[1] ?? "";
+    const members = [...body.matchAll(/^\s{2}(?:readonly )?([A-Za-z]+)[?(:.\s]/gm)].map((m) => m[1]);
+    const allowed = new Set([
+      "nodeId",
+      "tag",
+      "textContent",
+      "className",
+      "classList",
+      "dataset",
+      "style",
+      "value",
+      "checked",
+      "disabled",
+      "readOnly",
+      "placeholder",
+      "type",
+      "id",
+      "setAttribute",
+      "append",
+      "appendChild",
+      "replaceChildren",
+      "remove",
+      "on",
+      "off",
+    ]);
+    assert.deepEqual(members.filter((m) => !allowed.has(m)), []);
+    assert.equal(members.length, allowed.size);
   });
 });
