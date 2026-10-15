@@ -1,8 +1,18 @@
 # A3（优化清单第 41 项）：CDP 运行时套件的可选手动门。
 #
-# **诚实标注：这份工作流还没在真实 runner 上跑绿过。**写它的时候本机的 GitHub 连接器整体 503，
-# 发不出 workflow_dispatch，所以「手动触发可跑通 verify / verify:agent」这条判据要等第一次真 run 才算数。
-# 到那一步请把这里的「未证明」改成 run 号 —— 别只改成「应该能跑」。
+# **诚实标注：这份工作流还没在真实 runner 上跑绿过。**到跑绿那一步请把这里的「未证明」改成 run 号 ——
+# 别只改成「应该能跑」。
+#
+# 托管 runner 已证否（run 38757735230，2026-10-15，windows-latest）：编译、起 dev 实例都过，
+# 之后每个进程（含 node 与 actions 的 post 步）都以 -1073741502 = 0xC0000142（DLL 初始化失败）退出，
+# 套件一条没跑。托管 runner 的服务会话撑不起 WebView2 窗口，所以这条门改跑在开发机的自托管 runner 上。
+#
+# 自托管 runner 的约束（别图省事改掉）：
+#   - 标签 `desktop-pet-e2e` 只给这一条工作流用；ci.yml 留在托管 runner，PR（含 fork）不会落到开发机。
+#   - runner 必须**以交互方式**跑（在已登录的桌面里 `run.cmd`），不要装成 Windows 服务 ——
+#     服务跑在 session 0，没有可见桌面，会原样复现上面那个 0xC0000142。
+#   - 开工前自己的宠物实例要先退掉：单实例锁 + CDP 9223 撞上就是「预检」那一步直接判红。
+#   - 跑的时候别在 Qoder 里干活（见下面 verify:agent 那条坑），否则 71/6 那种红不算数。
 #
 # 与 ci.yml 的分工（口径抄自 CONVENTIONS）：
 #   - ci.yml 只跑零 GUI、零联网的部分，是每次 push/PR 必须绿的门；
@@ -14,7 +24,7 @@
 # 那一段证的是「步骤与 env 的形状对得上」；**证不了的只有 runner 本身**：GitHub 的 Windows 会话里
 # WebView2 能不能起真 webview、能不能拿到 CDP 端点。
 #
-# 一条只有本机才有的坑（runner 上不会犯，写在这是为了让下次看到红的人别误判）：
+# 一条开发机才有的坑（自托管后 runner 就是开发机，所以这条现在会犯，写在这是为了让看到红的人别误判）：
 # `verify:agent` 的「本轮会话状态」那组对**并发 agent 会话**敏感。同一台开发机上装了全局 Qoder hook，
 # 主会话每调一次工具就往宿主共享的 inbox 写一条（`PET_AGENT_CONFIG_FILES` 只重定向 hook 配置文件，
 # **不重定向 inbox**）。边跑这套件边在会话里干活 → 实测 71/6 红；什么都不等它跑完 → 77/0。
@@ -45,7 +55,8 @@ concurrency:
 
 jobs:
   cdp:
-    runs-on: windows-latest
+    # 只跑在开发机的自托管 runner 上（约束见文件头）
+    runs-on: [self-hosted, Windows, desktop-pet-e2e]
     timeout-minutes: 75
     env:
       CARGO_TERM_COLOR: always
@@ -86,6 +97,16 @@ jobs:
       # 那种超时红看着像「webview 起不来」，其实根本没轮到它
       - name: 预编 debug 二进制（顺带证明这条链路能编出来）
         run: npx tauri build --debug --no-bundle
+
+      # 自托管 = 开发机：用户自己的宠物实例或上一轮残留会占单实例锁和 9223，
+      # 不先挡掉的话红在 wait-cdp 或套件中途，看着像被测行为坏了
+      - name: 预检（9223 空闲、没有在跑的宠物实例）
+        shell: pwsh
+        run: |
+          $busy = Get-NetTCPConnection -LocalPort ${{ env.CDP_PORT }} -State Listen -ErrorAction SilentlyContinue
+          if ($busy) { throw "端口 ${{ env.CDP_PORT }} 已被 PID $($busy.OwningProcess -join ',') 占用：先退掉本机的宠物 / 调试实例再触发" }
+          $pet = Get-Process -Name "desktop-pet" -ErrorAction SilentlyContinue
+          if ($pet) { throw "已有 desktop-pet 在跑（PID $($pet.Id -join ',')）：单实例锁会让 dev 实例直接退出，先退掉再触发" }
 
       - name: 起 dev 实例（Vite + WebView2 远程调试端口）
         shell: pwsh
