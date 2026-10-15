@@ -140,7 +140,8 @@
 ├── assets/
 │   └── app-icon.png            # 图标母版（generate-app-icon.ps1 的产物）
 ├── .github/
-│   └── workflows/ci.yml        # CI：lint + 单测
+│   ├── workflows/ci.yml        # CI：lint + 单测 + 文档门禁（零 GUI、零联网，每次 push/PR 必须绿）
+│   └── workflows/e2e.yml       # 可选 e2e：workflow_dispatch 手动跑 CDP 运行时套件（清单 A3）
 ├── release-package/            # 便携包产物（exe + 旁边的 plugins/ + 更新说明），不进版本库
 ├── AGENTS.md                   # 项目状态、决策与协作约定（主入口）
 ├── CONTEXT.md                  # 上下文速览
