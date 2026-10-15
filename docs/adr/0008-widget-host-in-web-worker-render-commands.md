@@ -1,6 +1,6 @@
 # ADR-0008：widget 进 Worker —— 虚拟节点 + 批量渲染指令 + 反向事件通道
 
-- **状态**：已接受（决策已定；其中决策 5 的**首选形状**待 T18 运行时实测证伪）
+- **状态**：已接受（决策 5 的首选形状已由 T18 运行时实测证实，2026-10-15）
 - **日期**：2026-10-15
 - **相关**：[ADR-0006](0006-plugin-host-in-web-worker.md)（插件进 Worker，阶段一已落地）、
   [ADR-0004](0004-style-src-unsafe-inline-kept.md)、`docs/architecture/ARCHITECTURE.md` 的 widget 宿主一节、
@@ -16,6 +16,13 @@ widget 今天是宿主 realm 直接 `mount(shadowRoot, ctx)` 拿到真的 Shadow
 
 取证给出的 14 个桶里，四个不是「把 DOM 调用换个名字发出去」能承接的：`el-on`（17 行，反向事件）、
 `host-event` + `host-dpr` + `dom-measure`（7 行，尺寸与重绘时机）、`canvas-2d`（2 行）、`el-html`（1 行）。
+
+> **落地时的词汇表订正**（2026-10-15，写实现前对 widget 图 15 个文件重扫一遍的结果）：T16 那张固定
+> token 表**漏了整类真实用法**——`setAttribute` 13 处、`.value=` 13 / `.checked=` 11 / `.type=` 10 /
+> `.placeholder` 4（这些是 **property 不是 attribute**，写进 attribute 不生效）、`replaceChildren` 8 处、
+> `createElement("style")` 8 处（四个插件都从 JS 往自己的 closed shadow root 注入 CSS）、`preventDefault` 1 处。
+> 所以契约里的 op 词表是 **12 个按实测定的 kind**，不是照那 14 个桶一一翻译。
+> 教训与 T16 那条同源：**基线数字不能当覆盖面的证据**，固定词表的扫描只会漏掉词表里没有的东西。
 
 ## 决策
 
@@ -41,9 +48,11 @@ widget 今天是宿主 realm 直接 `mount(shadowRoot, ctx)` 拿到真的 Shadow
 ### 2. 节点身份：宿主分配的 nodeId，Worker 只能引用自己见过的 id
 
 `dom-query` 那 57 行不是「把 querySelector 搬进 Worker」，而是**取消查询语义**：Worker 侧的虚拟节点持有对象身份，
-宿主侧维护 `nodeId → 真实节点` 的映射；`create` 由宿主回发新 id，之后的每条 op 都带 id。
-**未知 id、跨 session 的 id、非本 Worker 建过的 id 一律拒绝并报错**，每个 (pluginId, region) 有独立映射，
-所以一个 widget 既拿不到别人的节点，也没法靠字符串猜 id 去碰宿主节点。
+宿主侧维护 `nodeId → 真实节点` 的映射；之后的每条 op 都带那个 id。
+**id 由 Worker 侧单调分配**（落地时才想清楚的一条：批次里 `create` 之后的 op 要立刻引用它，
+等宿主回发就等于把每次建节点变成一次往返），宿主的安全不变量因此是
+「**只承认自己按 op 创建过的 id**」——未知 id、跨 session 的 id、非本 Worker 建过的 id 一律拒绝并报错。
+每个 (pluginId, region) 有独立映射，所以一个 widget 既拿不到别人的节点，也没法靠猜 id 去碰宿主节点。
 
 `querySelector` 的既有调用点在迁移时改成「持住你创建时拿到的那个节点引用」——这是**收窄**：查询能力从插件面上消失。
 
@@ -73,8 +82,13 @@ Worker 侧不再出现 `window`、`devicePixelRatio`、`clientWidth`，重绘时
 
 两个真实站点：`plugins/com.pet.astock/charts.js:39`、`plugins/com.pet.hr-ble/widget.js:167`。
 
-- **首选**：宿主建 canvas 后 `transferControlToOffscreen()`，把 OffscreenCanvas 作为 transferable 交给
+- **首选（已由 T18 证实）**：宿主建 canvas 后 `transferControlToOffscreen()`，把 OffscreenCanvas 作为 transferable 交给
   该 widget 的 Worker，Worker 用 `OffscreenCanvasRenderingContext2D` 自己画。绘图代码留在插件侧，宿主不知道画的是什么。
+  实测（2026-10-15，Edg/155.0.4283.45）：未入文档与已入文档两种 64×64 canvas 都交接成功，Worker 内填满
+  `rgba(255,0,0,1)` 后 `getImageData` 读回中心像素 `[255,0,0,255]` 逐数相等；判据是像素比对而不是「没抛异常」
+  （PM 复跑时把填充色改成绿色，判定立即翻成 paint-ops，证明这条不是恒真）。
+  落到契约上是 **一条 inbound（`handoff`）而不是新的 op kind**：那 12 个名字描述的是「怎么改树」，
+  而这条是「把一件宿主资源交出去」；交接只能走 `postMessage` 的 transfer 列表，且**交接后主线程不得再对该 canvas 取上下文**。
 - **退路（如果 T18 实测不成立）**：开一条**通用 2d 指令通道**——Worker 发 `beginPath/moveTo/lineTo/stroke/fillText/...`
   这种成串的绘制 op，宿主取自己的 2d context 执行。**这里要明确否掉 T16 gaps 写的 (a)**：
   「宿主按数据指令自己画折线」意味着把 astock 的图表语义写进宿主，那会让框架本体认识某个插件的画面，
