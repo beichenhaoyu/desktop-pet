@@ -118,9 +118,11 @@ export async function attach(port, match, timeoutMs = 90_000) {
     /**
      * 在页面里求值。注意：CDP 发起的代码不受 CSP 约束，
      * 不要用这里的 eval/import 结果来判断 CSP 是否生效 —— 那必须看页面自身代码的副作用。
+     * `timeoutMs` 默认 20s，够绝大多数 IPC；只有真要等外网下载的调用才许调大
+     * （宿主侧 skins 安装自己就是 4 段 × 20s 读超时，客户端先超时就是假红）。
      */
-    async ev(expression) {
-      const r = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
+    async ev(expression, timeoutMs = 20_000) {
+      const r = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, timeoutMs);
       const err = r.result?.exceptionDetails;
       if (err) {
         throw new Error((err.exception?.description ?? err.text ?? JSON.stringify(err)).split("\n").slice(0, 3).join(" | "));
@@ -166,9 +168,10 @@ export function createReport(title) {
  * 那是前端规整之后的事，脚本要看的就是「宿主到底发没发码」）。
  */
 export function hostInvoke(c) {
-  return async (cmd, args = {}) =>
+  return async (cmd, args = {}, timeoutMs) =>
     c.ev(
       `(async () => { try { const v = await window.__TAURI_INTERNALS__.invoke(${JSON.stringify(cmd)}, ${JSON.stringify(args)}); return { ok: true, v, code: null }; } catch (e) { return { ok: false, e: typeof e === 'string' ? e : (e?.message ?? JSON.stringify(e)), code: (e && typeof e === 'object' && typeof e.code === 'string') ? e.code : null }; } })()`,
+      timeoutMs,
     );
 }
 

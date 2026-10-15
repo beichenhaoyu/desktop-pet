@@ -17,6 +17,8 @@ const EXTRA_SLUG = "boba"; // 只为验证「输入名字即安装」，跑完�
 let c = null;
 let cs = null;
 let installedExtra = false;
+// 用户当前挑的形象，收尾要还回去。回归可以改状态，但不该替用户做选择。
+let initialSlug = "";
 
 try {
   c = await attach(PORT, isPetPage, 60_000);
@@ -28,20 +30,22 @@ try {
 const inv = hostInvoke(c);
 
 try {
-  r.group(`默认形象：首启自动装好 ${DEFAULT_SLUG}`);
+  r.group(`随包默认形象 ${DEFAULT_SLUG} 已装好，当前形象取自已安装列表`);
+  const listed = await inv("pet_skin_list");
+  r.check("pet_skin_list 可调", true, listed.ok);
   const active = await inv("pet_skin_active");
   r.check("pet_skin_active 可调", true, active.ok);
-  r.check(`当前形象是 ${DEFAULT_SLUG}`, DEFAULT_SLUG, active.v?.slug ?? active.v);
+  initialSlug = String(active.v?.slug ?? active.v ?? "");
+  const isInstalled = (slug) => (listed.v ?? []).some((s) => s.slug === slug);
+  // 「已安装列表里有随包默认形象」是宿主不变量；「当前形象是谁」是用户状态，
+  // 上一版把它钉成 deepseek，用户换过一次装就整片红，于是改判成它必须是列表里的某一个。
+  r.check(`已安装列表含随包默认形象 ${DEFAULT_SLUG}`, true, isInstalled(DEFAULT_SLUG));
+  r.check(`当前形象是已安装列表里的形象（本次为 ${initialSlug}）`, true, isInstalled(initialSlug));
   r.check(
-    "图集经 petskin 协议下发",
+    "图集按当前形象经 petskin 协议下发",
     true,
-    String(active.v?.url ?? "").startsWith(`http://petskin.localhost/${DEFAULT_SLUG}/`),
-  );
-  const listed = await inv("pet_skin_list");
-  r.check(
-    `已安装列表含 ${DEFAULT_SLUG}`,
-    true,
-    (listed.v ?? []).some((s) => s.slug === DEFAULT_SLUG),
+    initialSlug !== "" &&
+      String(active.v?.url ?? "").startsWith(`http://petskin.localhost/${initialSlug}/`),
   );
 
   r.group("安装类命令只认设置窗（宿主按窗口标签判定，绕过 JS 桥也一样）");
@@ -79,7 +83,9 @@ try {
   r.check("九个状态各取到自己那行的帧数", "6,8,8,4,5,8,6,6,6", Object.values(sliced.counts).join(","));
   r.check("所有帧共用同一份已解码图集", true, sliced.sameSource);
   r.check("目标矩形都落在立绘单位方块内", true, sliced.inUnitSquare);
-  r.check(`解码记录里有 ${DEFAULT_SLUG} 的图集`, true, sliced.decoded.some((u) => u.includes(DEFAULT_SLUG)));
+  // 页面自己认的当前形象必须和宿主报的是同一个，否则「解码记录里有它」这条会钉错对象
+  r.check("页面读到的当前形象与宿主一致", initialSlug, sliced.slug);
+  r.check(`解码记录里有 ${initialSlug} 的图集`, true, sliced.decoded.some((u) => u.includes(initialSlug)));
 
   r.group("设置窗：输入名字 → 从公开画廊安装");
   await inv("settings_show", {});
@@ -93,13 +99,17 @@ try {
     r.check("设置窗可用（回归经宿主 settings_show 打开）", true, false);
   } else {
     const sInv = hostInvoke(cs);
-    const installed = await sInv("pet_skin_install", { name: EXTRA_SLUG });
+    // 画廊安装是本套件唯一走外网大文件的调用：目录 900 KB + 图集 2.4 MB + zip 2.4 MB，
+    // 实测 2026-10-15 上午这条链路要 15s 以上，20s 的默认求值上限会把它截成一条假红
+    const installed = await sInv("pet_skin_install", { name: EXTRA_SLUG }, 90_000);
     installedExtra = installed.ok;
+    // 红了要能一眼看出是上游画廊的问题还是宿主的问题，不然只能再复现一次去捞文案
+    if (!installed.ok) r.info("安装失败原因", String(installed.e).slice(0, 240));
     r.check(`安装 ${EXTRA_SLUG} 成功`, true, installed.ok);
     r.check(`装好的 slug 是 ${EXTRA_SLUG}`, EXTRA_SLUG, installed.v?.slug);
     r.check("版本号来自画廊目录", true, [1, 2].includes(installed.v?.spriteVersionNumber));
 
-    const missing = await sInv("pet_skin_install", { name: "definitely-not-a-pet-xyz" });
+    const missing = await sInv("pet_skin_install", { name: "definitely-not-a-pet-xyz" }, 90_000);
     r.check("不存在的名字给出可读失败", false, missing.ok);
     r.check("错误里带上找不到的名字", true, /definitely-not-a-pet-xyz|找不到|不存在/.test(String(missing.e ?? "")));
 
@@ -135,9 +145,13 @@ try {
 } finally {
   // 无论哪一步红，都把临时形象收掉，别把第二张图集留给后面的回归
   if (installedExtra) {
-    const cleaner = cs ?? c;
-    await hostInvoke(cleaner)("pet_skin_remove", { slug: EXTRA_SLUG }).catch(() => undefined);
-    await hostInvoke(c)("pet_skin_use", { slug: DEFAULT_SLUG }).catch(() => undefined);
+    // 换装类命令宠物窗一律被拒（本套件第 2 组钉着），清理必须走设置窗
+    const sInv = hostInvoke(cs);
+    await sInv("pet_skin_remove", { slug: EXTRA_SLUG }).catch(() => undefined);
+    // 删掉在用形象只会回落到随包默认形象；用户原本挑的不是它就得显式换回去
+    if (initialSlug && initialSlug !== DEFAULT_SLUG) {
+      await sInv("pet_skin_use", { slug: initialSlug }).catch(() => undefined);
+    }
   }
   await sleep(600);
   const failed = r.summary();

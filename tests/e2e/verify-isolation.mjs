@@ -212,6 +212,12 @@ try {
   r.check("widgetHost 与真实总线可达", true, ready);
   if (!ready) throw new Error("拿不到宿主的 widgetHost/总线单例（页面持续重载？）");
 
+  // 插件入口现在默认跑在 Worker 里（ADR-0006 / L2 阶段一），但这份脚手架探针的 index.js
+  // 是把事实写进 `window.__probeActivated` 这类页面全局的，断言就在页面 realm 读它们 ——
+  // 入口一进 Worker 那些全局就没有对象了。把探针显式留在宿主 realm，真实插件不受这条影响。
+  // 收尾会 removeItem（见 finally），别让它留在用户的 WebView 配置里。
+  await c.ev(`localStorage.setItem('host:realm-plugin-host', ${JSON.stringify(`${PROBE_ID},${NET_ID}`)})`);
+
   // 起点必须自己清干净：Vite 已不 watch plugins/，页面不会因 fixture 写入而重载，
   // 上一轮（尤其是崩溃的那轮）遗留的挂载会抑制本轮 mount，看起来像「探针没执行」
   await c.ev(`window.__wh.unmount(${JSON.stringify(PROBE_ID)})`);
@@ -1749,6 +1755,8 @@ export function unmount() {}
   console.error("\n验证中断: " + String(err?.message ?? err).split("\n").slice(0, 3).join(" | "));
 } finally {
   removeFixtures(PLUGINS_DIR);
+  // 探针留在宿主 realm 那条例外只服务于本套件的页面全局断言，不该活到下一轮真实使用里
+  await c?.ev(`localStorage.removeItem('host:realm-plugin-host')`).catch(() => undefined);
   settings?.close();
   c?.close();
   // 等 websocket 真正关掉再退出，否则 Windows 上 Node 会在 stderr 抛一句 libuv 断言

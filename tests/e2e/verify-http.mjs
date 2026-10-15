@@ -112,8 +112,29 @@ try {
 
   c = await attach(PORT, isPetPage);
   settings = await openSettingsInvoker(PORT, c);
-  // 上一轮中途挂掉可能留下授权，先清干净
-  await settings.invoke("permission_revoke", { pluginId: PROBE_ID });
+  // 上一轮中途挂掉可能留下授权或一扇没点掉的同意框。它们会让这一轮少弹一扇框
+  // （残留授权直接放行），也会让 pump 把别人的框记到我们头上 —— 起手必须先排空，
+  // 并且把「排空了」当成断言钉住，否则继承来的状态只会表现为偶发红。
+  const probeKeys = async () => {
+    const table = (await settings.invoke("permission_list")).v ?? {};
+    return Object.entries(table)
+      .filter(([id]) => id === PROBE_ID)
+      .flatMap(([, caps]) => caps);
+  };
+  let residual = await probeKeys();
+  for (let i = 0; i < 40 && residual.length; i++) {
+    await settings.invoke("permission_revoke", { pluginId: PROBE_ID }).catch(() => undefined);
+    await sleep(250);
+    residual = await probeKeys();
+  }
+  r.check("起手时表里没有本探针的残留授权", [], residual);
+  let openConsents = 1;
+  for (let i = 0; i < 40; i++) {
+    openConsents = (await listPages(PORT).catch(() => [])).filter((t) => /consent/.test(t.url)).length;
+    if (!openConsents) break;
+    await sleep(250);
+  }
+  r.check("起手时没有还开着的同意框", 0, openConsents);
   void pumpConsents(240_000);
 
   r.group("腾讯实时行情（text/html; charset=GBK）");
