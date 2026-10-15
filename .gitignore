@@ -27,9 +27,9 @@ release-package/
 /plugins/com.zz.spoof/
 
 # Editor
-.vscode/*
-!.vscode/extensions.json
-!.vscode/settings.json
+# 编辑器配置整个目录不入库（用户 2026-10-15 定）。以前显式保留过 extensions.json 与
+# settings.json 两份，但里面是本机的工作区设置，公开仓库里没人需要它。
+.vscode/
 .idea
 .DS_Store
 *.suo
@@ -39,7 +39,8 @@ release-package/
 .workbuddy/
 .zcodeignore
 
-# 派单流水线的执行工作区：卡片回传的原始输出与临时副本。
-# 结论都整理进 .dispatch/<功能>/results/，工作区里只留被 results 引用的证据文件（显式 -f 添加）。
-# 以前这里存过 scripts/unit-market.mjs / unit-aux.mjs 的副本，脚本改了副本没人跟 —— S6 清掉。
-.dispatch/**/work/
+# 派单流水线目录整体不入库（用户 2026-10-15 定）：台账/卡片/回传里带本机绝对路径、
+# Windows 用户名与进程号这类东西，公开仓库会泄露隐私。PM 的进度事实源只在本机，
+# 需要对外说的结论一律整理进 docs/（HOST-BACKLOG 的验收证据矩阵就是干这个的）。
+# 以前这里只排 work/（S6 的口径），那 176 个跟踪文件就是这次转公开前从历史里清掉的。
+.dispatch/

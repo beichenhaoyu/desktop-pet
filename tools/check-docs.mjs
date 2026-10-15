@@ -324,9 +324,9 @@ const TOP_EXCLUDED = new Map([
   ['temp', '临时目录（.gitignore 覆盖）'],
   ['release-package', '本地打包产物（.gitignore 覆盖），存在与否取决于本机是否打过包'],
   ['.git', '版本库元数据'],
-  ['.dispatch', '派单流水线工作区（.gitignore 覆盖 .dispatch/**/work/）'],
+  ['.dispatch', '派单流水线工作区（.gitignore 整目录覆盖，含台账与卡片，只在本地）'],
   ['.workbuddy', '外部 AI 助手产物（.gitignore 覆盖）'],
-  ['.vscode', '编辑器本地配置（.gitignore 部分覆盖）'],
+  ['.vscode', '编辑器本地配置（.gitignore 整目录覆盖，不入库）'],
 ]);
 
 function ruleG() {
