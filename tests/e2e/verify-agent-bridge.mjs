@@ -37,7 +37,9 @@ if (!env.APPDATA) {
   console.error("缺 APPDATA 环境变量：找不到宿主收件目录，拒绝开跑。");
   process.exit(2);
 }
-const INBOX = join(env.APPDATA, "com.desktoppet.pet", "agent", "inbox");
+// 与 Rust 侧 inbox_dir 同一条规则：设了 PET_AGENT_INBOX 就用它（宿主实例也必须带同一个值），
+// 否则落回 APPDATA 下的共享目录 —— 那时本机全局 Qoder hook 的真实会话会混进来
+const INBOX = env.PET_AGENT_INBOX || join(env.APPDATA, "com.desktoppet.pet", "agent", "inbox");
 const isPetPage = (t) => /localhost:1420\/(src\/)?index\.html$/.test(t.url);
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 

@@ -23,6 +23,8 @@
 # 那一段证的是「步骤与 env 的形状对得上」；**证不了的只有 runner 本身**：GitHub 的 Windows 会话里
 # WebView2 能不能起真 webview、能不能拿到 CDP 端点。
 #
+# 下面这条坑已用 PET_AGENT_INBOX 隔离（job env 里设了，实例与套件读同一个 temp 目录）；留着原文是给本机不带
+# 这个变量手动复演的人看的。
 # 一条开发机才有的坑（自托管后 runner 就是开发机，所以这条现在会犯，写在这是为了让看到红的人别误判）：
 # `verify:agent` 的「本轮会话状态」那组对**并发 agent 会话**敏感。同一台开发机上装了全局 Qoder hook，
 # 主会话每调一次工具就往宿主共享的 inbox 写一条（`PET_AGENT_CONFIG_FILES` 只重定向 hook 配置文件，
@@ -64,6 +66,8 @@ jobs:
       # verify:agent 的写盘组只碰这两份样例：路径不在仓库根下时那组会整组跳过，
       # 而守卫「目标文件都在 temp/ 下」当场判红（这是设计，不是缺陷）
       PET_AGENT_CONFIG_FILES: ${{ github.workspace }}\temp\a9a\cfg-a.json;${{ github.workspace }}\temp\a9a\cfg-b.json
+      # 收件目录也隔离：开发机的全局 Qoder hook 照旧写 APPDATA 下的默认 inbox，实例与套件读这一份
+      PET_AGENT_INBOX: ${{ github.workspace }}\temp\agent-inbox
 
     steps:
       - uses: actions/checkout@v4

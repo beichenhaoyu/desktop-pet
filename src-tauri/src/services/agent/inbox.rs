@@ -10,9 +10,17 @@ use super::state::{identifier, now_ms};
 /// 单个 phase 文件的上限，超过则清空重记，避免长期运行写满盘
 const INBOX_MAX_BYTES: u64 = 2 * 1024 * 1024;
 
-/// 收件目录。两处调用（hook 分支与 watcher）共用这一个式子
+/// 收件目录。两处调用（hook 分支与 watcher）共用这一个式子。
+///
+/// `PET_AGENT_INBOX` 是开发与测试的覆盖入口（与 `PET_AGENT_CONFIG_FILES` 同类）：开发机装了全局
+/// Qoder hook 时，真实会话会往默认 inbox 写事件，跑 `verify:agent` 的实例读的若也是它，
+/// 断言就会被并发会话污染（CONVENTIONS 记过 71/6 对 77/0）。实例与套件都带上这个变量，
+/// 就各读各的目录；全局 hook 不带它，照旧写默认目录，互不相干。空值视为没设。
 pub fn inbox_dir(app_data: &Path) -> PathBuf {
-    app_data.join("agent").join("inbox")
+    match std::env::var_os("PET_AGENT_INBOX") {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => app_data.join("agent").join("inbox"),
+    }
 }
 
 /// hook 分支没有 AppHandle，只能按 Windows 的 app_data_dir 约定自己拼
