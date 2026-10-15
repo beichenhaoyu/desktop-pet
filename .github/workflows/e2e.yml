@@ -68,27 +68,24 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 留着 src-tauri/target，不然每次都要从头编 debug
+          clean: false
 
       - name: 装 Rust 工具链（rust-toolchain.toml 钉 1.98.1）
         run: |
           rustup set profile minimal
           rustup show
 
-      - uses: actions/setup-node@v4
-        with:
-          # 必须与开发机同大版本，理由见 ci.yml 里那段 node 22 的教训
-          node-version: "24"
-          cache: npm
-
-      - name: 缓存 cargo 依赖
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            src-tauri/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+      # 自托管 = 开发机：不用 setup-node / actions/cache。两者都要从 GitHub 拉东西，开发机网络上
+      # 实测 setup-node 卡了 20 分钟（run 38759736236）；机器本身就有 Node 和 cargo 缓存，直接用。
+      # 只校验大版本，理由见 ci.yml 里那段 node 22 的教训
+      - name: 校验本机 Node 大版本（要求 24）
+        shell: powershell
+        run: |
+          $v = (node --version)
+          Write-Host "node $v / npm $(npm --version)"
+          if (-not $v.StartsWith("v24.")) { throw "开发机 Node 是 $v，这条门要求 24.x" }
 
       - name: 安装前端依赖
         run: npm ci
@@ -101,7 +98,7 @@ jobs:
       # 自托管 = 开发机：用户自己的宠物实例或上一轮残留会占单实例锁和 9223，
       # 不先挡掉的话红在 wait-cdp 或套件中途，看着像被测行为坏了
       - name: 预检（9223 空闲、没有在跑的宠物实例）
-        shell: pwsh
+        shell: powershell
         run: |
           $busy = Get-NetTCPConnection -LocalPort ${{ env.CDP_PORT }} -State Listen -ErrorAction SilentlyContinue
           if ($busy) { throw "端口 ${{ env.CDP_PORT }} 已被 PID $($busy.OwningProcess -join ',') 占用：先退掉本机的宠物 / 调试实例再触发" }
@@ -109,7 +106,7 @@ jobs:
           if ($pet) { throw "已有 desktop-pet 在跑（PID $($pet.Id -join ',')）：单实例锁会让 dev 实例直接退出，先退掉再触发" }
 
       - name: 起 dev 实例（Vite + WebView2 远程调试端口）
-        shell: pwsh
+        shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path temp | Out-Null
           $dev = Start-Process -FilePath "npm.cmd" -ArgumentList "run", "dev:debug" `
@@ -122,7 +119,7 @@ jobs:
         run: node tools/wait-cdp.mjs --port=${{ env.CDP_PORT }} --timeout=900
 
       - name: 跑 CDP 运行时套件
-        shell: pwsh
+        shell: powershell
         env:
           SUITES: ${{ inputs.suites }}
         run: |
@@ -158,7 +155,7 @@ jobs:
       # 不按映像名一刀切（/IM 会把别人起的同一份 exe 一起带走，这是硬规矩）
       - name: 收尾关实例
         if: always()
-        shell: pwsh
+        shell: powershell
         run: |
           if (Test-Path "temp/dev.pid") {
             $pid0 = (Get-Content "temp/dev.pid" -Raw).Trim()
