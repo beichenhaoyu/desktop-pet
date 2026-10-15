@@ -19,6 +19,8 @@ import type { HostToWidget, WidgetToHost } from "./widget-protocol";
 export interface WidgetModule {
   mount: (root: WidgetNode, ctx: WorkerWidgetContext) => void | Promise<void>;
   deactivate?: (root: WidgetNode) => void | Promise<void>;
+  /** 宿主 realm 一直用的旧名字。四个示例插件都只导出这个，不认它等于迁移后插件的清理白写。 */
+  unmount?: (root: WidgetNode) => void | Promise<void>;
 }
 
 export interface WidgetRuntimeDeps {
@@ -135,7 +137,11 @@ export function createWidgetRuntime(deps: WidgetRuntimeDeps): WidgetRuntime {
 
   const deactivate = async (): Promise<void> => {
     try {
-      await instance?.deactivate?.(session?.root as WidgetNode);
+      // 停用钩子在两个 realm 里同名才不用改插件：宿主 realm 一直调 `unmount`，
+      // 所以 Worker 侧也认它（`deactivate` 是阶段二给的新名字）。
+      // 只认一个：两个都导出时 `deactivate` 优先，绝不能两个都调 —— 调两次就是重复退订。
+      const teardown = instance?.deactivate ?? instance?.unmount;
+      await teardown?.(session?.root as WidgetNode);
     } catch {
       // 插件收尾自己炸了：不外泄成未处理拒绝，也不让宿主干等 —— 照样回执 deactivated
     } finally {

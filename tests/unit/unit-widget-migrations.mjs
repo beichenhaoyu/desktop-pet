@@ -43,6 +43,33 @@ const replyFor = (method) => (String(method).startsWith("agentHooks.") ? {} : nu
 const eventValueFor = (event) =>
   event === "keydown" ? { key: "Enter" } : { value: "1", checked: true };
 
+/**
+ * 数据驱动的那段渲染，不喂 payload 根本跑不到 —— 列表类分支只在收到总线消息时才执行。
+ * 这条口径是被一次**存活的变异**逼出来的：把勾选取的 `on("change")` 改成表外事件名 `submit`，
+ * 冒烟照绿，因为那条 `taskRow` 从没被执行过。
+ *
+ * 每个插件登记一份「有内容」的假 payload（空数组不算喂到），由 PM 在验收每张迁移卡时对着
+ * 该插件自己发的那条总线补。喂进去之后新增的 op 一样逐条过门禁。
+ */
+const BUS_POKE = {
+  "com.pet.todo": {
+    openCount: 1,
+    doneCount: 0,
+    tasks: [{ id: "a", text: "写周报", done: false, line: "(A) 写周报", projects: ["工作"] }],
+  },
+  // 一份 payload 喂三个区：badge / overlay 读 state-label-steps-title-detail，settings 读两个开关
+  "com.pet.agent-bridge": {
+    state: "running",
+    label: "编辑文件",
+    steps: 3,
+    title: "补迁移冒烟",
+    detail: "tests/unit/unit-widget-migrations.mjs",
+    toolName: "Edit",
+    showTitle: true,
+    showDetail: true,
+  },
+};
+
 /** 画布替身：`getContext("2d")` 回来的一切调用都是空操作，属性写全部吞掉。
  *  它证明的是**那段绘图代码在 Worker 里跑得完**，不是图画得对 —— 后者归 verify:astock（真数像素）。 */
 function stubCanvas() {
@@ -70,6 +97,7 @@ async function smoke(dir, region, module = null) {
   const calls = [];
   const listeners = [];
   const canvasIds = [];
+  const subs = [];
   let bootError = null;
   let booted = false;
 
@@ -86,6 +114,7 @@ async function smoke(dir, region, module = null) {
       }
       if (msg.t === "call") {
         calls.push(msg.method);
+        if (msg.method === "bus.subscribe" && typeof msg.sub === "number") subs.push(msg.sub);
         // 逢 call 必回：真宿主怎么回，这里就怎么回，否则 mount 里的调用会把冒烟吊死
         queueMicrotask(() =>
           runtime.hostMessage({ t: "result", seq: msg.seq, ok: true, value: replyFor(msg.method) }),
@@ -110,17 +139,39 @@ async function smoke(dir, region, module = null) {
   const settle = async () => {
     await new Promise((res) => setTimeout(res, 20));
   };
+  const fired = new Set();
+  const dispatchListeners = async () => {
+    for (const l of [...listeners]) {
+      const key = `${l.id}:${l.event}`;
+      if (fired.has(key)) continue;
+      fired.add(key);
+      runtime.hostMessage({ t: "event", id: l.id, event: l.event, value: eventValueFor(l.event) });
+    }
+    await settle();
+  };
 
-  // 只跑 mount() 一条路径不够：设置页大量渲染是**事件回调里**发生的，那段代码里的
-  // 表外名字只有真把事件打回去才会被执行。每个 listen op 触发一次，新增的 op 照样过门禁。
   const opsAfterMount = ops.length;
-  for (const l of listeners) {
-    runtime.hostMessage({ t: "event", id: l.id, event: l.event, value: eventValueFor(l.event) });
+
+  // 1) 先把数据喂进去。列表类节点是数据驱动的：不喂的时候它们压根不存在，
+  //    里面的监听也无从触发 —— 顺序反了会得到「触发了 1 个监听却没有新增 op」这种假红。
+  //    见 BUS_POKE 上方那段（这条口径是被一次存活的变异逼出来的）。
+  const poke = BUS_POKE[manifest.id] ?? null;
+  const opsBeforePoke = ops.length;
+  for (const s of subs) {
+    runtime.hostMessage({ t: "bus", sub: s, payload: poke ?? {} });
   }
   await settle();
-  const opsAfterEvents = ops.length;
+  const opsAfterPoke = ops.length;
 
-  // layout 与 handoff 同理：图表类的绘制入口在这两个回调里
+  // 2) 事件回调里发生的渲染：每个 listen op 触发一次，新增的 op 照样过门禁
+  const listenerCountBeforeEvents = listeners.length;
+  const callsBeforeEvents = calls.length;
+  const opsBeforeEvents = ops.length;
+  await dispatchListeners();
+  const opsAfterEvents = ops.length;
+  const callsAfterEvents = calls.length;
+
+  // 3) layout 与 handoff：图表类的绘制入口在这两个回调里
   runtime.hostMessage({
     t: "layout",
     width: 320,
@@ -133,6 +184,8 @@ async function smoke(dir, region, module = null) {
     runtime.hostMessage({ t: "handoff", id, off: stubCanvas() });
   }
   await settle();
+  // 上面两步可能又登记了新监听，补一轮
+  await dispatchListeners();
 
   // 收尾让插件自己清定时器：留着的测试进程不退出，看起来像挂死而不是断言失败
   runtime.hostMessage({ t: "deactivate" });
@@ -144,9 +197,17 @@ async function smoke(dir, region, module = null) {
     bootError,
     booted,
     listenCount: listeners.length,
+    listenerCountBeforeEvents,
     canvasCount: canvasIds.length,
+    subCount: subs.length,
+    hasPoke: poke !== null,
     opsAfterMount,
+    opsBeforePoke,
+    opsAfterPoke,
+    opsBeforeEvents,
     opsAfterEvents,
+    callsBeforeEvents,
+    callsAfterEvents,
   };
 }
 
@@ -158,11 +219,29 @@ function assertClean(r, label) {
   assert.deepEqual(r.badOps, [], `${label} 有 ${r.badOps.length} 条 op 过不了宿主门禁`);
 }
 
-/** 事件回调里有没有真的渲染出东西：没登记任何监听时不硬要求（badge 区就没有） */
+/**
+ * 监听触发过之后要有动静。动静**可以是新 op，也可以是一次总线/宿主调用** ——
+ * 勾选框那种处理函数就是纯动作（publish 一条指令、不重画自己），只盯 op 会把正确实现判成红。
+ * 没登记任何监听时不硬要求（badge 区就没有）。
+ */
 function assertEventsRendered(r, label) {
-  if (r.listenCount > 0) {
-    assert.ok(r.opsAfterEvents > r.opsAfterMount, `${label} 触发了 ${r.listenCount} 个监听却没有新增 op`);
+  if (r.listenerCountBeforeEvents > 0) {
+    const moved = r.opsAfterEvents > r.opsBeforeEvents || r.callsAfterEvents > r.callsBeforeEvents;
+    assert.ok(
+      moved,
+      `${label} 触发了 ${r.listenerCountBeforeEvents} 个监听，既没新增 op 也没有任何调用（实得 ops ${
+        r.opsAfterEvents - r.opsBeforeEvents
+      }、calls ${r.callsAfterEvents - r.callsBeforeEvents}）`,
+    );
   }
+}
+
+/** 台账内 / 点名里的插件必须登记 BUS_POKE：没登记就意味着列表类分支从没被执行过，
+ *  「冒烟绿」只覆盖了 mount 那一半 —— A10 那次存活的变异就是这么漏过去的。 */
+function assertPokeRendered(r, label) {
+  assert.ok(r.subCount > 0, `${label} 一条订阅都没有，喂不进数据`);
+  assert.equal(r.hasPoke, true, `${label} 没在 BUS_POKE 里登记假 payload，数据驱动那段渲染跑不到`);
+  assert.ok(r.opsAfterPoke > r.opsBeforePoke, `${label} 喂了 payload 却没多发一条 op`);
 }
 
 describe("常驻基线：夹具那份双 realm 写法必须跑得起来", () => {
@@ -188,6 +267,7 @@ describe("台账内的插件必须能在 Worker realm 里跑起来", () => {
         const r = await smoke(join("plugins", id), region);
         assertClean(r, `${id} ${region}`);
         assertEventsRendered(r, `${id} ${region}`);
+        assertPokeRendered(r, `${id} ${region}`);
       });
     }
   }

@@ -309,6 +309,38 @@ describe("deactivate：Widget 侧自己收尾，宿主才 terminate", () => {
     assert.equal(h.sent.at(-1).t, "deactivated");
   });
 
+  it("四个在迁的插件只导出 unmount：停用钩子认这个名字，否则它们的 cleanups 白写", async () => {
+    const order = [];
+    const h = harness({
+      module: {
+        mount: () => undefined,
+        unmount: (root) => {
+          order.push(`unmount:${root?.tag ?? "?"}`);
+        },
+      },
+    });
+    await h.boot();
+    h.runtime.hostMessage({ t: "deactivate" });
+    await settle();
+    assert.deepEqual(order, ["unmount:div"], "只导出 unmount 的旧写法被漏调");
+    assert.equal(h.sent.at(-1).t, "deactivated");
+  });
+
+  it("两个名字都导出时只调 deactivate —— 调两次就是重复退订", async () => {
+    const calls = [];
+    const h = harness({
+      module: {
+        mount: () => undefined,
+        deactivate: () => calls.push("deactivate"),
+        unmount: () => calls.push("unmount"),
+      },
+    });
+    await h.boot();
+    h.runtime.hostMessage({ t: "deactivate" });
+    await settle();
+    assert.deepEqual(calls, ["deactivate"]);
+  });
+
   it("退订在停用后失效：宿主再投 bus 不会打到已注销的 handler", async () => {
     let hit = 0;
     const cap = captureCtx((ctx) => ctx.bus.subscribe("com.pet.x:widget", () => hit++));
