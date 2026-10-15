@@ -168,8 +168,12 @@ describe("op 形状：kind 在闭集里 + 字段齐 + 名字在白名单里", ()
     assert.ok(isWidgetToHost({ t: "ops", seq: 0, ops: [{ k: "remove", id: 2 }] }));
     assert.equal(isWidgetToHost({ t: "ops", seq: 0, ops: [{ k: "html", id: 2 }] }), false);
     assert.equal(isWidgetToHost({ t: "ops", seq: "0", ops: [] }), false);
-    assert.ok(isWidgetToHost({ t: "call", seq: 1, method: "storage.get", args: ["k"] }));
+    assert.ok(isWidgetToHost({ t: "call", seq: 1, method: "bus.publish", args: ["com.pet.x:t", 1] }));
+    // storage / pet.* 属于入口的 22 表，不在 widget 调用面上 —— 借搬迁扩权就是从这里漏出去的
+    assert.equal(isWidgetToHost({ t: "call", seq: 1, method: "storage.get", args: ["k"] }), false);
     assert.equal(isWidgetToHost({ t: "call", seq: 1, method: "pet.teleport", args: [] }), false);
+    assert.ok(isWidgetToHost({ t: "unsub", sub: 3 }));
+    assert.equal(isWidgetToHost({ t: "unsub", sub: "3" }), false);
     assert.ok(isWidgetToHost({ t: "booted" }));
     assert.ok(isWidgetToHost({ t: "deactivated" }));
     assert.ok(isWidgetToHost({ t: "boot-failed", error: { code: "parse", message: "m" } }));
@@ -403,9 +407,9 @@ describe("隔离：这两个模块不许把 IPC 入口带进 Worker", () => {
     assert.equal(importsHostError(NODE_SRC), false);
   });
 
-  it("协议文件只 import 同层的 worker 协议（拿 22 表做校验），不引宿主侧实现", () => {
+  it("协议文件自己谁都不 import（它会被 Worker 侧拉到，引谁都可能是后门）", () => {
     const specs = [...PROTO_SRC.matchAll(/from\s+"([^"]+)"/g)].map((m) => m[1]);
-    assert.deepEqual(specs, ["./plugin-worker-protocol"]);
+    assert.deepEqual(specs, []);
   });
 
   it("节点文件只 import 协议，不 import 任何运行时模块", () => {

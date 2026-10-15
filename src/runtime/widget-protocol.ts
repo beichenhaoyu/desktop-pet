@@ -11,7 +11,7 @@
 // 对四个示例插件 widget 图（15 个文件）的一次实测扫描。T16 那张固定 token 表漏了
 // `setAttribute`(13) / `.value=`(13) / `.checked=`(11) / `.type=`(10) / `replaceChildren`(8) /
 // `createElement("style")`(8) 这些真实形状，所以本文件按实测重写，而不是照它的 14 个桶落地。
-import { isWorkerMethod } from "./plugin-worker-protocol";
+// 取证与校验都在本文件内完成，不 import 任何运行时模块 —— 它会被 Worker 侧拉到。
 
 /* ============ 标签与名字：全部闭集 ============ */
 
@@ -200,18 +200,62 @@ export type HostToWidget =
    * **交接之后主线程不能再对该 canvas 取上下文**，所以这条消息每块画布只发一次。
    * 它是 inbound 而不是新的 op kind：词表那 12 个名字描述的是「怎么改树」，这里是「把一件宿主资源交出去」。
    */
-  | { t: "handoff"; id: number; off: unknown }
+  | { t: "handoff"; id: number; off: OffscreenCanvas }
   /** 反向事件：`value` 只允许标量或纯对象快照，永远不是事件对象本身。 */
   | { t: "event"; id: number; event: string; value: unknown }
+  /** 总线投递：`sub` 是 widget 侧 `bus.subscribe` 换回的句柄（与入口通道同一形状） */
+  | { t: "bus"; sub: number; payload: unknown }
+  /** 一次 `call` 的回包。宿主对未识别的方法名一律回 ok:false + `legacy`，不让它静默悬空 */
+  | { t: "result"; seq: number; ok: true; value: unknown }
+  | { t: "result"; seq: number; ok: false; error: { code: string; message: string } }
   | { t: "deactivate" };
 
-/** widget Worker → 宿主。`call` 复用能力调用通道（名字必须是 22 表里的）。 */
+/** widget Worker → 宿主。`call` 的方法名必须是 `WIDGET_CALL_METHODS` 里的一个。 */
 export type WidgetToHost =
   | { t: "ops"; seq: number; ops: WidgetOp[] }
-  | { t: "call"; seq: number; method: string; args: unknown[] }
+  | { t: "call"; seq: number; method: string; args: unknown[]; sub?: number }
+  | { t: "unsub"; sub: number }
   | { t: "booted" }
   | { t: "boot-failed"; error: { code: string; message: string } }
   | { t: "deactivated" };
+
+/**
+ * widget 能被叫到的方法。**刻意比入口的 22 表窄**：widget 今天在宿主 realm 里就只有
+ * `ctx.bus` 与（settings 区）`ctx.host.agentHooks`，把 `storage` / `http` / `pet.*` 一并开进来
+ * 等于借搬迁之名扩权。要加得先改 ADR。
+ */
+export const WIDGET_CALL_METHODS = [
+  "bus.publish",
+  "bus.subscribe",
+  "agentHooks.status",
+  "agentHooks.install",
+  "agentHooks.uninstall",
+] as const;
+
+export type WidgetCallMethod = (typeof WIDGET_CALL_METHODS)[number];
+
+/** `agentHooks.*` 只在 settings 区放行（与 widget-host 现行为同一条边界）。 */
+export const isWidgetCallAllowed = (method: unknown, region: string): boolean =>
+  typeof method === "string" &&
+  (WIDGET_CALL_METHODS as readonly string[]).includes(method) &&
+  !(method.startsWith("agentHooks.") && region !== "settings");
+
+/**
+ * 第二阶段的 opt-in 标记：写在 `localStorage` 里的一份逗号分隔插件 id 名单。
+ * 与阶段一的 `host:realm-plugin-host` 方向相反 —— 那次是「默认进 Worker、点名留宿主」，
+ * 这次是「默认留宿主、点名进 Worker」，因为四个插件的 widget 还在直接写 `document.*`，
+ * 默认一翻就是四片白屏；逐个插件迁完再翻默认。
+ */
+export const WIDGET_WORKER_FLAG = "host:widget-worker-plugin-host";
+
+export function shouldUseWorkerWidget(pluginId: string, raw: string | null | undefined): boolean {
+  if (!raw) return false;
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .includes(pluginId);
+}
 
 /* ============ 校验器（宿主侧 apply 之前必须逐条过） ============ */
 
@@ -246,8 +290,14 @@ export function isWidgetToHost(msg: unknown): msg is WidgetToHost {
     case "ops":
       return typeof m.seq === "number" && Array.isArray(m.ops) && m.ops.every(isWidgetOp);
     case "call":
-      return typeof m.seq === "number" && typeof m.method === "string" &&
-        isWorkerMethod(m.method) && Array.isArray(m.args);
+      return (
+        typeof m.seq === "number" &&
+        typeof m.method === "string" &&
+        (WIDGET_CALL_METHODS as readonly string[]).includes(m.method) &&
+        Array.isArray(m.args)
+      );
+    case "unsub":
+      return typeof m.sub === "number";
     case "booted":
     case "deactivated":
       return true;

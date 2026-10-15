@@ -11,15 +11,10 @@
 //
 // 本文件只在宿主 realm 跑，但**不许** import `bridge.ts` / `@tauri-apps/*`：它收到的东西全部来自
 // 一个不受信的 realm，能引到的宿主能力必须只有 DOM。
-import { isWidgetOp, type WidgetOp } from "./widget-protocol";
+import { isWidgetOp, type HostToWidget, type WidgetOp } from "./widget-protocol";
 
-/** 宿主回推给 widget Worker 的消息。 */
-type WidgetInbound =
-  | { t: "layout"; width: number; height: number; dpr: number; measured: Record<string, number> }
-  /** 画布所有权交接：`off` 只能经 transfer 列表过去，主线程此后不得再碰那块 canvas */
-  | { t: "handoff"; id: number; off: OffscreenCanvas }
-  /** 反向事件：`value` 是净化后的标量快照，永远不是事件对象 */
-  | { t: "event"; id: number; event: string; value: unknown };
+/** 宿主回推的消息形状就是协议里那份 HostToWidget —— 不在这里另立一份，两份并集迟早漂移。 */
+type WidgetInbound = HostToWidget;
 
 export interface WidgetRenderer {
   /** 宿主侧唯一入口：一条批次里的 op 按顺序 apply，非法的整条拒收 */

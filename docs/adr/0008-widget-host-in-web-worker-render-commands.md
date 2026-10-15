@@ -118,6 +118,9 @@ boot 消息带 `region`，非 settings 区的 Worker 里根本没有 `host` 这�
 
 ## 后果
 
+- **widget 的调用面比入口的 22 表窄**：只有 `bus.publish` / `bus.subscribe`，加上 settings 区的 `agentHooks.{status,install,uninstall}`。`storage` / `http` / `pet.*` / `notify.*` 一概不开 —— widget 今天在宿主 realm 里也拿不到它们，借搬迁扩权不接受；要开得先改本 ADR。
+- **宿主对每一次 `call` 都必须回一个 `result`**（含它不认的方法名，回 `ok:false`）。`boot` 会 await 插件的 `mount()`，插件在 mount 里发出的调用没人回包，这个 widget 就永远起不来 —— 这条由 `tests/unit/unit-widget-worker.mjs` 钉住，不靠实现者记得。
+
 - 契约实现落在 `src/runtime/` 目录下新增的三个文件与一处接缝：widget-protocol.ts（消息形状 + op 词表，
   和 plugin-worker-protocol.ts 一样**不许 import host-error 与 @tauri-apps**）、widget-node.ts（Worker 侧虚拟节点）、
   widget-renderer.ts（宿主侧 apply），接缝是 widget-host.ts 的 doMount()。22 个方法表**不动**——它管能力调用，widget 渲染走的是新通道。
