@@ -97,15 +97,17 @@ export function isHostToWorker(value: unknown): value is HostToWorker {
 }
 
 /**
- * 该插件这一趟要不要跑进 Worker：原型的开关是宠物窗 localStorage 里那份逗号分隔的 id 名单
- * （缺省为空 —— 默认路径仍是同 realm 动态 import，L2 迁移完成才反过来）。
- * 纯函数：读 storage 的副作用留给调用方，离线单测覆盖两条分支。
+ * 插件默认跑在 Worker 里（L2 阶段一）。要留在宿主 realm 的插件走这一份**例外名单**：
+ * 宠物窗 localStorage 的逗号分隔 id。为什么还留着这条口子而不是硬翻 ——
+ * 回归脚手架（`tests/e2e/harness/fixtures.mjs` 与 `verify-isolation.mjs` 里那些探针）
+ * 的入口代码把事实写进 `window.__probe*`，入口一进 Worker 这些断言就没有对象了；
+ * 探针是测试脚手架、不是真实插件，让它们留在老路径，真实插件才是要验的那四个。
  */
-export const WORKER_HOST_FLAG = "host:worker-plugin-host";
+export const REALM_HOST_FLAG = "host:realm-plugin-host";
 
-export function shouldUseWorkerHost(pluginId: string, raw: string | null | undefined): boolean {
-  if (!raw) return false;
-  return raw
+export function shouldUseWorkerHost(pluginId: string, optOut: string | null | undefined): boolean {
+  if (!optOut) return true;
+  return !optOut
     .split(",")
     .map((id) => id.trim())
     .filter((id) => id.length > 0)

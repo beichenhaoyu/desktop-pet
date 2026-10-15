@@ -108,14 +108,14 @@ for (const [label, src] of [
 check("Worker 本体不碰 window.", !workerSrc.includes("window."));
 check("宿主侧才 import 真实通道", hostSrc.includes('from "./host-error"'));
 
-group("开关与接线");
-eq("开关键名", proto.WORKER_HOST_FLAG, "host:worker-plugin-host");
-check("名单为空 = 不走 Worker", proto.shouldUseWorkerHost("com.pet.todo", "") === false);
-check("键缺失 = 不走 Worker", proto.shouldUseWorkerHost("com.pet.todo", null) === false);
-check("别人的 id 不算", proto.shouldUseWorkerHost("com.pet.todo", "com.pet.hr-ble") === false);
-check("逗号名单里命中", proto.shouldUseWorkerHost("com.pet.todo", "com.pet.hr-ble, com.pet.todo") === true);
-check("只有探针时也命中", proto.shouldUseWorkerHost("zz.l1-probe", "zz.l1-probe") === true);
-check("宠物窗按开关分流", runtimeSrc.includes("shouldUseWorkerHost(") && runtimeSrc.includes("workerHost()"));
+group("例外名单与接线");
+eq("例外键名", proto.REALM_HOST_FLAG, "host:realm-plugin-host");
+check("缺省（键不存在）= 走 Worker", proto.shouldUseWorkerHost("com.pet.todo", null) === true);
+check("空名单 = 走 Worker", proto.shouldUseWorkerHost("com.pet.todo", "") === true);
+check("别人的 id 在名单里不算", proto.shouldUseWorkerHost("com.pet.todo", "com.pet.hr-ble") === true);
+check("点名的插件留在宿主 realm", proto.shouldUseWorkerHost("com.pet.todo", "com.pet.hr-ble, com.pet.todo") === false);
+check("只有它自己也被剔出 Worker", proto.shouldUseWorkerHost("zz.probe", "zz.probe") === false);
+check("宠物窗按名单分流", runtimeSrc.includes("shouldUseWorkerHost(") && runtimeSrc.includes("workerHost()"));
 check("启停两条路径都在", runtimeSrc.includes(".activate(manifest)") && runtimeSrc.includes(".deactivate(pluginId)"));
 check("Worker 宿主的插件不再触发整页重载", runtimeSrc.includes("!workerHosted.has(id)"));
 check(

@@ -28,7 +28,6 @@ const FIXTURE = join(REPO, "tests", "fixtures", "l1-probe");
 const INSTALLED = join(REPO, "plugins", "zz.l1-probe");
 const PROBE = "zz.l1-probe";
 const TODO = "com.pet.todo";
-const FLAG = "host:worker-plugin-host";
 const isPetPage = (t) => /localhost:1420\/(src\/)?index\.html$/.test(t.url);
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 const r = createReport("L1 Worker 宿主（dev）");
@@ -69,8 +68,9 @@ function markLeaf(value) {
   writeFileSync(join(INSTALLED, "leaf.js"), `export const LEAF_MARKER = ${JSON.stringify(value)};\n`);
 }
 
-/** L1 原型的开关就这一个键：逗号分隔的插件 id 名单（缺省为空 = 老路径） */
-const setFlag = (client, ids) =>
+/** 例外名单：点名的插件留在宿主 realm，缺省为空 = 全部走 Worker（L2 阶段一起的默认） */
+const FLAG = "host:realm-plugin-host";
+const setOptOut = (client, ids) =>
   client.ev(`localStorage.setItem(${JSON.stringify(FLAG)}, ${JSON.stringify(ids.join(","))})`);
 
 let c = null;
@@ -101,7 +101,6 @@ try {
   await sleep(1200);
   const enabled = [...new Set([...origEnabled, PROBE])];
   await writeEnabledIds(settings.invoke, enabled);
-  await setFlag(c, [PROBE]);
   await reloadAndWait(c);
   r.check(
     "探针在 Worker 里 activate 成功",
@@ -165,7 +164,6 @@ try {
   await settings.invoke("permission_revoke", { pluginId: TODO });
   await sleep(1200);
   await writeEnabledIds(settings.invoke, [...new Set([...enabled, TODO])]);
-  await setFlag(c, [PROBE, TODO]);
   await reloadAndWait(c);
   r.check(
     "todo 在 Worker 里 activate（badge 已挂载）",
@@ -200,6 +198,37 @@ try {
   })()`);
   r.check("两个 Worker 会话都收掉了", 0, sessionCount);
   r.check("插件自己的 deactivate 在 Worker 里跑完", true, (await storeGet("deactivated")) === true);
+
+  r.group("⑥ 例外名单是逃生口：点名的插件留在宿主 realm");
+  // 判据不靠「有没有 Worker 会话」这种内部状态单独说话，而是让插件自己在两个 realm 里各写一份事实：
+  // `window` 在页面 realm 存在、在 Worker 里是 undefined —— 同一个探针，两种真相
+  await setOptOut(c, [PROBE]);
+  await reloadAndWait(c);
+  r.check(
+    "名单里点名的插件在宿主 realm 里激活（facts.hasWindow 为真）",
+    true,
+    await waitUntil(
+      c,
+      `(async () => { try { const f = await window.__TAURI_INTERNALS__.invoke('store_get', { pluginId: ${JSON.stringify(PROBE)}, key: 'facts' }); return f?.hasWindow === true; } catch { return false; } })()`,
+      40_000,
+    ),
+  );
+  r.check(
+    "它确实没有 Worker 会话",
+    false,
+    await c.ev(`(async () => { const wh = await import('/src/runtime/worker-plugin-host.ts'); return wh.workerPluginHost.has(${JSON.stringify(PROBE)}); })()`),
+  );
+  await setOptOut(c, []);
+  await reloadAndWait(c);
+  r.check(
+    "清掉名单后同一个插件又回到 Worker（facts.hasWindow 为假，且有会话）",
+    true,
+    await waitUntil(
+      c,
+      `(async () => { try { const wh = await import('/src/runtime/worker-plugin-host.ts'); const f = await window.__TAURI_INTERNALS__.invoke('store_get', { pluginId: ${JSON.stringify(PROBE)}, key: 'facts' }); return wh.workerPluginHost.has(${JSON.stringify(PROBE)}) === true && f?.hasWindow === false; } catch { return false; } })()`,
+      40_000,
+    ),
+  );
 
   r.group("零噪音");
   r.info("导航过渡期告警", String(c.transitionNoise.length));

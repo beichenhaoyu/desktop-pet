@@ -8,7 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { argv, env } from "node:process";
 
 import { attach, createReport, hostInvoke, listPages, openSettingsInvoker, readEnabledIds, reloadAndWait, waitUntil, writeEnabledIds } from "./harness/cdp.mjs";
-import { PROBE_ID, removeFixtures, writeFixtures } from "./harness/fixtures.mjs";
+import { NET_ID, PROBE_ID, removeFixtures, writeFixtures } from "./harness/fixtures.mjs";
 
 const skipBuild = argv.includes("--skip-build");
 const PORT = Number(env.CDP_PORT ?? 9224);
@@ -18,7 +18,8 @@ const PLUGINS_DIR = join(dirname(EXE), "plugins");
 const L1_ID = "zz.l1-probe";
 const L1_FIXTURE = resolve(import.meta.dirname, "../fixtures/l1-probe");
 const L1_DIR = join(PLUGINS_DIR, L1_ID);
-const L1_FLAG = "host:worker-plugin-host";
+/** 留在宿主 realm 的例外名单（默认空 = 全部走 Worker） */
+const REALM_FLAG = "host:realm-plugin-host";
 const r = createReport("CSP 与插件加载（release）");
 
 if (!skipBuild) {
@@ -49,6 +50,9 @@ try {
   try {
     r.info("已连接", c.url);
     const invoke = hostInvoke(c);
+    // 脚手架探针的入口把事实写进 `window.__probes` / `__probeActivated`，断言在页面 realm 读它们，
+    // 所以把它们留在宿主 realm（真实插件与下面的 zz.l1-probe 不受这条影响，仍走 Worker）
+    await c.ev(`localStorage.setItem(${JSON.stringify(REALM_FLAG)}, ${JSON.stringify(`${PROBE_ID},${NET_ID}`)})`);
 
     r.group("CSP 是否随文档下发（Tauri 用响应头，不是 meta 标签）");
     const header = await c.ev(
@@ -142,7 +146,7 @@ try {
       await l1Win.close().catch(() => undefined);
     }
     await nap(1200);
-    await c.ev(`localStorage.setItem(${JSON.stringify(L1_FLAG)}, ${JSON.stringify(L1_ID)})`);
+    // 不再需要「打开开关」：入口默认就走 Worker，zz.l1-probe 不在例外名单里
     await reloadAndWait(c);
     let stopPump = false;
     void pumpConsent(() => stopPump);
@@ -173,7 +177,7 @@ try {
     stopPump = true;
     if (!refreshed) r.info("复装后实得的 leaf", String((await readL1Facts(c))?.leaf));
     r.check("换一个 Worker 后取到新内容（no-store 在打包版 Worker 路径上成立）", true, refreshed);
-    await c.ev(`localStorage.removeItem(${JSON.stringify(L1_FLAG)})`).catch(() => undefined);
+    await c.ev(`localStorage.removeItem(${JSON.stringify(REALM_FLAG)})`).catch(() => undefined);
 
     r.group("无 CSP 违规");
     const violations = c.noise.filter((n) => n.startsWith("CSP:"));

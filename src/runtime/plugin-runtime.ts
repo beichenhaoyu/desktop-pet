@@ -12,7 +12,7 @@ import { applyHotReload, reloadIdsFrom } from "./hot-reload";
 import { CAPABILITIES } from "./plugin-capabilities";
 import { hostCall } from "./host-error";
 import { pluginFileUrl, pluginFileVersion } from "./plugin-url";
-import { shouldUseWorkerHost, WORKER_HOST_FLAG } from "./plugin-worker-protocol";
+import { shouldUseWorkerHost, REALM_HOST_FLAG } from "./plugin-worker-protocol";
 import { widgetHost } from "./widget-host";
 import { releaseAll } from "./resources";
 import { disposeAll } from "./subscriptions";
@@ -233,12 +233,13 @@ async function workerHost(): Promise<(typeof import("./worker-plugin-host"))["wo
 }
 
 /**
- * L1 原型的开关：宠物窗 localStorage 里那份逗号分隔的插件 id 名单（缺省为空 = 全部走老路径）。
- * 读失败（无痕模式、键被写成别的类型）一律按「不用 Worker」处理 —— 原型不该把插件加载搞挂。
+ * 留在宿主 realm 的例外名单（缺省为空 = 全部走 Worker）：见 `REALM_HOST_FLAG` 那段理由。
+ * 读失败（无痕模式、键被写成别的类型）一律按「没有例外」处理 —— 默认路径已经是 Worker，
+ * 不该因为一次 storage 读取失败把插件退回同 realm。
  */
-function workerHostFlag(): string | null {
+function realmHostOptOut(): string | null {
   try {
-    return localStorage.getItem(WORKER_HOST_FLAG);
+    return localStorage.getItem(REALM_HOST_FLAG);
   } catch {
     return null;
   }
@@ -278,8 +279,8 @@ async function doActivate(manifest: PluginManifest): Promise<void> {
     // 别的窗口写过清单，读旧缓存会把一个确实启用的插件判成停用。
     if (!(await loadEnabled()).includes(manifest.id)) return;
 
-    if (shouldUseWorkerHost(manifest.id, workerHostFlag())) {
-      // L1 原型：插件代码进 Worker，身份由宿主在 boot 消息里钉死（ADR-0006）
+    if (shouldUseWorkerHost(manifest.id, realmHostOptOut())) {
+      // 默认路径：插件代码进 Worker，身份由宿主在 boot 消息里钉死（ADR-0006 / L2 阶段一）
       await (await workerHost()).activate(manifest);
       workerHosted.add(manifest.id);
       active.set(manifest.id, { manifest, module: {} });
