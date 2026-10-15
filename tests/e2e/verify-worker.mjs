@@ -253,7 +253,7 @@ try {
       root: shadow,
       container: host,
       pluginId: 'zz.renderprobe',
-      postMessage: (m) => inbound.push({ t: m.t, id: m.id, event: m.event, value: m.value, dpr: m.dpr, width: m.width, hasOff: !!m.off && m.off.constructor && m.off.constructor.name }),
+      postMessage: (m) => inbound.push({ t: m.t, id: m.id, event: m.event, value: m.value, dpr: m.dpr, width: m.width, height: m.height, measured: m.measured, hasOff: !!m.off && m.off.constructor && m.off.constructor.name }),
     });
     const session = new WidgetRenderSession((msg) => renderer.apply(msg.ops));
     session.enqueue({ k: 'adopt', id: 0, root: true });
@@ -316,6 +316,13 @@ try {
     out.layout.count = lay.length;
     out.layout.dprPositive = (lay[lay.length - 1]?.dpr ?? 0) > 0;
     out.layout.width = lay[lay.length - 1]?.width ?? 0;
+    // measured 必须同时带 w 与 h：插件的画布高不是常量，只发宽就等于让它一直走兜底值
+    {
+      const m = lay[lay.length - 1]?.measured ?? {};
+      const first = Object.values(m)[0];
+      out.layout.measuredShape =
+        first && typeof first.w === "number" && typeof first.h === "number" ? "w+h" : "missing";
+    }
     // 越界关闭：刷一批非法 op，session 应当自锁，之后的合法 op 也不再生效
     const flood = [];
     for (let i = 0; i < 70; i++) flood.push({ k: 'text', id: 9999, value: 'x' });
@@ -342,6 +349,7 @@ try {
   r.check("回推的不是事件对象（快照里没有 target）", true, rendered.event.notAnEventObject);
   r.check("画布控制权真的交给 Worker（inbound 有 handoff，主线程再取上下文会抛）", "true|OffscreenCanvas|false", `${rendered.canvas.handedOff}|${rendered.canvas.offscreenType}|${rendered.canvas.mainThreadUsable}`);
   r.check("apply 之后下发 layout，dpr 与容器宽度是真数值", true, rendered.layout.count > 0 && rendered.layout.dprPositive && rendered.layout.width === 140);
+  r.check("layout 的 measured 带画布的 w 与 h（K 线图的高不是常量）", "w+h", rendered.layout.measuredShape);
   r.check("拒绝次数越界后 session 自锁，合法 op 也不再生效", "true|心率 72", `${rendered.after.closed}|${rendered.after.spanUntouched}`);
   r.check("destroy 之后事件不再回推", true, rendered.after.noEventsAfterDestroy);
 

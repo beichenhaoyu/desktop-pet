@@ -153,13 +153,15 @@ export function unmount(root) { /* 用 root 找回自己那份清理表 */ }
 | `root.querySelector(".x")` | 自己留着那个节点的引用 | 没有查询语义。要按状态找节点，就把句柄存进挂载实例的表里（第 2 条清理表同一份） |
 | `el.addEventListener("keydown", h)` | `el.on("keydown", e => …)` | 回调收到的是**快照**不是事件对象：`e.key`，`value` / `checked` 读 `e.target` |
 | `e.preventDefault()` | `el.on("keydown", h, { preventDefault: true })` | 拦不拦由**订阅时**声明，handler 里改不了 |
+| `document.createTextNode("x")` | 包一层 `span`，把文字写进它的 `textContent` | 契约里**没有文本节点**这个概念，也没有对应 op；行内文字用 span 等价 |
 | `window.addEventListener("resize", …)` | `ctx.onLayout(l => …)` | 尺寸与 dpr 由宿主观测后推给你，你量不了自己 |
 | `canvas.getContext("2d")` | `ctx.onCanvas((id, cv) => cv.getContext("2d"))` | 画布控制权交接给 Worker，交接后主线程再也画不了它 |
 
 节点句柄（`WidgetNode`）是个**闭集**：`textContent` / `className` / `classList` / `dataset` / `style.属性` /
 `value` `checked` `disabled` `readOnly` `placeholder` `type` `id` / `setAttribute` / `append` / `appendChild` /
-`replaceChildren` / `remove` / `on` / `off` / `nodeId`。没有 `children`、没有 `getBoundingClientRect`、
-没有 `style.cssText`。词表的唯一真相是 `src/runtime/widget-protocol.ts` 那五张名单（标签 / SVG / 属性 /
+`replaceChildren` / `remove` / `on` / `off` / `nodeId`。没有 `children`、没有 `firstChild`、
+没有 `getBoundingClientRect`、没有 `style.cssText`。注意 `id` 有两写：写的是 DOM 的 `id` property，
+`dataset.x` 才是 `data-x` 属性 —— 迁移时 `setAttribute("id", …)` 换成 `.id = …`，别写成 `dataset.id`。词表的唯一真相是 `src/runtime/widget-protocol.ts` 那五张名单（标签 / SVG / 属性 /
 样式属性 / 事件），本文只指路不抄表 —— 抄了就会漂。
 
 三条容易踩的：

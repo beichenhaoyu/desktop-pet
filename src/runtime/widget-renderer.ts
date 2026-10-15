@@ -97,12 +97,12 @@ export function createWidgetRenderer(opts: WidgetRendererOptions): WidgetRendere
 
   const pushLayout = () => {
     if (destroyed) return;
-    const measured: Record<string, number> = {};
-    // dom-measure 那 1 处真实用法就是 `canvas.clientWidth`：宿主量完随 layout 下发，
-    // Worker 侧不再有 clientWidth
+    const measured: Record<string, { w: number; h: number }> = {};
+    // 画布的两个尺寸都得宿主量了下发：Worker 侧没有 clientWidth / clientHeight。
+    // 只给宽不够 —— K 线图的高不是常量（插件没写死 CSS 高度），只发宽就等于让它一直 fallback。
     for (const id of canvases.keys()) {
       const el = nodes.get(id) as HTMLCanvasElement | undefined;
-      if (el) measured[String(id)] = el.clientWidth;
+      if (el) measured[String(id)] = { w: el.clientWidth, h: el.clientHeight };
     }
     opts.postMessage({
       t: "layout",

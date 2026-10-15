@@ -213,13 +213,20 @@ export interface WidgetDom {
   createElementNS(ns: string, tag: string): WidgetNode;
 }
 
+/** 宿主替插件量到的画布 CSS 像素尺寸（旧代码里的 `canvas.clientWidth` / `clientHeight`）。
+ *  两个都要：K 线图的高不是常量，插件没写死 CSS 高度，只发宽就等于让它一直走兜底值。 */
+export interface WidgetMeasured {
+  w: number;
+  h: number;
+}
+
 /** 尺寸与 dpr 由宿主观测后推（Worker 里没有 window，也不许量自己）。
- * `measured` 按 nodeId 存画布的 CSS 像素宽度 —— 旧代码里的 `canvas.clientWidth`。 */
+ * `measured` 按 nodeId 存画布尺寸。 */
 export interface WidgetLayout {
   width: number;
   height: number;
   dpr: number;
-  measured: Record<string, number>;
+  measured: Record<string, WidgetMeasured>;
 }
 
 /** 画布那一面：Worker 路线拿到的是 OffscreenCanvas，`getContext("2d")` 之后只能在这个 Worker 里画。 */

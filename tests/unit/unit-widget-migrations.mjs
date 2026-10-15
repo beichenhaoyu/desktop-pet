@@ -126,7 +126,7 @@ async function smoke(dir, region, module = null) {
     width: 320,
     height: 120,
     dpr: 1,
-    measured: Object.fromEntries(canvasIds.map((id) => [String(id), 100])),
+    measured: Object.fromEntries(canvasIds.map((id) => [String(id), { w: 100, h: 60 }])),
   });
   await settle();
   for (const id of canvasIds) {

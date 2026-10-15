@@ -186,6 +186,12 @@ export const WIDGET_MAX_OPS_PER_MESSAGE = 512;
 
 /* ============ 消息形状 ============ */
 
+/** 宿主替插件量到的画布 CSS 像素尺寸（按 nodeId 存）。两个都要：K 线图的高不是常量。 */
+export interface WidgetMeasured {
+  w: number;
+  h: number;
+}
+
 /** 宿主 → widget Worker。 */
 export type HostToWidget =
   | {
@@ -195,8 +201,8 @@ export type HostToWidget =
       region: "badge" | "overlay" | "settings";
       permissions: string[];
     }
-  /** 尺寸 / dpr / 宿主量到的关键节点尺寸。Worker 侧没有 window，重绘时机只能由这条驱动。 */
-  | { t: "layout"; width: number; height: number; dpr: number; measured: Record<string, number> }
+  /** 尺寸 / dpr / 宿主量到的画布尺寸。Worker 侧没有 window，重绘时机只能由这条驱动。 */
+  | { t: "layout"; width: number; height: number; dpr: number; measured: Record<string, WidgetMeasured> }
   /**
    * 画布所有权交接（T18 实测成立，Edg/155.0.4283.45：未入文档与已入文档两种 canvas 都能交出控制权，
    * Worker 内取 2d 上下文填满纯色后 `getImageData` 读回中心像素逐数相等）。
