@@ -23,6 +23,12 @@ widget 今天是宿主 realm 直接 `mount(shadowRoot, ctx)` 拿到真的 Shadow
 > `createElement("style")` 8 处（四个插件都从 JS 往自己的 closed shadow root 注入 CSS）、`preventDefault` 1 处。
 > 所以契约里的 op 词表是 **12 个按实测定的 kind**，不是照那 14 个桶一一翻译。
 > 教训与 T16 那条同源：**基线数字不能当覆盖面的证据**，固定词表的扫描只会漏掉词表里没有的东西。
+>
+> **同一句教训又中了一次**（2026-10-15 晚些，写迁移卡前把 `innerHTML` 模板字符串本身摊开看）：
+> `plugins/com.pet.hr-ble/widget.js:293` 那段模板里有 `name="hr-mode"` —— radio 靠它分组。
+> 固定 token 表按 `createElement` 的调用面数，**模板字符串里的属性名一律看不见**，所以 `name` 当初就没进表。
+> 已补进 `WIDGET_ATTRS`（不加载资源、不给导航、不带脚本面，风险面与 `id`/`class` 同级），并有一条单测
+> 钉住它的来源，防止下一次有人按那张旧表把它撤掉。
 
 ## 决策
 

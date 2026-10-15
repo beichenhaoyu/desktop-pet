@@ -105,6 +105,16 @@ describe("词表是闭集：多一个名字等于扩大攻击面", () => {
     assert.equal(isWidgetAttr("title"), false);
   });
 
+  it("name 在 attr 表里：radio 组靠它分组，而它是从 innerHTML 模板里量出来的", () => {
+    // T16 那份词表按 createElement 的调用面数，模板字符串里的属性名一律看不见 ——
+    // 这条钉住「模板里真在用」这个来源，别再按那张表把它撤掉
+    assert.equal(isWidgetAttr("name"), true);
+    assert.ok(WIDGET_ATTRS.includes("name"));
+    // 但它不是万能 attribute 的入口：导航与资源加载那两个仍然表外
+    assert.equal(isWidgetAttr("href"), false);
+    assert.equal(isWidgetAttr("src"), false);
+  });
+
   it("事件名按实测来：resize 不在这里（它走 layout 推送），submit 没被用到就不开", () => {
     assert.deepEqual([...WIDGET_EVENTS].sort(), ["change", "click", "input", "keydown"]);
     assert.equal(isWidgetEvent("resize"), false);

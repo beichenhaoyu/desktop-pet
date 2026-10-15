@@ -97,6 +97,10 @@ export const WIDGET_ATTRS = [
   "points",
   "preserveAspectRatio",
   "transform",
+  // hr-ble 的 radio 组靠它分组（<input type=radio name=hr-mode>）。它不加载资源、不给导航、
+  // 不带脚本面，风险面和 id/class 同级。T16 的词表是从 createElement 调用面量的，
+  // 而这一处藏在 innerHTML 模板字符串里 —— 那张表本来就会漏掉模板里的名字。
+  "name",
 ] as const;
 
 /** 可写的 CSS 属性（实测 13 处逐属性赋值，全在这张表或它的同族里）。用驼峰名，宿主侧直接写
