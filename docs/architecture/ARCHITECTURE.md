@@ -132,7 +132,8 @@
 │   │   ├── 0004-style-src-unsafe-inline-kept.md  # 插件样式注入契约为何暂不收紧
 │   │   ├── 0005-command-layering-thin-command-bodies.md  # 命令留在能力域、命令体收成薄层
 │   │   ├── 0006-plugin-host-in-web-worker.md  # 插件进 Worker：身份由宿主分配（L1 方向）
-│   │   └── 0007-unified-command-error-codes.md  # 命令错误统一 {code,message}，码表只有一份
+│   │   ├── 0007-unified-command-error-codes.md  # 命令错误统一 {code,message}，码表只有一份
+│   │   └── 0008-widget-host-in-web-worker-render-commands.md  # widget 进 Worker：虚拟节点 + 批量渲染指令 + 反向事件通道
 │   └── desktop-pet-优化任务清单.docx   # 外部优化任务清单
 ├── assets/
 │   └── app-icon.png            # 图标母版（generate-app-icon.ps1 的产物）

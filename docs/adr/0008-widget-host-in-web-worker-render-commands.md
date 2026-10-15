@@ -1,0 +1,114 @@
+# ADR-0008：widget 进 Worker —— 虚拟节点 + 批量渲染指令 + 反向事件通道
+
+- **状态**：已接受（决策已定；其中决策 5 的**首选形状**待 T18 运行时实测证伪）
+- **日期**：2026-10-15
+- **相关**：[ADR-0006](0006-plugin-host-in-web-worker.md)（插件进 Worker，阶段一已落地）、
+  [ADR-0004](0004-style-src-unsafe-inline-kept.md)、`docs/architecture/ARCHITECTURE.md` 的 widget 宿主一节、
+  取证输入 `.dispatch/arch-p2/reference/T16-gaps.md`（本 ADR 的每一条都对得上它的编号）
+
+## 背景
+
+阶段一把四个插件的**入口**搬进了 Web Worker，实测入口闭包对宿主 realm 零依赖（434 行读数里 B=0、C=0），
+所以入口不需要新契约。剩下的 338 行 DOM 依赖全在 **widget 图**（16 个 widget-only 文件）里。
+widget 今天是宿主 realm 直接 `mount(shadowRoot, ctx)` 拿到真的 ShadowRoot 自己建节点
+（`src/runtime/widget-host.ts:86-95`），这与「插件不得直接操作 DOM」这条边界本来就有张力，
+阶段二要把它收成真实隔离。
+
+取证给出的 14 个桶里，四个不是「把 DOM 调用换个名字发出去」能承接的：`el-on`（17 行，反向事件）、
+`host-event` + `host-dpr` + `dom-measure`（7 行，尺寸与重绘时机）、`canvas-2d`（2 行）、`el-html`（1 行）。
+
+## 决策
+
+### 1. 载体：Worker 侧虚拟节点 + 批量 ops，不做逐调用代理
+
+逐条 `render-cmd:*` 把每个 DOM 调用变成一条 postMessage 被**否决**。三个理由：
+
+- 338 个调用点会产生同样数量的跨 realm 往返，`el-append` 单桶就 96 条，消息数完全不可接受；
+- 逐调用代理要求 Worker 侧**同步**拿到宿主的结果，而 postMessage 只有异步 —— `querySelector` 这类
+  「取回一个节点再用」的写法在异步形状下没法原样表达，等于强迫所有 widget 改写；
+- 插件源码的形状会变得更差：现在写 `const el = document.createElement("div")` 之后随便用，
+  代理化之后每个返回值都是 Promise。
+
+采用**虚拟节点**：Worker 里有一个极小的节点对象图，方法名沿用插件现在用的那一套
+（`createElement` / `append` / `textContent` / `className` 与 `classList` / `style` / `dataset` / `on`），
+但它只改 Worker 侧状态并把改动**攒成一条 ops 批次**发给宿主；宿主按批次 apply 到那棵真实树上。
+这样六个桶（`el-create` / `el-append` / `el-text` / `el-class` / `el-style` / `el-dataset`，合计 248 行）
+由**同一个机制**承接，widget 文件的改动点只有「从 `document` 建节点」改成「从 `ctx.dom` 建节点」。
+
+**批次口径**（写死，不许执行者自己定）：一次微任务flush 合并一批；单条消息 ops 上限 512，超出切成连续多条；
+每条消息带单调 `seq`，apply 必须按 `seq` 顺序（同一 Worker 通道的 postMessage 本身有序，`seq` 是用来**断言**这个顺序没被实现破坏，不是用来重排）。
+
+### 2. 节点身份：宿主分配的 nodeId，Worker 只能引用自己见过的 id
+
+`dom-query` 那 57 行不是「把 querySelector 搬进 Worker」，而是**取消查询语义**：Worker 侧的虚拟节点持有对象身份，
+宿主侧维护 `nodeId → 真实节点` 的映射；`create` 由宿主回发新 id，之后的每条 op 都带 id。
+**未知 id、跨 session 的 id、非本 Worker 建过的 id 一律拒绝并报错**，每个 (pluginId, region) 有独立映射，
+所以一个 widget 既拿不到别人的节点，也没法靠字符串猜 id 去碰宿主节点。
+
+`querySelector` 的既有调用点在迁移时改成「持住你创建时拿到的那个节点引用」——这是**收窄**：查询能力从插件面上消失。
+
+### 3. 反向事件：白名单事件名 + 净化后的标量载荷
+
+`el-on` 是 22 表里完全没有对应物的那条通道。形状定死：
+
+- Worker 侧 `node.on(event, handler)` → 发一条 `sub` op；宿主在该节点上 `addEventListener`；
+- 事件回流：`{t:"widget-event", nodeId, event, value}`；`value` 只允许**标量或纯对象快照**
+  （`value` / `checked` / `text` / `index` / 按键名白名单挑出的字段），**永远不传事件对象本身，也不传回调**
+  （跨 realm 传函数与 DOM 事件对象就是 T16 分类里的 C 类，本 ADR 不接受它出现）；
+- 事件名白名单：`click` / `change` / `input` / `submit` / `keydown`，不在表里的宿主直接拒；
+- 取消：`node.off(event)` 发 `unsub`，与 `bus.subscribe` 的退订形状一致；widget unmount 时宿主回收全部监听。
+
+`el-dataset` 与 `el-on` 这对「点了要认出是谁」的写法**不需要特殊通道**：dataset 就是节点上的普通 map，
+事件回流带 `nodeId`，handler 在自己那个虚拟节点上直接读它的 dataset。
+
+### 4. 尺寸、dpr 与测量：宿主观测后推，Worker 侧没有 `window`
+
+`host-event` / `host-dpr` / `dom-measure`（合计 7 行）合并成一条通道：宿主对 widget 容器建 `ResizeObserver`，
+尺寸变化或 `devicePixelRatio` 变化时推 `{t:"widget-layout", width, height, dpr, measured}`；
+`measured` 是宿主量好的关键节点尺寸（对应 `canvas.clientWidth` 那 1 处）。
+Worker 侧不再出现 `window`、`devicePixelRatio`、`clientWidth`，重绘时机由这条推送驱动
+（取证确认 widget 图里没有 `requestAnimationFrame` 依赖，所以不需要再开一条帧通道）。
+
+### 5. 画布：首选交出画布所有权，退路是通用 paint-ops（推翻 T16 gaps 的 (a)）
+
+两个真实站点：`plugins/com.pet.astock/charts.js:39`、`plugins/com.pet.hr-ble/widget.js:167`。
+
+- **首选**：宿主建 canvas 后 `transferControlToOffscreen()`，把 OffscreenCanvas 作为 transferable 交给
+  该 widget 的 Worker，Worker 用 `OffscreenCanvasRenderingContext2D` 自己画。绘图代码留在插件侧，宿主不知道画的是什么。
+- **退路（如果 T18 实测不成立）**：开一条**通用 2d 指令通道**——Worker 发 `beginPath/moveTo/lineTo/stroke/fillText/...`
+  这种成串的绘制 op，宿主取自己的 2d context 执行。**这里要明确否掉 T16 gaps 写的 (a)**：
+  「宿主按数据指令自己画折线」意味着把 astock 的图表语义写进宿主，那会让框架本体认识某个插件的画面，
+  与「本体只提供窗口/渲染/运行时」的既定架构冲突；通用 paint-ops 不带任何插件语义，才是可接受的退路。
+- 尺寸与 dpr 一律走决策 4 那条推送，画布大小由宿主设，Worker 只负责画。
+
+### 6. 不开 HTML 字符串通道
+
+`el-html` 只有 1 处（`plugins/com.pet.hr-ble/widget.js:293`），改成结构化 ops 的成本最低，
+而一旦开出 `html` 指令，就等于把「插件可以注入任意标记」这条既有边界重新打开（AGENTS.md 的安全边界共识）。
+**协议里没有 `html` op，并且用一条单测把这个事实钉住**（有人加回来就红），不是只在文档里说一句「不要加」。
+
+### 7. 区域边界随通道一起搬过来
+
+今天 `ctx.host`（`agentHooks.*`）只在 `region === "settings"` 时注入（`widget-host.ts:95`）。
+阶段二后 widget 的代码跑在 Worker 里，这条边界必须**由宿主在建 Worker 时告知 region 决定注入面**：
+boot 消息带 `region`，非 settings 区的 Worker 里根本没有 `host` 这一组方法，不是「有但调用被拒」。
+这条必须有运行时断言（badge / overlay 区里 `ctx.host` 不存在），否则搬迁过程很容易把它写成软门禁。
+
+### 8. 生命周期：一个 (pluginId, region) 一个 Worker
+
+- 入口 Worker 由插件运行时的宿主持有（阶段一形状，不变）；
+- 每个 widget 由**它所在窗口的文档**建自己的模块 Worker（同源 `?worker` 资产，ADR-0006 已验过 CSP 成立）；
+  所以同一个插件可能同时有 2~3 个 Worker（入口 + badge + settings），这是预期而不是泄漏；
+- `unmount` / 窗口关闭 → `terminate()`；热重载沿用 ADR-0006 的失效机制：**终止 Worker 就是失效手段**，
+  不是重载文档。
+
+## 后果
+
+- 契约实现落在 `src/runtime/` 目录下新增的三个文件与一处接缝：widget-protocol.ts（消息形状 + op 词表，
+  和 plugin-worker-protocol.ts 一样**不许 import host-error 与 @tauri-apps**）、widget-node.ts（Worker 侧虚拟节点）、
+  widget-renderer.ts（宿主侧 apply），接缝是 widget-host.ts 的 doMount()。22 个方法表**不动**——它管能力调用，widget 渲染走的是新通道。
+- 四个插件的 16 个 widget 文件要迁移，可并行（每插件白名单不重叠），但都必须在契约实现之后。
+- 决策 5 的首选形状尚未实测；T18 就是为它开的卡。实测不成立时退到通用 paint-ops，
+  两种形状对插件源码的影响不同（Offscreen 下 `charts.js` 几乎不动，paint-ops 下要把绘图调用改成发 op），
+  **所以 T18 必须排在任何 widget 迁移卡之前**，不然迁移会返工。
+- 本 ADR 不改变 CSP：不新增 `worker-src`、不开 `blob:`，与 ADR-0006 第 5 条一致。
