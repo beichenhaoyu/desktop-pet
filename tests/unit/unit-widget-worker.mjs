@@ -11,11 +11,18 @@ import {
   WIDGET_CALL_METHODS,
   isWidgetCallAllowed,
   shouldUseWorkerWidget,
+  widgetUsesWorker,
   WIDGET_WORKER_FLAG,
 } from "../../src/runtime/widget-protocol.ts";
 import { createWidgetRuntime } from "../../src/runtime/widget-worker.ts";
 
 const WORKER_SRC = readFileSync(new URL("../../src/runtime/widget-worker.ts", import.meta.url), "utf8");
+// 只读文本、不 import：worker-widget-host 带着 `?worker` 说明符，node 一解析就炸
+const WIDGET_HOST_SRC = readFileSync(new URL("../../src/runtime/widget-host.ts", import.meta.url), "utf8");
+const WORKER_WIDGET_HOST_SRC = readFileSync(
+  new URL("../../src/runtime/worker-widget-host.ts", import.meta.url),
+  "utf8",
+);
 
 /** 一个假 Worker：收下的 outbound 都在 sent 里，测试自己扮演宿主回包 */
 function harness({ module, permissions = ["bus:publish", "bus:subscribe"], region = "badge", pluginId = "com.pet.x" } = {}) {
@@ -383,6 +390,31 @@ describe("opt-in 名单（第二阶段默认仍留宿主 realm）", () => {
 
   it("flag 名字不许改：它进了约定与回归脚本", () => {
     assert.equal(WIDGET_WORKER_FLAG, "host:widget-worker-plugin-host");
+  });
+});
+
+describe("迁移台账：命中台账即对真实用户生效，不靠开发态点名", () => {
+  it("台账命中 ⇒ 进 Worker，哪怕没点名", () => {
+    assert.equal(widgetUsesWorker("com.pet.x", "", ["com.pet.x"]), true);
+    assert.equal(widgetUsesWorker("com.pet.x", null, ["com.pet.x"]), true);
+  });
+
+  it("点名仍独立生效（并集，台账不覆盖点名）", () => {
+    assert.equal(widgetUsesWorker("com.pet.x", "com.pet.x", []), true);
+  });
+
+  it("两条都不沾 ⇒ 留宿主 realm（默认没翻）", () => {
+    for (const raw of ["", null, undefined, "com.pet.other"]) {
+      assert.equal(widgetUsesWorker("com.pet.x", raw, ["com.pet.y"]), false);
+    }
+  });
+
+  it("两个接缝调用点都走台账，不许绕过它直接用点名解析器", () => {
+    // 绕过一处就等于那条路认不出「已迁移」，插件在宿主 realm 里白屏
+    for (const src of [WIDGET_HOST_SRC, WORKER_WIDGET_HOST_SRC]) {
+      assert.equal(src.includes("widgetUsesWorker("), true, "调用点没走 widgetUsesWorker");
+      assert.equal(/shouldUseWorkerWidget\s*\(/.test(src), false, "调用点直接用了点名解析器");
+    }
   });
 });
 

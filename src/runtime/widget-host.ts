@@ -7,7 +7,7 @@ import { bus } from "./event-bus";
 import { pluginFileUrl, pluginFileVersion } from "./plugin-url";
 import { createScopedBus } from "./topic-acl";
 import { createAgentHooksApi } from "./bridge";
-import { WIDGET_WORKER_FLAG, shouldUseWorkerWidget } from "./widget-protocol";
+import { WIDGET_WORKER_FLAG, widgetUsesWorker } from "./widget-protocol";
 import type { WidgetContext, WidgetRegion } from "../../packages/sdk";
 
 export interface WidgetManifest {
@@ -123,7 +123,7 @@ class WidgetHost {
   ): Promise<void> {
     const bust = await pluginFileVersion(manifest.id, widgetPath);
     const url = pluginFileUrl(manifest.id, widgetPath, bust);
-    if (shouldUseWorkerWidget(manifest.id, globalThis.localStorage?.getItem(WIDGET_WORKER_FLAG))) {
+    if (widgetUsesWorker(manifest.id, globalThis.localStorage?.getItem(WIDGET_WORKER_FLAG))) {
       return this.doMountInWorker(manifest, url, region, root, startedAt);
     }
     let host: HTMLDivElement | undefined;

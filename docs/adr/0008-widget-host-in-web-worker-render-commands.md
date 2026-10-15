@@ -116,6 +116,16 @@ boot 消息带 `region`，非 settings 区的 Worker 里根本没有 `host` 这�
 - `unmount` / 窗口关闭 → `terminate()`；热重载沿用 ADR-0006 的失效机制：**终止 Worker 就是失效手段**，
   不是重载文档。
 
+### 9. 迁移台账记在代码里，不记在开发态开关里
+
+接缝认两条并取并集：`WIDGET_WORKER_MIGRATED` 这份**代码名单**，与 localStorage 里的
+`host:widget-worker-plugin-host` 点名（后者只服务套件与本机试验）。
+
+理由是「迁完但生产还走宿主」这个中间态压根不存在：改完的 widget 是照 `ctx.dom` 写的，
+在宿主 realm 里跑必然白屏，而 localStorage 换一台机器就没了。所以一片迁移落地就得当场记账、
+当场对真实用户生效。名单由 PM 在验收每张迁移卡时追加 —— 四张卡都要改它就成了串行点，
+执行者只改自己插件目录；四片齐后由收口片翻默认、删名单。
+
 ## 后果
 
 - **widget 的调用面比入口的 22 表窄**：只有 `bus.publish` / `bus.subscribe`，加上 settings 区的 `agentHooks.{status,install,uninstall}`。`storage` / `http` / `pet.*` / `notify.*` 一概不开 —— widget 今天在宿主 realm 里也拿不到它们，借搬迁扩权不接受；要开得先改本 ADR。
@@ -125,7 +135,7 @@ boot 消息带 `region`，非 settings 区的 Worker 里根本没有 `host` 这�
   和 plugin-worker-protocol.ts 一样**不许 import host-error 与 @tauri-apps**）、widget-node.ts（Worker 侧虚拟节点）、
   widget-renderer.ts（宿主侧 apply），接缝是 widget-host.ts 的 doMount()。22 个方法表**不动**——它管能力调用，widget 渲染走的是新通道。
 - 四个插件的 16 个 widget 文件要迁移，可并行（每插件白名单不重叠），但都必须在契约实现之后。
-- 决策 5 的首选形状尚未实测；T18 就是为它开的卡。实测不成立时退到通用 paint-ops，
-  两种形状对插件源码的影响不同（Offscreen 下 `charts.js` 几乎不动，paint-ops 下要把绘图调用改成发 op），
-  **所以 T18 必须排在任何 widget 迁移卡之前**，不然迁移会返工。
+- 决策 5 的首选形状已由 **T18 实测证实**（2026-10-15，WebView2 `Edg/155.0.4283.45`：未入文档与已入文档的
+  canvas 都能把控制权交给模块 Worker，Worker 里画完 `getImageData` 逐数对得上），迁移按「Worker 直画」做，
+  不开 paint-ops 指令通道。退路（交接被拒时留主线程可画的 canvas）已在渲染器里实现并有一条断言。
 - 本 ADR 不改变 CSP：不新增 `worker-src`、不开 `blob:`，与 ADR-0006 第 5 条一致。

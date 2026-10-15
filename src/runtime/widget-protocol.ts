@@ -244,9 +244,26 @@ export const isWidgetCallAllowed = (method: unknown, region: string): boolean =>
  * 第二阶段的 opt-in 标记：写在 `localStorage` 里的一份逗号分隔插件 id 名单。
  * 与阶段一的 `host:realm-plugin-host` 方向相反 —— 那次是「默认进 Worker、点名留宿主」，
  * 这次是「默认留宿主、点名进 Worker」，因为四个插件的 widget 还在直接写 `document.*`，
- * 默认一翻就是四片白屏；逐个插件迁完再翻默认。
+ * 默认一翻就是四片白屏。
  */
 export const WIDGET_WORKER_FLAG = "host:widget-worker-plugin-host";
+
+/**
+ * 迁移台账：改成渲染契约写法的插件把 id 加进这里，对真实用户就无条件走 Worker。
+ *
+ * 为什么名单在代码里而不是只靠上面那个 localStorage 开关：那个开关是开发态的，换一台机器就没了，
+ * 而改完的 widget 用 `ctx.dom` 写的，在宿主 realm 里跑必然白屏 ——「迁完但默认还在宿主」这个中间态
+ * 根本不存在。所以一片迁移落地就得当场记账，全部记完再由收口片翻默认、删名单。
+ * 名单由 PM 在验收每张迁移卡时追加，执行者不许自己改这一处（四张卡都要动它就成了串行点）。
+ */
+export const WIDGET_WORKER_MIGRATED: readonly string[] = [];
+
+/** 进不进 Worker：迁移台账 ∪ 开发态点名。台账形参只为离线单测能压到「命中台账」这一支。 */
+export const widgetUsesWorker = (
+  pluginId: string,
+  raw: string | null | undefined,
+  migrated: readonly string[] = WIDGET_WORKER_MIGRATED,
+): boolean => migrated.includes(pluginId) || shouldUseWorkerWidget(pluginId, raw);
 
 export function shouldUseWorkerWidget(pluginId: string, raw: string | null | undefined): boolean {
   if (!raw) return false;
