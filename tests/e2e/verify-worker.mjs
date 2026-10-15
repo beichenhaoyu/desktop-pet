@@ -21,6 +21,11 @@ import {
   waitUntil,
   writeEnabledIds,
 } from "./harness/cdp.mjs";
+import {
+  clearWidgetOptIn,
+  setWidgetOptIn,
+  waitWidgetRealm,
+} from "./harness/widget-realm.mjs";
 
 const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 9223);
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -73,10 +78,8 @@ const FLAG = "host:realm-plugin-host";
 const setOptOut = (client, ids) =>
   client.ev(`localStorage.setItem(${JSON.stringify(FLAG)}, ${JSON.stringify(ids.join(","))})`);
 
-/** 阶段二的接缝是**反方向**的：入口默认进 Worker（点名才留宿主），widget 默认留宿主（点名才进 Worker） */
-const WFLAG = "host:widget-worker-plugin-host";
-const setWidgetOptIn = (client, ids) =>
-  client.ev(`localStorage.setItem(${JSON.stringify(WFLAG)}, ${JSON.stringify(ids.join(","))})`);
+/** 阶段二的接缝是**反方向**的：入口默认进 Worker（点名才留宿主），widget 默认留宿主（点名才进 Worker）。
+ *  点名与 realm 取证走 harness/widget-realm.mjs 那份 —— 四张迁移卡用的是同一把尺子。 */
 
 let c = null;
 let cdp = null;
@@ -396,6 +399,12 @@ try {
       `(async () => { const n = document.querySelectorAll('#widget-badge div[data-plugin-id="${PROBE}"]').length; return n >= 1; })()`,
     ),
   );
+  // realm 戳在插槽壳上，是 closed shadow 外面唯一的取证点；迁移卡全靠它，这里先把它钉住
+  r.check(
+    "插槽壳上的 realm 戳在 Worker 路线里是 worker",
+    "worker",
+    (await waitWidgetRealm(c, PROBE, "badge", "worker")).actual,
+  );
 
   await setWidgetOptIn(c, []);
   await reloadAndWait(c);
@@ -403,6 +412,11 @@ try {
     "清掉名单后同一个 widget 回到宿主 realm（opt-in 是名单，不是开关一次就定型）",
     "document",
     (await widgetFacts("document", 40_000))?.realm,
+  );
+  r.check(
+    "清掉点名后 realm 戳跟着翻回 host",
+    "host",
+    (await waitWidgetRealm(c, PROBE, "badge", "host")).actual,
   );
 
   r.group("零噪音");
@@ -422,7 +436,7 @@ try {
   }
   if (cdp) {
     await cdp.ev(`localStorage.removeItem(${JSON.stringify(FLAG)})`).catch(() => undefined);
-    await cdp.ev(`localStorage.removeItem(${JSON.stringify(WFLAG)})`).catch(() => undefined);
+    await clearWidgetOptIn(cdp).catch(() => undefined);
     await sleep(1200);
     await reloadAndWait(cdp).catch(() => undefined);
     await sleep(1200);

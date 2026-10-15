@@ -62,15 +62,21 @@ class WidgetHost {
     }
   }
 
-  /** 建这一区那个 closed shadow 插槽。两条路共用，差一行都会让「谁挂在哪儿」不一致。 */
+  /**
+   * 建这一区那个 closed shadow 插槽。两条路共用，差一行都会让「谁挂在哪儿」不一致。
+   * `widget-realm` 戳在壳上而不是 shadow 里面：closed root 外部读不到，套件就没别的办法
+   * 区分这个插槽是宿主 realm 挂的还是 Worker 挂的 —— 迁移期每条卡都要靠它取证。
+   */
   private createSlot(
     pluginId: string,
     region: WidgetRegion,
     root: HTMLElement,
+    realm: "host" | "worker",
   ): { host: HTMLDivElement; shadow: ShadowRoot } {
     const host = document.createElement("div");
     host.dataset.pluginId = pluginId;
     host.dataset.region = region;
+    host.dataset.widgetRealm = realm;
     const shadow = host.attachShadow({ mode: "closed" });
     root.appendChild(host);
     return { host, shadow };
@@ -92,7 +98,7 @@ class WidgetHost {
   ): Promise<void> {
     const { workerWidgetHost } = await import("./worker-widget-host");
     if (this.epochOf(manifest.id) !== startedAt) return;
-    const { host, shadow } = this.createSlot(manifest.id, region, root);
+    const { host, shadow } = this.createSlot(manifest.id, region, root, "worker");
     try {
       await workerWidgetHost.mount({ manifest, region, url, host, shadow });
     } catch (err) {
@@ -136,7 +142,7 @@ class WidgetHost {
       // 那时 mounted 里还没有记录，unmount 管不到这次挂载，不复查就会留下挂在 DOM 上的孤儿
       if (this.epochOf(manifest.id) !== startedAt) return;
 
-      const slot = this.createSlot(manifest.id, region, root);
+      const slot = this.createSlot(manifest.id, region, root, "host");
       host = slot.host;
       const { shadow } = slot;
 
