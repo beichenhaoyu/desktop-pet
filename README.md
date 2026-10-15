@@ -51,7 +51,7 @@ Tauri 2 + TypeScript/Vite 实现的桌面宠物框架：宠物本体只提供窗
 
 **Agent 事件接入**：安装/卸载 Qoder hook 是插件可申请的能力 `agent:hooks`，入口在 agent 桥插件自己的设置页（宿主设置窗那张「Agent 事件接入」卡片已删除，见 [ADR-0001](docs/adr/0001-agent-hooks-capability-in-plugin-page.md)）。宿主 exe 自身兼任 hook 接收器（`--pet-hook <phase>` 分支，只落一个文件就退出），收件目录由 watcher 读增量并归一化成会话状态；安装只增删自己标记的条目，不动其他 hook，首次改动会留 `.pre-pet-backup` 备份。
 
-**尚未完成**：`llm-token-usage` 示例插件；同 realm 插件直接 `import { invoke }` 绕过 JS 桥仍需 Web Worker 宿主才能收口。
+**尚未完成**：`llm-token-usage` 示例插件（暂缓）。插件入口与 widget 现已默认运行在 Web Worker 里（[ADR-0006](docs/adr/0006-plugin-host-in-web-worker.md)、[ADR-0008](docs/adr/0008-widget-host-in-web-worker-render-commands.md)），同 realm 只剩显式 opt-out 的逃生门（`host:realm-plugin-host` / `host:widget-realm-plugin-host`）—— 走逃生门的插件仍可直接 `import { invoke }` 绕过 JS 桥，这一条不是隔离边界。
 
 ## 开发环境
 
