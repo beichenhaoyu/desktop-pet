@@ -85,7 +85,7 @@
 - 首批插件目录：`plugins/com.pet.hr-ble`（已做）、`plugins/com.pet.agent-bridge`（已做：订阅宿主 `agent:state` 把编码 Agent 的会话状态转成宠物反应）、`plugins/com.pet.todo`（已做：目录名与 id 一致，标准 topic `com.pet.todo:changed` 落在它自己的命名空间里）、`plugins/com.pet.astock`（已做：A股盯盘，出网走宿主 http 代理按域名授权，数据源东方财富公开接口；自选+提醒+badge/overlay，插件页另有分时/K线/五档面板。**2026-10-09 K线与分时已加腾讯后端**：`market.js` 的 `MARKET_SOURCES` 源注册表，每个源一套自己的列序映射（腾讯是「开收高低」，与东财同序不同实现），先试上一次成功的源、一个源内部再主入口→两个后备入口；快照与五档仍只有东财一条，等阶段二。**2026-10-10 阶段二落地**：四个 kind 都有多源，快照/五档为「东财 → 腾讯 `qt.gtimg.cn` → 新浪 `hq.sinajs.cn`」，新浪只兜价格、不供五档与涨跌停）、`plugins/llm-token-usage`（暂缓）
 - 面板（分时/K线/五档）只在设置页活着时刷：`PANEL_TTL_MS` 90 秒，由设置页 widget 每 60 秒发一次 `sync` 续期（`watchView(ctx, render, { beatMs })`），badge/overlay 不续期 —— 人走了额外出网要自己停。
 - `ctx.bus.subscribe` 这个 API **本身**就要在 manifest 声明 `bus:subscribe`，不声明会在激活时被拒（`com.pet.todo 未在 manifest 声明这些能力: bus:subscribe`）；ACL 放宽的只是「自己前缀不需要额外授权」，别把两者混为一谈
-- **验证**：离线常驻单测有十份文件，合计 `npm run unit` = **1094 个用例**：`unit:astock`（`tests/unit/unit-market.mjs` 247 + `tests/unit/unit-aux.mjs` 186）、`unit:runtime`（`src/` 运行时纯逻辑 107 条，含 C1 的启停清单迁移，靠 `tests/unit/ts-loader.mjs` 把 .ts 现场转译进 `node --test`，并把 `@tauri-apps/api/*` 换成 `tests/unit/tauri-stub.mjs`）、`unit:worker-host`（L1 的 Worker 通道契约 118 条：22 个方法表、派发表完备、Worker 侧不许带进裸 IPC）
+- **验证**：离线常驻单测有十一份文件，合计 `npm run unit` = **1129 个用例**：`unit:astock`（`tests/unit/unit-market.mjs` 247 + `tests/unit/unit-aux.mjs` 186）、`unit:runtime`（`src/` 运行时纯逻辑 107 条，含 C1 的启停清单迁移，靠 `tests/unit/ts-loader.mjs` 把 .ts 现场转译进 `node --test`，并把 `@tauri-apps/api/*` 换成 `tests/unit/tauri-stub.mjs`）、`unit:worker-host`（L1 的 Worker 通道契约 118 条：22 个方法表、派发表完备、Worker 侧不许带进裸 IPC）、`unit:widget-protocol`（L2 阶段二的渲染契约与 Worker 侧虚拟节点 36 条：12 个 op kind 是闭集、五张名字白名单、**没有 html op 也没有 class kind**、批次在微任务里合并并按 512 切分、宿主回推事件不回声）
 - **改过 `src/` 之后必须先冷重启 dev 实例，再跑任何 CDP 套件（2026-10-15 实测，代价是一次误判）**：Vite dev 会给「刚被改过」的模块 URL 加 `?t=时间戳`，页面加载的是那一份；
   而套件里 `await import('/src/runtime/plugin-runtime.ts')` 用的是**不带查询串**的 URL → 那是**第二份模块实例**，
   它的 `active` / `workerHosted` 等模块级状态是空的。症状非常有迷惑性：`deactivatePlugin` 看似调用成功却什么都没关
@@ -106,7 +106,7 @@
   复现口径记下来，下次别靠猜：`temp/` 里解压官方便携版跑同一条命令做 A/B（用完删，不碰 nvm 的符号链接）
 - **跑运行时回归的两条前置（都是踩过才记的）**：
   ① `verify:agent` 的写盘组要求宿主被 `PET_AGENT_CONFIG_FILES="<仓库>\\temp\\a9a\\cfg-a.json;<仓库>\\temp\\a9a\\cfg-b.json" npm run dev:debug` 指到 temp 样例；
-  不带这个变量起实例时**整组自跳**，守卫「目标文件都在 temp/ 下」当场判红（读数会变成 `54 passed / 1 failed`，看着像回归、其实是启动方式不对；带对了是 **72/0**）。
+  不带这个变量起实例时**整组自跳**，守卫「目标文件都在 temp/ 下」当场判红（读数会变成 `54 passed / 1 failed`，看着像回归、其实是启动方式不对；带对了是 **76/0**，A09 之后）。
   样例路径必须正好是 `temp/a9a/cfg-a.json`/`cfg-b.json` —— 套件写的是这两个文件，指到别处会得到另一条「K 线/条目归零」类的假红。
   ② **跑套件期间不要改 `src/` 下的宿主模块**。Vite 会用 `?t=` 重发变更过的模块，
   而套件里按干净 URL 动态 import（如 `verify-isolation.mjs:1411` 取 `bridge.ts` 的能力缓存）会拿到**第二个实例**，
