@@ -87,7 +87,7 @@ group("schema 值逐字等于既有前端契约");
   eq("widget 模式与 entry 同形", schema.properties.widget.pattern, schema.properties.entry.pattern);
   deep("必填键 = id/name/version/entry", schema.required, ["id", "name", "version", "entry"]);
   eq("apiVersion 缺省视为 1", schema.properties.apiVersion.default, 1);
-  deep("宿主认识的 apiVersion = [1]", schema.properties.apiVersion.supported, [1]);
+  deep("宿主认识的 apiVersion = [1, 2]（2 = widget 渲染契约，ADR-0008）", schema.properties.apiVersion.supported, [1, 2]);
   eq("properties 条目数", Object.keys(schema.properties).length, 9);
 }
 
@@ -195,6 +195,7 @@ group("apiVersion / minHostVersion");
   const tpl = (over = {}) => ({ id: "com.pet.uz", name: "N", version: "0.0.1", entry: "index.js", ...over });
   eq("缺 apiVersion 视为 v1：通过", validateManifest(tpl()), null);
   eq("显式 apiVersion=1：通过", validateManifest(tpl({ apiVersion: 1 })), null);
+  eq("显式 apiVersion=2（渲染契约）：通过", validateManifest(tpl({ apiVersion: 2 })), null);
   const tooNew = validateManifest(tpl({ apiVersion: 99 }));
   check(
     "宿主不认识的 apiVersion 被拒且提示可读",

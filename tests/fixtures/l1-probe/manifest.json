@@ -3,6 +3,7 @@
   "name": "L1 Worker 探针",
   "version": "0.0.1",
   "entry": "index.js",
+  "apiVersion": 2,
   "permissions": [
     "storage",
     "bus:publish",

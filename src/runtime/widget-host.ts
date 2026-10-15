@@ -7,7 +7,7 @@ import { bus } from "./event-bus";
 import { pluginFileUrl, pluginFileVersion } from "./plugin-url";
 import { createScopedBus } from "./topic-acl";
 import { createAgentHooksApi } from "./bridge";
-import { WIDGET_HOST_REALM_FLAG, widgetUsesWorker } from "./widget-protocol";
+import { WIDGET_HOST_REALM_FLAG, legacyWidgetReason, widgetUsesWorker } from "./widget-protocol";
 import type { WidgetContext, WidgetRegion } from "../../packages/sdk";
 
 export interface WidgetManifest {
@@ -15,6 +15,8 @@ export interface WidgetManifest {
   name?: string;
   widget?: string;
   permissions?: string[];
+  /** 声明到 WIDGET_CONTRACT_API_VERSION 才算照渲染契约写的 widget；缺省按 1 */
+  apiVersion?: number;
 }
 
 export interface WidgetExports {
@@ -71,7 +73,7 @@ class WidgetHost {
     pluginId: string,
     region: WidgetRegion,
     root: HTMLElement,
-    realm: "host" | "worker",
+    realm: "host" | "worker" | "blocked",
   ): { host: HTMLDivElement; shadow: ShadowRoot } {
     const host = document.createElement("div");
     host.dataset.pluginId = pluginId;
@@ -120,6 +122,36 @@ class WidgetHost {
     this.mounted.set(manifest.id, list);
   }
 
+  /**
+   * 宿主自己画的说明卡，替代一块白：插件代码一行都不执行。照常登记进 mounted，
+   * 这样停用 / 热重载走的还是同一条 unmount 路，不会留下删不掉的节点。
+   * 壳上戳 `data-widget-realm="blocked"`，运行时套件据此区分「被拦」与「挂上了」。
+   */
+  private mountNotice(
+    pluginId: string,
+    region: WidgetRegion,
+    root: HTMLElement,
+    reason: string,
+    startedAt: number,
+  ): void {
+    if (this.epochOf(pluginId) !== startedAt) return;
+    console.warn(`[widget] ${reason}`);
+    const { host, shadow } = this.createSlot(pluginId, region, root, "blocked");
+    const note = document.createElement("div");
+    note.setAttribute("role", "note");
+    note.title = reason;
+    // badge 区只有宠物旁一行小字的地方，放全文会把窗口撑乱；全文在 title 与日志里
+    note.textContent = region === "badge" ? "⚠ widget 需迁移" : reason;
+    note.style.cssText =
+      "font:12px/1.5 system-ui,sans-serif;color:#7a4b00;background:#fff7e0;" +
+      "border:1px solid #f0c36d;border-radius:6px;padding:6px 8px;max-width:360px;white-space:normal;";
+    shadow.appendChild(note);
+    const mod: WidgetExports = { mount: () => undefined };
+    const list = this.mounted.get(pluginId) ?? [];
+    list.push({ host, mod, shadow });
+    this.mounted.set(pluginId, list);
+  }
+
   private async doMount(
     manifest: WidgetManifest,
     widgetPath: string,
@@ -127,9 +159,16 @@ class WidgetHost {
     root: HTMLElement,
     startedAt: number,
   ): Promise<void> {
+    const pinnedRaw = globalThis.localStorage?.getItem(WIDGET_HOST_REALM_FLAG);
+    // 旧接口 widget 在加载之前就拦下：进了 Worker 只会 boot-failed、插槽被收掉，用户看到的是一块白
+    const legacy = legacyWidgetReason(manifest, pinnedRaw);
+    if (legacy) {
+      this.mountNotice(manifest.id, region, root, legacy, startedAt);
+      return;
+    }
     const bust = await pluginFileVersion(manifest.id, widgetPath);
     const url = pluginFileUrl(manifest.id, widgetPath, bust);
-    if (widgetUsesWorker(manifest.id, globalThis.localStorage?.getItem(WIDGET_HOST_REALM_FLAG))) {
+    if (widgetUsesWorker(manifest.id, pinnedRaw)) {
       return this.doMountInWorker(manifest, url, region, root, startedAt);
     }
     let host: HTMLDivElement | undefined;

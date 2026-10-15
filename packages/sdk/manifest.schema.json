@@ -30,10 +30,10 @@
     },
     "description": { "type": "string" },
     "apiVersion": {
-      "$comment": "缺省视为 1（老插件不改也能跑）；supported 是宿主认识的版本集合",
+      "$comment": "缺省视为 1；supported 是宿主认识的版本集合。2 = widget 按 ADR-0008 渲染契约写（Worker realm、ctx.dom 建节点）。带 widget 却仍是 1 的插件，宿主不再把它塞进 Worker 白屏，而是在插槽里显示可读的迁移提示",
       "type": "integer",
       "default": 1,
-      "supported": [1]
+      "supported": [1, 2]
     },
     "minHostVersion": {
       "$comment": "可选；缺省即不设限。三段以内数字版本，按数值逐段与宿主版本比较",

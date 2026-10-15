@@ -289,6 +289,35 @@ export function isWidgetPinnedToHostRealm(pluginId: string, raw: string | null |
 export const widgetUsesWorker = (pluginId: string, raw: string | null | undefined): boolean =>
   !isWidgetPinnedToHostRealm(pluginId, raw);
 
+/**
+ * 渲染契约对应的 manifest `apiVersion`。声明到这个版本，才表示「我的 widget 是照 ADR-0008 写的」。
+ *
+ * 为什么要一个版本号而不是「进 Worker 试试，起不来再说」：照旧接口写的 widget 一进 Worker，
+ * 第一句 `document.createElement` 就 ReferenceError，宿主只看到 boot-failed、插槽被收掉 ——
+ * 用户眼里就是一块白。先按声明分流，才能在插件代码执行之前说清楚为什么不显示。
+ */
+export const WIDGET_CONTRACT_API_VERSION = 2;
+
+/**
+ * 旧接口 widget 的拦截判定：要进 Worker（没被点名留宿主 realm）且 `apiVersion` 低于契约版本 → 给出
+ * 可读原因；否则 null。纯函数，入参只要 manifest 的三个字段与例外名单原文。
+ */
+export function legacyWidgetReason(
+  manifest: { id: string; widget?: string; apiVersion?: number },
+  pinnedRaw: string | null | undefined,
+): string | null {
+  if (!manifest.widget) return null;
+  if (!widgetUsesWorker(manifest.id, pinnedRaw)) return null;
+  const declared = manifest.apiVersion ?? 1;
+  if (declared >= WIDGET_CONTRACT_API_VERSION) return null;
+  return (
+    `${manifest.id} 的 widget 按旧接口（apiVersion ${declared}）编写，宿主现在默认在 Worker 里运行 widget，` +
+    `它在这里跑不起来。插件作者：按渲染契约迁移（ctx.dom 建节点，见 ADR-0008）后在 manifest 写 ` +
+    `"apiVersion": ${WIDGET_CONTRACT_API_VERSION}。临时出路（仅开发用）：localStorage 的 ` +
+    `${WIDGET_HOST_REALM_FLAG} 里点名这个插件 id。`
+  );
+}
+
 /* ============ 校验器（宿主侧 apply 之前必须逐条过） ============ */
 
 const inSet = <T extends string>(table: readonly T[], value: string): value is T =>
