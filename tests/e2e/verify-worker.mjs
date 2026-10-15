@@ -230,6 +230,113 @@ try {
     ),
   );
 
+  r.group("⑦ 宿主侧 apply：真 shadow root 上的渲染、拒收、反向事件与画布交接");
+  // 渲染器只在宿主 realm 跑，这里给它一棵真的 closed shadow root 走一整遍契约。
+  // 全程不碰插件装载：验的是「收到这串 op 会改成什么、不该改的时候挡不挡得住」。
+  const rendered = await c.ev(`(async () => {
+    const { createWidgetRenderer } = await import('/src/runtime/widget-renderer.ts');
+    const { WidgetRenderSession } = await import('/src/runtime/widget-node.ts');
+    const host = document.createElement('div');
+    host.style.cssText = 'width:140px;height:64px';
+    document.body.append(host);
+    const shadow = host.attachShadow({ mode: 'closed' });
+    const inbound = [];
+    const renderer = createWidgetRenderer({
+      root: shadow,
+      container: host,
+      pluginId: 'zz.renderprobe',
+      postMessage: (m) => inbound.push({ t: m.t, id: m.id, event: m.event, value: m.value, dpr: m.dpr, width: m.width, hasOff: !!m.off && m.off.constructor && m.off.constructor.name }),
+    });
+    const session = new WidgetRenderSession((msg) => renderer.apply(msg.ops));
+    session.enqueue({ k: 'adopt', id: 0, root: true });
+    const card = session.create('div');
+    card.className = 'rp-card';
+    const title = session.create('span');
+    title.textContent = '心率 72';
+    card.append(title);
+    const box = session.create('input');
+    box.value = 'sh600000';
+    box.checked = true;
+    box.dataset.sym = 'sh600000';
+    box.on('keydown', () => undefined, { preventDefault: true });
+    box.on('change', () => undefined);
+    session.root.append(card, box);
+    const cv = session.create('canvas');
+    session.root.append(cv);
+    session.flush();
+    const el = (sel) => shadow.querySelector(sel);
+    const out = { tree: {}, reject: {}, event: {}, canvas: {}, layout: {}, after: {} };
+    out.tree.span = el('.rp-card span')?.textContent ?? null;
+    out.tree.spanCount = el('.rp-card')?.querySelectorAll('span').length ?? 0;
+    out.tree.inputValue = el('input')?.value ?? null;
+    out.tree.inputChecked = el('input')?.checked ?? null;
+    out.tree.dataset = el('input')?.dataset.sym ?? null;
+    // 未知 id 与非法 op：都应当只涨计数，不动 DOM
+    const before = renderer.rejects();
+    renderer.apply([{ k: 'text', id: 4242, value: 'x' }]);
+    out.reject.unknownId = renderer.rejects() - before;
+    out.reject.spanStillThere = el('.rp-card span')?.textContent ?? null;
+    renderer.apply([{ k: 'html', id: 1, value: '<img src=x onerror=alert(1)>' }]);
+    renderer.apply([{ k: 'attr', id: 1, name: 'src', value: 'http://evil.invalid/x.js' }]);
+    renderer.apply([{ k: 'prop', id: 1, name: 'onclick', value: 'alert(1)' }]);
+    renderer.apply([{ k: 'create', id: 777, tag: 'script' }]);
+    out.reject.illegalTotal = renderer.rejects() - before;
+    out.reject.noScript = shadow.querySelectorAll('script').length;
+    out.reject.noAttrSrc = el('div')?.getAttribute('src') ?? null;
+    // 反向事件：keydown 走 preventDefault，change 回推 value/checked 标量快照
+    const input = el('input');
+    const keyEvent = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    input.dispatchEvent(keyEvent);
+    input.value = 'sh600519';
+    input.checked = false;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    const evs = inbound.filter((m) => m.t === 'event');
+    out.event.kinds = evs.map((m) => m.event).join(',');
+    out.event.keyDefaultPrevented = keyEvent.defaultPrevented === true;
+    const changeSnap = evs.find((m) => m.event === 'change')?.value;
+    out.event.changeShape = changeSnap ? Object.keys(changeSnap).sort().join('+') : null;
+    out.event.changeValue = changeSnap?.value ?? null;
+    out.event.changeChecked = changeSnap?.checked ?? null;
+    out.event.notAnEventObject = evs.every((m) => m.value === null || (typeof m.value === 'object' && !('target' in (m.value ?? {}))));
+    // 画布交接：inbound 里有 handoff，且主线程再取上下文必须失败（证明是真交接不是复制）
+    const hand = inbound.find((m) => m.t === 'handoff');
+    out.canvas.handedOff = !!hand && hand.id === cv.nodeId;
+    out.canvas.offscreenType = hand?.hasOff ?? null;
+    try { (function () { const real = shadow.querySelector('canvas'); real.getContext('2d'); })(); out.canvas.mainThreadUsable = true; } catch { out.canvas.mainThreadUsable = false; }
+    // layout：apply 之后至少下发一次，dpr 是真数值
+    const lay = inbound.filter((m) => m.t === 'layout');
+    out.layout.count = lay.length;
+    out.layout.dprPositive = (lay[lay.length - 1]?.dpr ?? 0) > 0;
+    out.layout.width = lay[lay.length - 1]?.width ?? 0;
+    // 越界关闭：刷一批非法 op，session 应当自锁，之后的合法 op 也不再生效
+    const flood = [];
+    for (let i = 0; i < 70; i++) flood.push({ k: 'text', id: 9999, value: 'x' });
+    renderer.apply(flood);
+    out.after.closed = renderer.closed() === true;
+    renderer.apply([{ k: 'text', id: 1, value: '不该再改了' }]);
+    out.after.spanUntouched = el('.rp-card span')?.textContent ?? null;
+    renderer.destroy();
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    out.after.noEventsAfterDestroy = inbound.filter((m) => m.t === 'event').length === evs.length;
+    host.remove();
+    return out;
+  })()`);
+  r.check("渲染出的节点树与虚拟节点一致（span 文本 + 只一个 span）", "心率 72|1", `${rendered.tree.span}|${rendered.tree.spanCount}`);
+  r.check("prop 写到真元素上：value / checked / dataset", "sh600000|true|sh600000", `${rendered.tree.inputValue}|${rendered.tree.inputChecked}|${rendered.tree.dataset}`);
+  r.check("未知 nodeId 被拒收且不动 DOM（计数 1、文本原样）", "1|心率 72", `${rendered.reject.unknownId}|${rendered.reject.spanStillThere}`);
+  // illegalTotal 与 unknownId 共用同一个基线（都在那一次拒绝之后取样），所以表外那批要相减才是它自己的数
+  r.check("html op / 表外属性 / 表外 property / script 标签全部被拒（4 次）", 4, rendered.reject.illegalTotal - rendered.reject.unknownId);
+  r.check("shadow 里没有混进 script 节点，被拒的属性也没落上", "0|null", `${rendered.reject.noScript}|${rendered.reject.noAttrSrc}`);
+  r.check("反向事件按顺序回推 keydown 与 change", "keydown,change", rendered.event.kinds);
+  r.check("preventDefault 由 listen op 事先声明才生效", true, rendered.event.keyDefaultPrevented);
+  r.check("change 的快照只带 value 与 checked 两个键", "checked+value", rendered.event.changeShape);
+  r.check("快照里的 value 是用户改后的那个", "sh600519|false", `${rendered.event.changeValue}|${rendered.event.changeChecked}`);
+  r.check("回推的不是事件对象（快照里没有 target）", true, rendered.event.notAnEventObject);
+  r.check("画布控制权真的交给 Worker（inbound 有 handoff，主线程再取上下文会抛）", "true|OffscreenCanvas|false", `${rendered.canvas.handedOff}|${rendered.canvas.offscreenType}|${rendered.canvas.mainThreadUsable}`);
+  r.check("apply 之后下发 layout，dpr 与容器宽度是真数值", true, rendered.layout.count > 0 && rendered.layout.dprPositive && rendered.layout.width === 140);
+  r.check("拒绝次数越界后 session 自锁，合法 op 也不再生效", "true|心率 72", `${rendered.after.closed}|${rendered.after.spanUntouched}`);
+  r.check("destroy 之后事件不再回推", true, rendered.after.noEventsAfterDestroy);
+
   r.group("零噪音");
   r.info("导航过渡期告警", String(c.transitionNoise.length));
   r.check("无 console 错误与未捕获异常", [], c.noise);
