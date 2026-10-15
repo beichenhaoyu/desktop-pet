@@ -17,6 +17,7 @@ import {
   WIDGET_PROPS,
   WIDGET_SVG_TAGS,
   isWidgetAttr,
+  isWidgetCallAllowed,
   isWidgetEvent,
   isWidgetOp,
   isWidgetProp,
@@ -169,9 +170,13 @@ describe("op 形状：kind 在闭集里 + 字段齐 + 名字在白名单里", ()
     assert.equal(isWidgetToHost({ t: "ops", seq: 0, ops: [{ k: "html", id: 2 }] }), false);
     assert.equal(isWidgetToHost({ t: "ops", seq: "0", ops: [] }), false);
     assert.ok(isWidgetToHost({ t: "call", seq: 1, method: "bus.publish", args: ["com.pet.x:t", 1] }));
-    // storage / pet.* 属于入口的 22 表，不在 widget 调用面上 —— 借搬迁扩权就是从这里漏出去的
-    assert.equal(isWidgetToHost({ t: "call", seq: 1, method: "storage.get", args: ["k"] }), false);
-    assert.equal(isWidgetToHost({ t: "call", seq: 1, method: "pet.teleport", args: [] }), false);
+    // 形状层与策略层分工：不合法的名字在这里是**合法形状**（宿主才回得出 denied），
+    // 由 isWidgetCallAllowed 拒。运行时断言踩过一次：把它在这层当协议外消息丢掉，
+    // 那次调用就永远没人回包，而 boot 正 await 着插件的 mount()。
+    assert.ok(isWidgetToHost({ t: "call", seq: 1, method: "storage.get", args: ["k"] }));
+    assert.equal(isWidgetCallAllowed("storage.get", "settings"), false);
+    assert.equal(isWidgetToHost({ t: "call", seq: 1, method: "pet.teleport", args: [] }) && isWidgetCallAllowed("pet.teleport", "badge"), false);
+    assert.equal(isWidgetToHost({ t: "call", seq: 1, method: 42, args: [] }), false);
     assert.ok(isWidgetToHost({ t: "unsub", sub: 3 }));
     assert.equal(isWidgetToHost({ t: "unsub", sub: "3" }), false);
     assert.ok(isWidgetToHost({ t: "booted" }));

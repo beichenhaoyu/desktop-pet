@@ -7,6 +7,7 @@ import { bus } from "./event-bus";
 import { pluginFileUrl, pluginFileVersion } from "./plugin-url";
 import { createScopedBus } from "./topic-acl";
 import { createAgentHooksApi } from "./bridge";
+import { WIDGET_WORKER_FLAG, shouldUseWorkerWidget } from "./widget-protocol";
 import type { WidgetContext, WidgetRegion } from "../../packages/sdk";
 
 export interface WidgetManifest {
@@ -61,6 +62,58 @@ class WidgetHost {
     }
   }
 
+  /** 建这一区那个 closed shadow 插槽。两条路共用，差一行都会让「谁挂在哪儿」不一致。 */
+  private createSlot(
+    pluginId: string,
+    region: WidgetRegion,
+    root: HTMLElement,
+  ): { host: HTMLDivElement; shadow: ShadowRoot } {
+    const host = document.createElement("div");
+    host.dataset.pluginId = pluginId;
+    host.dataset.region = region;
+    const shadow = host.attachShadow({ mode: "closed" });
+    root.appendChild(host);
+    return { host, shadow };
+  }
+
+  /**
+   * 阶段二的接缝：点过名的 (插件, 区) 进 Worker。
+   * 分流放在加载 widget **之前** —— 先 import 再分家，等于把插件代码又在宿主 realm 执行一遍，
+   * 那正是这次搬迁要消掉的东西。名单判断用 widget-protocol 里那份（它不带 `?worker`），
+   * 实现只在点名之后动态 import：顶层 import 会把 `?worker` 带进 node 离线单测的解析路径，
+   * 阶段一就是这么翻的第一次。
+   */
+  private async doMountInWorker(
+    manifest: WidgetManifest,
+    url: string,
+    region: WidgetRegion,
+    root: HTMLElement,
+    startedAt: number,
+  ): Promise<void> {
+    const { workerWidgetHost } = await import("./worker-widget-host");
+    if (this.epochOf(manifest.id) !== startedAt) return;
+    const { host, shadow } = this.createSlot(manifest.id, region, root);
+    try {
+      await workerWidgetHost.mount({ manifest, region, url, host, shadow });
+    } catch (err) {
+      host.remove(); // 半途失败的容器不能留下删不掉的孤儿节点
+      throw err;
+    }
+    if (this.epochOf(manifest.id) !== startedAt) {
+      await workerWidgetHost.deactivate(manifest.id, region);
+      host.remove();
+      return;
+    }
+    // 壳：让 epoch / unmount 那套逻辑对两条路同构，Worker 路线的收尾转发给 workerWidgetHost
+    const mod: WidgetExports = {
+      mount: () => undefined,
+      unmount: () => workerWidgetHost.deactivate(manifest.id, region),
+    };
+    const list = this.mounted.get(manifest.id) ?? [];
+    list.push({ host, mod, shadow });
+    this.mounted.set(manifest.id, list);
+  }
+
   private async doMount(
     manifest: WidgetManifest,
     widgetPath: string,
@@ -70,6 +123,9 @@ class WidgetHost {
   ): Promise<void> {
     const bust = await pluginFileVersion(manifest.id, widgetPath);
     const url = pluginFileUrl(manifest.id, widgetPath, bust);
+    if (shouldUseWorkerWidget(manifest.id, globalThis.localStorage?.getItem(WIDGET_WORKER_FLAG))) {
+      return this.doMountInWorker(manifest, url, region, root, startedAt);
+    }
     let host: HTMLDivElement | undefined;
     try {
       const mod = (await import(/* @vite-ignore */ url)) as WidgetExports;
@@ -80,11 +136,9 @@ class WidgetHost {
       // 那时 mounted 里还没有记录，unmount 管不到这次挂载，不复查就会留下挂在 DOM 上的孤儿
       if (this.epochOf(manifest.id) !== startedAt) return;
 
-      host = document.createElement("div");
-      host.dataset.pluginId = manifest.id;
-      host.dataset.region = region;
-      const shadow = host.attachShadow({ mode: "closed" });
-      root.appendChild(host);
+      const slot = this.createSlot(manifest.id, region, root);
+      host = slot.host;
+      const { shadow } = slot;
 
       const ctx: Parameters<WidgetExports["mount"]>[1] = {
         pluginId: manifest.id,

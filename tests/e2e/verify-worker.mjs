@@ -58,7 +58,7 @@ async function pump(deadlineMs) {
 
 function installFixture() {
   mkdirSync(INSTALLED, { recursive: true });
-  for (const file of ["manifest.json", "index.js", "leaf.js"]) {
+  for (const file of ["manifest.json", "index.js", "leaf.js", "widget.js"]) {
     copyFileSync(join(FIXTURE, file), join(INSTALLED, file));
   }
 }
@@ -72,6 +72,11 @@ function markLeaf(value) {
 const FLAG = "host:realm-plugin-host";
 const setOptOut = (client, ids) =>
   client.ev(`localStorage.setItem(${JSON.stringify(FLAG)}, ${JSON.stringify(ids.join(","))})`);
+
+/** 阶段二的接缝是**反方向**的：入口默认进 Worker（点名才留宿主），widget 默认留宿主（点名才进 Worker） */
+const WFLAG = "host:widget-worker-plugin-host";
+const setWidgetOptIn = (client, ids) =>
+  client.ev(`localStorage.setItem(${JSON.stringify(WFLAG)}, ${JSON.stringify(ids.join(","))})`);
 
 let c = null;
 let cdp = null;
@@ -337,6 +342,69 @@ try {
   r.check("拒绝次数越界后 session 自锁，合法 op 也不再生效", "true|心率 72", `${rendered.after.closed}|${rendered.after.spanUntouched}`);
   r.check("destroy 之后事件不再回推", true, rendered.after.noEventsAfterDestroy);
 
+  r.group("⑧ widget 接缝：默认留宿主 realm，点过名的进 Worker");
+  const widgetFacts = async (want, ms = 30_000) => {
+    const ok = await waitUntil(
+      c,
+      `(async () => { try { const f = await window.__TAURI_INTERNALS__.invoke('store_get', { pluginId: ${JSON.stringify(PROBE)}, key: 'widgetFacts' }); return !!f && f.realm === ${JSON.stringify(want)}; } catch { return false; } })()`,
+      ms,
+    );
+    if (!ok) return null;
+    return storeGet("widgetFacts");
+  };
+  // 先确认探针是启用状态（⑤/⑥ 两组停过又拉起），再读它 widget 的自报
+  await writeEnabledIds(settings.invoke, [...new Set([...(await readEnabledIds(invoke)), PROBE])]);
+  await reloadAndWait(c);
+  const docSide = await widgetFacts("document");
+  r.check("默认名单下 widget 在宿主 realm 里挂载（region 是 badge）", "document|badge", `${docSide?.realm}|${docSide?.region}`);
+  r.check(
+    "宿主 realm 路线看得见 document，且没有 ctx.dom（接缝没把替身塞给旧路径）",
+    "true|false",
+    `${docSide?.hasDocument}|${docSide?.hasDom}`,
+  );
+  r.check("badge 区没有 ctx.host 这个键（宿主 realm 路线）", false, docSide?.hasHostKey);
+  r.check(
+    "widget 发的 publish 被入口收到（跨 realm 中继可用）",
+    true,
+    await c.ev(
+      `(async () => { const n = document.querySelectorAll('#widget-badge div[data-plugin-id="${PROBE}"]').length; return n >= 1; })()`,
+    ),
+  );
+
+  await setWidgetOptIn(c, [PROBE]);
+  await reloadAndWait(c);
+  const workerSide = await widgetFacts("worker", 40_000);
+  r.check("点过名之后同一个 widget 在 Worker realm 里挂载", "worker", workerSide?.realm);
+  r.check(
+    "Worker 路线里没有 document 也没有 window",
+    "false|false",
+    `${workerSide?.hasDocument}|${workerSide?.hasWindow}`,
+  );
+  r.check(
+    "Worker 路线上 ctx.dom 与 onLayout 都在（渲染只能走指令通道）",
+    "true|true",
+    `${workerSide?.hasDom}|${workerSide?.hasOnLayout}`,
+  );
+  r.check("badge 区在 Worker 路线里同样没有 ctx.host", false, workerSide?.hasHostKey);
+  r.check("layout 至少被宿主推过一次", true, (workerSide?.layout ?? 0) >= 1);
+  // 逢 call 必回：不回包的话这里量到的是 timeout，而那个 timeout 就是插件永远起不来的样子
+  r.check("宿主对 widget 调用面外的方法回的是拒绝，不是让它悬着", "answered:denied", workerSide?.forbidden);
+  r.check(
+    "点过名之后徽标插槽照样建出来了（渲染没被搬丢）",
+    true,
+    await c.ev(
+      `(async () => { const n = document.querySelectorAll('#widget-badge div[data-plugin-id="${PROBE}"]').length; return n >= 1; })()`,
+    ),
+  );
+
+  await setWidgetOptIn(c, []);
+  await reloadAndWait(c);
+  r.check(
+    "清掉名单后同一个 widget 回到宿主 realm（opt-in 是名单，不是开关一次就定型）",
+    "document",
+    (await widgetFacts("document", 40_000))?.realm,
+  );
+
   r.group("零噪音");
   r.info("导航过渡期告警", String(c.transitionNoise.length));
   r.check("无 console 错误与未捕获异常", [], c.noise);
@@ -354,6 +422,7 @@ try {
   }
   if (cdp) {
     await cdp.ev(`localStorage.removeItem(${JSON.stringify(FLAG)})`).catch(() => undefined);
+    await cdp.ev(`localStorage.removeItem(${JSON.stringify(WFLAG)})`).catch(() => undefined);
     await sleep(1200);
     await reloadAndWait(cdp).catch(() => undefined);
     await sleep(1200);

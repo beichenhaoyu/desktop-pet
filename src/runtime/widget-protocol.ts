@@ -290,12 +290,10 @@ export function isWidgetToHost(msg: unknown): msg is WidgetToHost {
     case "ops":
       return typeof m.seq === "number" && Array.isArray(m.ops) && m.ops.every(isWidgetOp);
     case "call":
-      return (
-        typeof m.seq === "number" &&
-        typeof m.method === "string" &&
-        (WIDGET_CALL_METHODS as readonly string[]).includes(m.method) &&
-        Array.isArray(m.args)
-      );
+      // 这里只管**形状**，不管方法名合不合法：名字白名单是策略（还分 region），
+      // 归 `isWidgetCallAllowed` 判。在这一层把不合法的名字当"协议外消息"丢掉，
+      // 就等于对一次调用不回包 —— 而 `boot` 会 await 插件的 mount()，插件那侧永远悬着。
+      return typeof m.seq === "number" && typeof m.method === "string" && Array.isArray(m.args);
     case "unsub":
       return typeof m.sub === "number";
     case "booted":
