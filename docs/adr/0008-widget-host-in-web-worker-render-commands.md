@@ -1,6 +1,7 @@
 # ADR-0008：widget 进 Worker —— 虚拟节点 + 批量渲染指令 + 反向事件通道
 
-- **状态**：已接受（决策 5 的首选形状已由 T18 运行时实测证实，2026-10-15）
+- **状态**：已接受并已全量落地（决策 5 由 T18 实测证实；四个示例插件 2026-10-15 全部改完，
+  同日按决策 9 收口 —— widget 默认进 Worker）
 - **日期**：2026-10-15
 - **相关**：[ADR-0006](0006-plugin-host-in-web-worker.md)（插件进 Worker，阶段一已落地）、
   [ADR-0004](0004-style-src-unsafe-inline-kept.md)、`docs/architecture/ARCHITECTURE.md` 的 widget 宿主一节、
@@ -122,15 +123,25 @@ boot 消息带 `region`，非 settings 区的 Worker 里根本没有 `host` 这�
 - `unmount` / 窗口关闭 → `terminate()`；热重载沿用 ADR-0006 的失效机制：**终止 Worker 就是失效手段**，
   不是重载文档。
 
-### 9. 迁移台账记在代码里，不记在开发态开关里
+### 9. 迁移台账记在代码里；四片齐之后翻默认、删台账，例外名单改名换义
 
-接缝认两条并取并集：`WIDGET_WORKER_MIGRATED` 这份**代码名单**，与 localStorage 里的
-`host:widget-worker-plugin-host` 点名（后者只服务套件与本机试验）。
+**迁移期（A10–A13 落地时）**：接缝认两条并取并集 —— 代码名单 `WIDGET_WORKER_MIGRATED`（PM 验收每张
+卡时追加）与 localStorage 的 `host:widget-worker-plugin-host` 点名。理由是「迁完但生产还走宿主」这个
+中间态压根不存在：改完的 widget 是照 `ctx.dom` 写的，在宿主 realm 里必然白屏，而 localStorage
+换一台机器就没了。执行者不许自己改名单，否则四张卡都动同一处就成了串行点。
 
-理由是「迁完但生产还走宿主」这个中间态压根不存在：改完的 widget 是照 `ctx.dom` 写的，
-在宿主 realm 里跑必然白屏，而 localStorage 换一台机器就没了。所以一片迁移落地就得当场记账、
-当场对真实用户生效。名单由 PM 在验收每张迁移卡时追加 —— 四张卡都要改它就成了串行点，
-执行者只改自己插件目录；四片齐后由收口片翻默认、删名单。
+**收口（四片全放行之后）**：默认改为**一律进 Worker**，`WIDGET_WORKER_MIGRATED` 删除，只留一把
+localStorage 例外名单。这把键**连名带义一起换**：新的 `host:widget-realm-plugin-host` 是「留在宿主 realm」
+的点名，与阶段一的 `host:realm-plugin-host` 同向同命名法。不复用旧键名是因为翻默认之后
+`host:widget-worker-plugin-host` 的语义正好反了 —— 一把键两种意思，迟早有人按旧义去点，
+排查成本远高于改一次名字。
+
+例外名单的定位是**逃生门**：给还没照契约写的第三方 widget 留一条回到宿主 realm 的路，
+不是插件作者的配置项（在例外名单里时 `ctx.dom` 是 undefined，照契约写的代码会白屏）。
+两条路线的取证都还在：`verify:worker` 第⑧组把「默认 Worker / 点名宿主 / 清掉回 Worker」三段都钉住，
+四个插件各自的运行时套件钉一条插槽壳上的 realm 戳，`verify:release` 再证**打包版 CSP 下**同一条路线
+（Worker realm 挂载、没有 document/window、`ctx.dom` 在、逢 call 必回、realm 戳、以及一条
+「没有 widget 装载失败」的兜底 —— 翻默认那轮就是靠它逮到夹具没装 `widget.js` 的 404）。
 
 ## 后果
 
@@ -140,7 +151,9 @@ boot 消息带 `region`，非 settings 区的 Worker 里根本没有 `host` 这�
 - 契约实现落在 `src/runtime/` 目录下新增的三个文件与一处接缝：widget-protocol.ts（消息形状 + op 词表，
   和 plugin-worker-protocol.ts 一样**不许 import host-error 与 @tauri-apps**）、widget-node.ts（Worker 侧虚拟节点）、
   widget-renderer.ts（宿主侧 apply），接缝是 widget-host.ts 的 doMount()。22 个方法表**不动**——它管能力调用，widget 渲染走的是新通道。
-- 四个插件的 16 个 widget 文件要迁移，可并行（每插件白名单不重叠），但都必须在契约实现之后。
+- 四个插件的 widget 图已迁移完毕（A10–A13，2026-10-15）：待办 1 文件 / agent 桥 1 / 心率 1 /
+  盯盘 **19 个文件**（按 `widget.js` 的 import 闭包算，含 `market.js` 与 `sources/*` ——
+  数据模块也会一起被 Worker 加载）。四张卡白名单不重叠，真并行。
 - 决策 5 的首选形状已由 **T18 实测证实**（2026-10-15，WebView2 `Edg/155.0.4283.45`：未入文档与已入文档的
   canvas 都能把控制权交给模块 Worker，Worker 里画完 `getImageData` 逐数对得上），迁移按「Worker 直画」做，
   不开 paint-ops 指令通道。退路（交接被拒时留主线程可画的 canvas）已在渲染器里实现并有一条断言。

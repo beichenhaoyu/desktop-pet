@@ -7,7 +7,7 @@ import { bus } from "./event-bus";
 import { pluginFileUrl, pluginFileVersion } from "./plugin-url";
 import { createScopedBus } from "./topic-acl";
 import { createAgentHooksApi } from "./bridge";
-import { WIDGET_WORKER_FLAG, widgetUsesWorker } from "./widget-protocol";
+import { WIDGET_HOST_REALM_FLAG, widgetUsesWorker } from "./widget-protocol";
 import type { WidgetContext, WidgetRegion } from "../../packages/sdk";
 
 export interface WidgetManifest {
@@ -83,10 +83,10 @@ class WidgetHost {
   }
 
   /**
-   * 阶段二的接缝：点过名的 (插件, 区) 进 Worker。
+   * 阶段二的接缝：默认进 Worker，点了名的例外才留宿主 realm。
    * 分流放在加载 widget **之前** —— 先 import 再分家，等于把插件代码又在宿主 realm 执行一遍，
    * 那正是这次搬迁要消掉的东西。名单判断用 widget-protocol 里那份（它不带 `?worker`），
-   * 实现只在点名之后动态 import：顶层 import 会把 `?worker` 带进 node 离线单测的解析路径，
+   * 实现只在分流之后动态 import：顶层 import 会把 `?worker` 带进 node 离线单测的解析路径，
    * 阶段一就是这么翻的第一次。
    */
   private async doMountInWorker(
@@ -129,7 +129,7 @@ class WidgetHost {
   ): Promise<void> {
     const bust = await pluginFileVersion(manifest.id, widgetPath);
     const url = pluginFileUrl(manifest.id, widgetPath, bust);
-    if (widgetUsesWorker(manifest.id, globalThis.localStorage?.getItem(WIDGET_WORKER_FLAG))) {
+    if (widgetUsesWorker(manifest.id, globalThis.localStorage?.getItem(WIDGET_HOST_REALM_FLAG))) {
       return this.doMountInWorker(manifest, url, region, root, startedAt);
     }
     let host: HTMLDivElement | undefined;

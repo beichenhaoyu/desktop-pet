@@ -10,14 +10,14 @@ import { describe, it } from "node:test";
 import {
   WIDGET_CALL_METHODS,
   isWidgetCallAllowed,
-  shouldUseWorkerWidget,
   widgetUsesWorker,
-  WIDGET_WORKER_FLAG,
+  WIDGET_HOST_REALM_FLAG,
 } from "../../src/runtime/widget-protocol.ts";
 import { createWidgetRuntime } from "../../src/runtime/widget-worker.ts";
 
 const WORKER_SRC = readFileSync(new URL("../../src/runtime/widget-worker.ts", import.meta.url), "utf8");
 // 只读文本、不 import：worker-widget-host 带着 `?worker` 说明符，node 一解析就炸
+const PROTO_SRC = readFileSync(new URL("../../src/runtime/widget-protocol.ts", import.meta.url), "utf8");
 const WIDGET_HOST_SRC = readFileSync(new URL("../../src/runtime/widget-host.ts", import.meta.url), "utf8");
 const WORKER_WIDGET_HOST_SRC = readFileSync(
   new URL("../../src/runtime/worker-widget-host.ts", import.meta.url),
@@ -408,45 +408,46 @@ describe("调用面比入口的 22 表窄：不借搬迁扩权", () => {
   });
 });
 
-describe("opt-in 名单（第二阶段默认仍留宿主 realm）", () => {
-  it("空值与未点名都是 false", () => {
+describe("接缝：默认进 Worker，例外名单点名的才留宿主 realm", () => {
+  it("没点名 ⇒ 任何插件都进 Worker", () => {
     for (const raw of ["", null, undefined, "   ", "com.pet.other"]) {
-      assert.equal(shouldUseWorkerWidget("com.pet.x", raw), false, `${JSON.stringify(raw)} 被判成进 Worker`);
+      assert.equal(widgetUsesWorker("com.pet.x", raw), true, `${JSON.stringify(raw)} 没进 Worker`);
     }
   });
 
-  it("点名才进，含空格也认", () => {
-    assert.equal(shouldUseWorkerWidget("com.pet.x", "com.pet.other, com.pet.x "), true);
-    assert.equal(shouldUseWorkerWidget("com.pet.y", "com.pet.x"), false);
+  it("点名的 id 留宿主 realm，含空格也认", () => {
+    assert.equal(widgetUsesWorker("com.pet.x", "com.pet.other, com.pet.x "), false);
+    assert.equal(widgetUsesWorker("com.pet.y", "com.pet.x"), true);
+  });
+
+  it("名单只影响被点名的那一个插件", () => {
+    const raw = "com.pet.a, com.pet.b";
+    assert.equal(widgetUsesWorker("com.pet.a", raw), false);
+    assert.equal(widgetUsesWorker("com.pet.b", raw), false);
+    assert.equal(widgetUsesWorker("com.pet.c", raw), true);
+  });
+
+  it("例外名单是名单不是开关：清掉就得回 Worker", () => {
+    assert.equal(widgetUsesWorker("com.pet.x", "com.pet.x"), false);
+    assert.equal(widgetUsesWorker("com.pet.x", ""), true);
   });
 
   it("flag 名字不许改：它进了约定与回归脚本", () => {
-    assert.equal(WIDGET_WORKER_FLAG, "host:widget-worker-plugin-host");
-  });
-});
-
-describe("迁移台账：命中台账即对真实用户生效，不靠开发态点名", () => {
-  it("台账命中 ⇒ 进 Worker，哪怕没点名", () => {
-    assert.equal(widgetUsesWorker("com.pet.x", "", ["com.pet.x"]), true);
-    assert.equal(widgetUsesWorker("com.pet.x", null, ["com.pet.x"]), true);
+    assert.equal(WIDGET_HOST_REALM_FLAG, "host:widget-realm-plugin-host");
   });
 
-  it("点名仍独立生效（并集，台账不覆盖点名）", () => {
-    assert.equal(widgetUsesWorker("com.pet.x", "com.pet.x", []), true);
-  });
-
-  it("两条都不沾 ⇒ 留宿主 realm（默认没翻）", () => {
-    for (const raw of ["", null, undefined, "com.pet.other"]) {
-      assert.equal(widgetUsesWorker("com.pet.x", raw, ["com.pet.y"]), false);
+  it("迁移期的键与台账都不许留着（同一把键两种语义，迟早有人按旧义去点）", () => {
+    for (const src of [PROTO_SRC, WIDGET_HOST_SRC]) {
+      assert.equal(src.includes("host:widget-worker-plugin-host"), false, "旧的 opt-in 键名还在");
+      assert.equal(src.includes("WIDGET_WORKER_MIGRATED"), false, "迁移台账没删干净");
     }
   });
 
-  it("两个接缝调用点都走台账，不许绕过它直接用点名解析器", () => {
-    // 绕过一处就等于那条路认不出「已迁移」，插件在宿主 realm 里白屏
-    for (const src of [WIDGET_HOST_SRC, WORKER_WIDGET_HOST_SRC]) {
-      assert.equal(src.includes("widgetUsesWorker("), true, "调用点没走 widgetUsesWorker");
-      assert.equal(/shouldUseWorkerWidget\s*\(/.test(src), false, "调用点直接用了点名解析器");
-    }
+  it("分流只在 widget-host 一处，另一侧不许自己解析名单", () => {
+    assert.equal(WIDGET_HOST_SRC.includes("widgetUsesWorker("), true, "调用点没走 widgetUsesWorker");
+    assert.equal(/isWidgetPinnedToHostRealm\s*\(/.test(WIDGET_HOST_SRC.replace("export function", "")), false);
+    assert.equal(WORKER_WIDGET_HOST_SRC.includes("widgetUsesWorker("), false, "分流决定散到了第二处");
+    assert.equal(WORKER_WIDGET_HOST_SRC.includes("isWidgetPinnedToHostRealm"), false);
   });
 });
 

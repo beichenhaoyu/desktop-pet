@@ -13,10 +13,8 @@ import WidgetWorker from "./widget-worker.ts?worker";
 import { buildContext, createAgentHooksApi } from "./bridge";
 import { createWidgetRenderer } from "./widget-renderer";
 import {
-  WIDGET_WORKER_FLAG,
   isWidgetCallAllowed,
   isWidgetToHost,
-  widgetUsesWorker,
   type HostToWidget,
   type WidgetToHost,
 } from "./widget-protocol";
@@ -46,14 +44,6 @@ interface Session {
 
 const sessions = new Map<string, Session>();
 const keyOf = (pluginId: string, region: WidgetRegion) => `${pluginId}#${region}`;
-
-/** 开发态点名：localStorage 里一份逗号分隔插件 id（Worker 本身按 (pluginId, region) 一个，点名只点插件）。 */
-export function widgetWorkerFlag(): string {
-  return globalThis.localStorage?.getItem(WIDGET_WORKER_FLAG) ?? "";
-}
-
-export const widgetShouldUseWorker = (pluginId: string): boolean =>
-  widgetUsesWorker(pluginId, widgetWorkerFlag());
 
 async function resolveSub(session: Session, topic: string, sub: number): Promise<void> {
   const ctx = buildContext(session.manifest as never);

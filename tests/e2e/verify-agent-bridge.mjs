@@ -679,7 +679,7 @@ try {
     );
     r.check("插件页挂出「Qoder hook 接入」块", true, panelReady);
     r.check(
-      "插件页插槽的 realm 戳是 worker（agent-bridge 在迁移台账里）",
+      "插件页插槽的 realm 戳是 worker（默认路线）",
       "worker",
       (await waitWidgetRealm(settings.client, AGENT_ID, "settings", "worker", 20_000)).actual,
     );

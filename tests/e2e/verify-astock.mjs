@@ -571,7 +571,7 @@ try {
   );
   r.check("插件页挂上了画布", true, widgetReady);
   r.check(
-    "插件页插槽的 realm 戳是 worker（astock 在迁移台账里）",
+    "插件页插槽的 realm 戳是 worker（默认路线）",
     "worker",
     (await waitWidgetRealm(settings.client, PID, "settings", "worker", 20_000)).actual,
   );

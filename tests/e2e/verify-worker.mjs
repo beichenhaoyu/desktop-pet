@@ -22,8 +22,8 @@ import {
   writeEnabledIds,
 } from "./harness/cdp.mjs";
 import {
-  clearWidgetOptIn,
-  setWidgetOptIn,
+  clearWidgetHostRealm,
+  setWidgetHostRealm,
   waitWidgetRealm,
 } from "./harness/widget-realm.mjs";
 
@@ -78,8 +78,9 @@ const FLAG = "host:realm-plugin-host";
 const setOptOut = (client, ids) =>
   client.ev(`localStorage.setItem(${JSON.stringify(FLAG)}, ${JSON.stringify(ids.join(","))})`);
 
-/** 阶段二的接缝是**反方向**的：入口默认进 Worker（点名才留宿主），widget 默认留宿主（点名才进 Worker）。
- *  点名与 realm 取证走 harness/widget-realm.mjs 那份 —— 四张迁移卡用的是同一把尺子。 */
+/** 两条接缝现在同向：**默认都进 Worker**，各自的 localStorage 名单是「留在宿主 realm」的例外
+ *  （入口是 `host:realm-plugin-host`，widget 是 `host:widget-realm-plugin-host`）。
+ *  widget 的点名与 realm 取证走 harness/widget-realm.mjs 那份 —— 四张迁移卡用的是同一把尺子。 */
 
 let c = null;
 let cdp = null;
@@ -353,7 +354,7 @@ try {
   r.check("拒绝次数越界后 session 自锁，合法 op 也不再生效", "true|心率 72", `${rendered.after.closed}|${rendered.after.spanUntouched}`);
   r.check("destroy 之后事件不再回推", true, rendered.after.noEventsAfterDestroy);
 
-  r.group("⑧ widget 接缝：默认留宿主 realm，点过名的进 Worker");
+  r.group("⑧ widget 接缝：默认进 Worker，点过名的例外留宿主 realm");
   const widgetFacts = async (want, ms = 30_000) => {
     const ok = await waitUntil(
       c,
@@ -366,26 +367,13 @@ try {
   // 先确认探针是启用状态（⑤/⑥ 两组停过又拉起），再读它 widget 的自报
   await writeEnabledIds(settings.invoke, [...new Set([...(await readEnabledIds(invoke)), PROBE])]);
   await reloadAndWait(c);
-  const docSide = await widgetFacts("document");
-  r.check("默认名单下 widget 在宿主 realm 里挂载（region 是 badge）", "document|badge", `${docSide?.realm}|${docSide?.region}`);
-  r.check(
-    "宿主 realm 路线看得见 document，且没有 ctx.dom（接缝没把替身塞给旧路径）",
-    "true|false",
-    `${docSide?.hasDocument}|${docSide?.hasDom}`,
-  );
-  r.check("badge 区没有 ctx.host 这个键（宿主 realm 路线）", false, docSide?.hasHostKey);
-  r.check(
-    "widget 发的 publish 被入口收到（跨 realm 中继可用）",
-    true,
-    await c.ev(
-      `(async () => { const n = document.querySelectorAll('#widget-badge div[data-plugin-id="${PROBE}"]').length; return n >= 1; })()`,
-    ),
-  );
-
-  await setWidgetOptIn(c, [PROBE]);
-  await reloadAndWait(c);
+  /**
+   * 收口后默认方向翻了：不点名就是 Worker。
+   * 迁移期这一组是「默认宿主 → 点名进 Worker」，两条路线要证的性质一模一样，
+   * 所以标题按性质重排而不是删掉一半（旧→新对应写在提交信息里）。
+   */
   const workerSide = await widgetFacts("worker", 40_000);
-  r.check("点过名之后同一个 widget 在 Worker realm 里挂载", "worker", workerSide?.realm);
+  r.check("默认名单下 widget 在 Worker realm 里挂载（region 是 badge）", "worker|badge", `${workerSide?.realm}|${workerSide?.region}`);
   r.check(
     "Worker 路线里没有 document 也没有 window",
     "false|false",
@@ -401,7 +389,7 @@ try {
   // 逢 call 必回：不回包的话这里量到的是 timeout，而那个 timeout 就是插件永远起不来的样子
   r.check("宿主对 widget 调用面外的方法回的是拒绝，不是让它悬着", "answered:denied", workerSide?.forbidden);
   r.check(
-    "点过名之后徽标插槽照样建出来了（渲染没被搬丢）",
+    "默认路线上徽标插槽照样建出来了（渲染没被搬丢）",
     true,
     await c.ev(
       `(async () => { const n = document.querySelectorAll('#widget-badge div[data-plugin-id="${PROBE}"]').length; return n >= 1; })()`,
@@ -409,22 +397,49 @@ try {
   );
   // realm 戳在插槽壳上，是 closed shadow 外面唯一的取证点；迁移卡全靠它，这里先把它钉住
   r.check(
-    "插槽壳上的 realm 戳在 Worker 路线里是 worker",
+    "插槽壳上的 realm 戳在默认路线里是 worker",
     "worker",
     (await waitWidgetRealm(c, PROBE, "badge", "worker")).actual,
   );
 
-  await setWidgetOptIn(c, []);
+  await setWidgetHostRealm(c, [PROBE]);
   await reloadAndWait(c);
+  const docSide = await widgetFacts("document", 40_000);
   r.check(
-    "清掉名单后同一个 widget 回到宿主 realm（opt-in 是名单，不是开关一次就定型）",
+    "点名之后同一个 widget 回到宿主 realm（例外名单是名单，不是开关一次就定型）",
     "document",
-    (await widgetFacts("document", 40_000))?.realm,
+    docSide?.realm,
   );
   r.check(
-    "清掉点名后 realm 戳跟着翻回 host",
+    "宿主 realm 路线看得见 document，且没有 ctx.dom（接缝没把替身塞给旧路径）",
+    "true|false",
+    `${docSide?.hasDocument}|${docSide?.hasDom}`,
+  );
+  r.check("badge 区没有 ctx.host 这个键（宿主 realm 路线）", false, docSide?.hasHostKey);
+  r.check(
+    "widget 发的 publish 被入口收到（跨 realm 中继可用）",
+    true,
+    await c.ev(
+      `(async () => { const n = document.querySelectorAll('#widget-badge div[data-plugin-id="${PROBE}"]').length; return n >= 1; })()`,
+    ),
+  );
+  r.check(
+    "点名后 realm 戳跟着翻成 host",
     "host",
     (await waitWidgetRealm(c, PROBE, "badge", "host")).actual,
+  );
+
+  await clearWidgetHostRealm(c);
+  await reloadAndWait(c);
+  r.check(
+    "清掉点名后同一个 widget 又回到 Worker realm",
+    "worker",
+    (await widgetFacts("worker", 40_000))?.realm,
+  );
+  r.check(
+    "清掉点名后 realm 戳跟着翻回 worker",
+    "worker",
+    (await waitWidgetRealm(c, PROBE, "badge", "worker")).actual,
   );
 
   r.group("零噪音");
@@ -444,7 +459,7 @@ try {
   }
   if (cdp) {
     await cdp.ev(`localStorage.removeItem(${JSON.stringify(FLAG)})`).catch(() => undefined);
-    await clearWidgetOptIn(cdp).catch(() => undefined);
+    await clearWidgetHostRealm(cdp).catch(() => undefined);
     await sleep(1200);
     await reloadAndWait(cdp).catch(() => undefined);
     await sleep(1200);

@@ -5,21 +5,22 @@
 // 残留 `document.*`（Worker 里必然 ReferenceError）、用了表外的标签/属性名（宿主那条门禁就是
 // `isWidgetOp`，这里照它逐条过一遍）。**它抓不到视觉与交互**，那仍以各插件的运行时套件为准。
 //
-// 名单来源与生产同一处：`WIDGET_WORKER_MIGRATED`（PM 验收迁移卡时追加）。
-// 插件作者想在台账之外先试自己那一个：`PET_WIDGET_SMOKE=com.pet.xxx`（逗号分隔）。
+// 名单来源与生产同一处：接缝默认进 Worker（`widget-host.ts` 的 `doMount`），所以这里跑的就是
+// 生产实际会走的那条路。要临时加一个插件：`PET_WIDGET_SMOKE=com.pet.xxx`（逗号分隔）。
 //
-// 反向那半同样是指望：台账外的真实插件**必须**跑不起来。哪天冒烟对谁都绿，它就是空转了。
+// 反向那半也留着，但换成不依赖产品插件的形式：一个故意用 `document.createElement` 的合成 widget
+// **必须**当场失败。哪天这套冒烟对谁都绿、连这种代码都放过去，它就是空转了。
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, it } from "node:test";
-import { WIDGET_WORKER_MIGRATED, isWidgetOp } from "../../src/runtime/widget-protocol.ts";
+import { isWidgetOp } from "../../src/runtime/widget-protocol.ts";
 import { createWidgetRuntime } from "../../src/runtime/widget-worker.ts";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const REGIONS = ["badge", "overlay", "settings"];
-/** 仓库自带的四个示例插件（迁移对象就是它们） */
+/** 仓库自带的四个示例插件：默认全部走 Worker，所以三个区都得跑起来且不越界 */
 const REAL = ["com.pet.todo", "com.pet.agent-bridge", "com.pet.hr-ble", "com.pet.astock"];
 /** 常驻基线：夹具那份是双 realm 写法，今天就该过 —— 它证明这套冒烟本身不是空转 */
 const FIXTURE_DIR = join("tests", "fixtures", "l1-probe");
@@ -30,7 +31,7 @@ const extraIds = () =>
     .map((s) => s.trim())
     .filter(Boolean);
 
-const targets = () => [...new Set([...WIDGET_WORKER_MIGRATED, ...extraIds()])];
+const targets = () => [...new Set([...REAL, ...extraIds()])];
 
 function manifestOf(dir) {
   return JSON.parse(readFileSync(join(REPO, dir, "manifest.json"), "utf8"));
@@ -314,14 +315,8 @@ describe("常驻基线：夹具那份双 realm 写法必须跑得起来", () => 
   }
 });
 
-describe("台账内的插件必须能在 Worker realm 里跑起来", () => {
-  const ids = targets();
-  if (ids.length === 0) {
-    it("（当前没有已迁移插件，也没有 PET_WIDGET_SMOKE 点名）", () => {
-      assert.equal(ids.length, 0);
-    });
-  }
-  for (const id of ids) {
+describe("四个示例插件默认就跑在 Worker 里：三个区都得跑起来且不越界", () => {
+  for (const id of targets()) {
     for (const region of REGIONS) {
       it(`${id} 在 ${region} 区跑得起来且不越界`, async () => {
         const r = await smoke(join("plugins", id), region);
@@ -333,14 +328,26 @@ describe("台账内的插件必须能在 Worker realm 里跑起来", () => {
   }
 });
 
-describe("台账外的真实插件必须跑不起来（冒烟不是空转）", () => {
-  for (const id of REAL.filter((x) => !targets().includes(x))) {
-    it(`${id} 还没迁，Worker 里就该当场失败`, async () => {
-      const r = await smoke(join("plugins", id), "badge");
-      assert.notEqual(r.bootError, null, "未迁移的插件居然在 Worker realm 里跑起来了");
-      assert.match(String(r.bootError), /document|window|localStorage|not defined/);
-    });
-  }
+/**
+ * 反向对照：一个还没照契约写的 widget（就用 `document.createElement`）**必须**当场失败。
+ * 原来这半靠"台账外的真实插件"提供，翻默认之后四个都已迁移，所以换成合成模块 ——
+ * 它不依赖任何产品代码，也就不会因为哪天又加了一个示例插件而悄悄失效。
+ */
+describe("冒烟不是空转：残留宿主 realm 依赖必须被抓到", () => {
+  const legacy = {
+    mount(root, _ctx) {
+      const box = document.createElement("div");
+      box.textContent = "还没迁的写法";
+      root.append(box);
+    },
+  };
+
+  it("只用 document.createElement 的 widget 挂不起来", async () => {
+    const r = await smoke(null, "badge", legacy);
+    assert.notEqual(r.bootError, null, "宿主 realm 依赖居然在 Worker 路线里跑通了");
+    assert.match(String(r.bootError), /document|not defined/);
+    assert.equal(r.booted, false, "挂载失败还回了 booted");
+  });
 });
 
 /** 事件分发那半是这轮新加的，四个真实插件全都跑不到那里（它们 mount 就挂了），

@@ -138,10 +138,11 @@ export function unmount(root) { /* 用 root 找回自己那份清理表 */ }
 
 ### 5.1 渲染契约（Worker 路线，ADR-0008）
 
-同一个 widget 文件有两种宿主。**默认仍是宿主 realm**；插件 id 进了迁移台账（`src/runtime/widget-protocol.ts`
-的 `WIDGET_WORKER_MIGRATED`）之后，你的 widget 跑在自己的模块 Worker 里：那里**没有 `window` / `document` /
-`localStorage`**，渲染靠发指令。你什么时候进台账由宿主决定，本机试验可以先点名：
-`localStorage.setItem("host:widget-worker-plugin-host", "<你的 id>")` 后重载窗口。
+widget 默认就跑在自己的模块 Worker 里：那里**没有 `window` / `document` / `localStorage`**，
+渲染靠发指令。宿主侧留着一把逃生门 —— `localStorage` 的 `host:widget-realm-plugin-host`
+（逗号分隔插件 id）能把某个 widget 放回宿主 realm，只服务「还没照下面这张表改写的老 widget」，
+不是给你调风格用的配置项。两条路各跑各的：留在宿主 realm 时 `ctx.dom` / `onLayout` / `onCanvas`
+**是 undefined**，照契约写的 widget 会白屏。
 哪个 realm 在跑可以从插槽壳上看：`div[data-plugin-id="<id>"]` 的 `data-widget-realm` 是 `host` 还是 `worker`。
 
 进 Worker 之后 `ctx` 多三个键，写代码时按「只有这一面」来写：

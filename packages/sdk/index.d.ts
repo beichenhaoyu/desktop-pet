@@ -249,10 +249,10 @@ export interface WidgetContext {
    * 宠物窗的 PluginContext 里根本没有这个键。 */
   host?: { agentHooks: AgentHooksApi };
   /**
-   * 阶段二渲染契约的三个键，**只在 Worker 路线存在**（插件 id 在 `WIDGET_WORKER_MIGRATED`
-   * 台账里，或被开发态点名 `host:widget-worker-plugin-host`）。
-   * 宿主 realm 路线里它们是 undefined —— 所以「写了 `ctx.dom` 但还没进台账」等于这个 widget 白屏，
-   * 改写源码与把 id 记进台账必须同一次落地（台账由宿主维护，插件作者不用管）。
+   * 阶段二渲染契约的三个键：widget **默认就跑在 Worker 路线**，所以正常情况下三个都有。
+   * 唯一拿不到的情况是宿主把该插件点名进了「留在宿主 realm」的例外名单
+   * （`localStorage` 的 `host:widget-realm-plugin-host`，给还没照契约写的第三方 widget 留的逃生门）。
+   * 在那条路上它们是 undefined，照契约写的 widget 会白屏 —— 所以点名是排障手段，不是配置项。
    */
   dom?: WidgetDom;
   /** 对应旧代码的 `window.addEventListener("resize", …)`；返回退订函数 */

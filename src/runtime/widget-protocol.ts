@@ -261,36 +261,17 @@ export const isWidgetCallAllowed = (method: unknown, region: string): boolean =>
   !(method.startsWith("agentHooks.") && region !== "settings");
 
 /**
- * 第二阶段的 opt-in 标记：写在 `localStorage` 里的一份逗号分隔插件 id 名单。
- * 与阶段一的 `host:realm-plugin-host` 方向相反 —— 那次是「默认进 Worker、点名留宿主」，
- * 这次是「默认留宿主、点名进 Worker」，因为四个插件的 widget 还在直接写 `document.*`，
- * 默认一翻就是四片白屏。
- */
-export const WIDGET_WORKER_FLAG = "host:widget-worker-plugin-host";
-
-/**
- * 迁移台账：改成渲染契约写法的插件把 id 加进这里，对真实用户就无条件走 Worker。
+ * 阶段二收口后的开关：**默认进 Worker**，`localStorage` 里那份逗号分隔 id 是**留在宿主 realm 的例外名单**
+ * （与阶段一的 `host:realm-plugin-host` 同向、同命名法）。
  *
- * 为什么名单在代码里而不是只靠上面那个 localStorage 开关：那个开关是开发态的，换一台机器就没了，
- * 而改完的 widget 用 `ctx.dom` 写的，在宿主 realm 里跑必然白屏 ——「迁完但默认还在宿主」这个中间态
- * 根本不存在。所以一片迁移落地就得当场记账，全部记完再由收口片翻默认、删名单。
- * 名单由 PM 在验收每张迁移卡时追加，执行者不许自己改这一处（四张卡都要动它就成了串行点）。
+ * 为什么不复用迁移期那个 widget 点名键：它的意思是「点名**进** Worker」，
+ * 翻默认之后同一把键义正好相反 —— 一个键两种语义，迟早有人按旧义去点。换名字是便宜的，
+ * 读错一次开关的排查成本不是。
  */
-export const WIDGET_WORKER_MIGRATED: readonly string[] = [
-  "com.pet.agent-bridge",
-  "com.pet.todo",
-  "com.pet.hr-ble",
-  "com.pet.astock",
-];
+export const WIDGET_HOST_REALM_FLAG = "host:widget-realm-plugin-host";
 
-/** 进不进 Worker：迁移台账 ∪ 开发态点名。台账形参只为离线单测能压到「命中台账」这一支。 */
-export const widgetUsesWorker = (
-  pluginId: string,
-  raw: string | null | undefined,
-  migrated: readonly string[] = WIDGET_WORKER_MIGRATED,
-): boolean => migrated.includes(pluginId) || shouldUseWorkerWidget(pluginId, raw);
-
-export function shouldUseWorkerWidget(pluginId: string, raw: string | null | undefined): boolean {
+/** 点名留在宿主 realm（迁移期的例外通道：某个第三方 widget 还没照契约写时的临时出路）。 */
+export function isWidgetPinnedToHostRealm(pluginId: string, raw: string | null | undefined): boolean {
   if (!raw) return false;
   return raw
     .split(",")
@@ -298,6 +279,15 @@ export function shouldUseWorkerWidget(pluginId: string, raw: string | null | und
     .filter(Boolean)
     .includes(pluginId);
 }
+
+/**
+ * 走不走 Worker：**默认走**，只有点名的例外留在宿主 realm。
+ * 迁移期那份代码台账已经删掉 —— 四个示例插件都照契约改完、
+ * 各自有运行时套件的 realm 戳断言钉住；例外名单现在只服务一种情况：
+ * 第三方 widget 还没照契约写。它是逃生门，不是主路。
+ */
+export const widgetUsesWorker = (pluginId: string, raw: string | null | undefined): boolean =>
+  !isWidgetPinnedToHostRealm(pluginId, raw);
 
 /* ============ 校验器（宿主侧 apply 之前必须逐条过） ============ */
 

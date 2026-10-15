@@ -99,7 +99,7 @@ try {
     25_000,
   ));
   r.check(
-    "badge 插槽的 realm 戳是 worker（todo 在迁移台账里）",
+    "badge 插槽的 realm 戳是 worker（默认路线）",
     "worker",
     (await waitWidgetRealm(c, PID, "badge", "worker", 20_000)).actual,
   );
