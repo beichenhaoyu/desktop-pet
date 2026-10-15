@@ -40,28 +40,54 @@ const invoke = (c) => hostInvoke(c);
  * close 必须走真实关窗路径（plugin:window|close 才会触发 Rust 的 CloseRequested；
  * CDP 的 Page.close 绕过它），且不能 await 其响应 —— 关闭会先拆掉发起调用的 webview。
  */
-async function driveConsent(how) {
-  const target = await waitForPage(PORT, (t) => /consent/.test(t.url), 15_000);
-  const cs = await attach(PORT, (t) => t.webSocketDebuggerUrl === target.webSocketDebuggerUrl, 10_000);
-  try {
-    const seen = {
-      caps: await cs.ev(`[...document.querySelectorAll('#cap-list li')].map(li => li.textContent)`),
-      name: await cs.ev(`document.getElementById('plugin-name')?.textContent ?? ''`),
-      label: await cs.ev(`window.__TAURI_INTERNALS__.metadata.currentWindow.label`),
-    };
-    if (how === "allow") {
-      await cs.ev(`document.getElementById('btn-allow').click()`);
-    } else if (how === "deny") {
-      await cs.ev(`document.getElementById('btn-deny').click()`);
-    } else {
-      await cs.ev(
-        `(() => { window.__TAURI_INTERNALS__.invoke('plugin:window|close', { label: ${JSON.stringify(seen.label)} }); return true; })()`,
-      );
+/**
+ * 应答同意框，且**只点我们正要问的那个插件的框**。
+ *
+ * 为什么必须按名字挑：同意框是跨套件残留的state —— 上一轮套件（例如 verify:worker 收尾）
+ * 撤销了某个「仍在启用清单里」的插件的授权，下一个实例一 boot 它就弹框并一直挂着。
+ * 旧写法 `waitForPage(/consent/)` 抓到谁点谁，于是本套件的「同意框列出了 storage」读到别人的能力表，
+ * 整组假红（实测一次 13 条）。别人的框留给宿主自己的 60 秒超时处理，不去替它作答。
+ */
+async function driveConsent(how, wantId = "") {
+  const deadline = Date.now() + 20_000;
+  let others = 0;
+  while (Date.now() < deadline) {
+    const pages = (await listPages(PORT).catch(() => [])).filter((t) => /consent/.test(t.url));
+    for (const target of pages) {
+      let cs = null;
+      try {
+        cs = await attach(PORT, (t) => t.webSocketDebuggerUrl === target.webSocketDebuggerUrl, 8_000);
+        const name = await cs.ev(`document.getElementById('plugin-name')?.textContent ?? ''`);
+        if (wantId && !name.includes(wantId)) {
+          others += 1;
+          cs.close();
+          cs = null;
+          continue;
+        }
+        const seen = {
+          caps: await cs.ev(`[...document.querySelectorAll('#cap-list li')].map(li => li.textContent)`),
+          name,
+          label: await cs.ev(`window.__TAURI_INTERNALS__.metadata.currentWindow.label`),
+        };
+        if (how === "allow") {
+          await cs.ev(`document.getElementById('btn-allow').click()`);
+        } else if (how === "deny") {
+          await cs.ev(`document.getElementById('btn-deny').click()`);
+        } else {
+          await cs.ev(
+            `(() => { window.__TAURI_INTERNALS__.invoke('plugin:window|close', { label: ${JSON.stringify(seen.label)} }); return true; })()`,
+          );
+        }
+        return seen;
+      } finally {
+        cs?.close();
+      }
     }
-    return seen;
-  } finally {
-    cs.close();
+    await sleep(400);
   }
+  throw new Error(
+    `20 秒内没等到 ${wantId ? `「${wantId}」的` : ""}同意框（场上别人的框累计扫到 ${others} 个，按名字跳过没点）`,
+  );
 }
 
 const isPetPage = (t) => /localhost:1420\/(src\/)?index\.html$/.test(t.url);
@@ -149,7 +175,7 @@ async function grantProbeCap(capability) {
     capabilities: [capability],
   }).catch(() => undefined);
   try {
-    const consent = await driveConsent("allow");
+    const consent = await driveConsent("allow", PROBE_ID);
     r.check(`同意框列出了 ${capability}`, true, consent.caps.includes(capability));
   } catch (err) {
     console.log(`     没能操作 ${capability} 的同意框: ` + String(err?.message ?? err).split("\n")[0]);
@@ -581,7 +607,7 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
   );
   let consentClosed = false;
   try {
-    const consent = await driveConsent("close");
+    const consent = await driveConsent("close", HR);
     r.check("同意框列出了待授权能力", true, consent.caps.length >= 1);
     r.check("关的是同意框自己的窗口", true, consent.label.startsWith("consent-"));
     consentClosed = true;
@@ -603,7 +629,7 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
       `window.__TAURI_INTERNALS__.invoke('permission_request', { pluginId: ${JSON.stringify(HR)}, pluginName: ${JSON.stringify(hrManifest.name)}, capabilities: ${JSON.stringify(hrManifest.permissions)} })`,
     );
     try {
-      const again = await driveConsent("allow");
+      const again = await driveConsent("allow", HR);
       r.check("重新弹出的同意框带插件名", true, again.name.includes("心率"));
     } catch (err) {
       console.log("     还原授权失败: " + String(err?.message ?? err).split("\n")[0]);
@@ -753,7 +779,7 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
       .ev(`window.__TAURI_INTERNALS__.invoke('permission_request', { pluginId: ${JSON.stringify(id)}, pluginName: ${JSON.stringify(OWNER_NAME[id])}, capabilities: ['overlay'] })`)
       .catch(() => undefined);
     try {
-      await driveConsent("allow");
+      await driveConsent("allow", id);
     } catch (err) {
       console.log(`     没能操作 ${id} 的 overlay 同意框: ` + String(err?.message ?? err).split("\n")[0]);
     }
@@ -842,7 +868,7 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
         .ev(`window.__TAURI_INTERNALS__.invoke('permission_request', { pluginId: ${JSON.stringify(id)}, pluginName: ${JSON.stringify(OWNER_NAME[id])}, capabilities: ${JSON.stringify(ownerBackup[id].prior)} })`)
         .catch(() => undefined);
       try {
-        await driveConsent("allow");
+        await driveConsent("allow", id);
       } catch (err) {
         console.log(`     还原 ${id} 授权时没能操作同意框: ` + String(err?.message ?? err).split("\n")[0]);
       }
@@ -882,7 +908,7 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
     .catch((e) => "ERR " + e);
   let granted = false;
   try {
-    const consent = await driveConsent("allow");
+    const consent = await driveConsent("allow", NET_ID);
     r.check("http:<host> 视为被 http 覆盖（弹框而非报未声明）", true, consent.caps.some((x) => x.includes("localhost")));
     granted = await grant;
   } catch (err) {
@@ -911,7 +937,7 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
     `window.__TAURI_INTERNALS__.invoke('permission_request', { pluginId: ${JSON.stringify(NET_ID)}, pluginName: '网络探针', capabilities: ['http', 'http:example.com'] })`,
   );
   try {
-    await driveConsent("allow");
+    await driveConsent("allow", NET_ID);
   } catch (err) {
     console.log("     没能操作 example.com 的同意框: " + String(err?.message ?? err).split("\n")[0]);
   }
@@ -1505,7 +1531,7 @@ export function unmount() {}
     writeFileSync(join(hookDir, "manifest.json"), hookManifest(["agent:hooks"]));
     await sleep(500);
     const pendingDeny = sc.ev(`window.__hookProbes.settings.call("status")`);
-    const consentDeny = await driveConsent("deny");
+    const consentDeny = await driveConsent("deny", PROBE_ID);
     r.check("同意框列出了 agent:hooks", true, consentDeny.caps.some((x) => x.includes("agent:hooks")));
     // 同意框标题是既有文案 `${plugin_name}（${plugin_id}）`（consent/main.ts:34），断言整串
     r.check("同意框显示的是探针插件名（既有文案含 id）", "钩子能力探针（zz.probe）", consentDeny.name);
@@ -1513,7 +1539,7 @@ export function unmount() {}
     r.check("拒绝后调用被拒（默认拒绝语义）", true, denied.ok === false && /权限被拒绝/.test(denied.e));
 
     const pendingAllow = sc.ev(`window.__hookProbes.settings.call("status")`);
-    const consentAllow = await driveConsent("allow");
+    const consentAllow = await driveConsent("allow", PROBE_ID);
     r.check("拒绝没留下授权（第二次调用仍弹框）", true, consentAllow.caps.some((x) => x.includes("agent:hooks")));
     const allowed = await pendingAllow;
     r.check("同意后 settings 区调用放行", true, allowed.ok === true);
