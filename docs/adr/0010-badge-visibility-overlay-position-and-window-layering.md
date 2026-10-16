@@ -38,7 +38,7 @@ L2 把 widget 搬进 Worker 之后，「UI 面归谁」这件事只剩一半答�
    - 「一个插件设了多个徽标内容」是**插件在自己的 badge widget 内轮**；宿主只轮「哪个插件可见」。两层分工不合并。
    被否的另一面：**内容通道**（插件调 `ctx.badge.push(items)`、宿主渲染）。它能让断言面只有一个节点，
    但要把 `WidgetRegion` 从三值缩成两值、四个插件的 badge 代码删掉、SDK 与 §5.1 与 `unit:migrate` 的 REGIONS 全改，
-   而且等于**推翻刚落地还没对外验证的 L2 契约**。可见性仲裁在插件侧零改动就能满足需求，故选它。
+   而且等于**推翻刚落地还没对外验证的 L2 契约**。可见性仲裁不碰契约就能满足需求，故选它（插件侧并非零改动：空态要不渲染，见「落地口径」第 1 条）。
 2. **overlay：保持「每插件最多一扇」，不引入租约与共享窗。**
    用户改口后这条大幅缩水：宿主**不**仲裁、**不**限制数量、**不**提供位置。今天就是每插件一扇
    （label `overlay-<插件 id>`），保持不变。
@@ -60,6 +60,38 @@ L2 把 widget 搬进 Worker 之后，「UI 面归谁」这件事只剩一半答�
    (c) overlay 不置顶（语义最省，但会被第三方程序盖住，多半不是要的观感）。
 6. **两个插件的去向**：agent 桥的头顶会话卡**并入 B3**（它本来就是"节点状态"的另一种表达，
    而 A9b 已打算去掉会话状态卡）；待办的桌面卡片**走插件自定坐标**。
+
+## 落地口径（2026-10-16 可行性评估补，main `6e3bd2f`）
+
+决策本身不变；下面四处是照现场代码核对后，开工前必须先定下来的东西。
+
+1. **「徽标有内容」的判据 = 插槽外壳的布局尺寸非零。**
+   现场四个 badge 不管有没有数据都画一个框（hr-ble 没连设备时是 `♥ -- BPM`，todo、agent-bridge 是常驻的
+   inline-flex 小框），宿主从外面分不出「没内容」，「全无内容就隐藏整区」落不了地。所以：
+   - 插件在**没数据时不渲染**（或渲染成零尺寸）—— 四个自带插件各改几行；第三方插件不改的话，就只是一直算作「有内容」，不会出错；
+   - 宿主用 `ResizeObserver` 盯每个插槽的外壳（closed shadow 不影响量外壳）；
+   - 轮不到的格子用 `visibility:hidden` + `position:absolute` 藏起来，**不要用 `display:none`**，否则量出来恒为 0，判据就失效了；
+   - tick 抽成纯函数：输入是（启用序、各格尺寸是否非零、是否全屏、拍号），输出是（当前格、整区是否隐藏），单测只喂假拍子。
+     启用序直接复用 `plugin-runtime.ts` 已经在读的 `plugin_enabled_list` 和已经在听的 `host:enabled-changed`。
+2. **删掉跟随线程时，死条目清理要挪走。** `start_follow_timer` 除了让卡片跟着宠物走，
+   还兼做注册表的 `retain` 清理（窗没了、意愿也收了的条目）。整段删掉的话，这段清理要挪到 `overlay_hide` /
+   `overlay_destroy` 和 overlay 窗的关闭事件里，并补一条单测，否则表会只增不减。
+3. **`overlay.show({ x, y, height })` 的坐标口径：**
+   - 对外一律用**逻辑像素**（现场是混着的：建窗时 `.position(24,24)` 走逻辑像素，`set_position` 走物理像素，到了高 DPI 加多屏就会偏）；
+   - 夹紧时用「这个点所在的显示器」的工作区，找不到就用主屏；宽度 320 和 `clamp_height` 一起夹进去；夹紧写成纯函数，照 ADR-0005 钉住；
+   - 不传 `x/y` 时由宿主给缺省值，沿用现在的左上角 24,24。插件第一次显示时不知道屏幕多大，不能指望它自己给出合理的坐标；
+   - `placement` 在过渡期**接受但忽略**，传 `above-pet` 时打一条 `console.warn`，**不报错**。做法与 apiVersion 2 一样：第三方老插件不能一升级就坏掉。
+4. **z 序先走路线 (b)**：`SetWindowPos(overlay, insertAfter = 宠物 HWND, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)`，
+   只动 overlay、不抢焦点；`windows` 0.62 已经开了 `Win32_UI_WindowsAndMessaging`，HWND 用 tauri 的 `hwnd()` 拿。**重放点**有两个：
+   - `apply_visibility` 里 `win.show()` 之后：show 会把窗口抬到 topmost 层最上面；
+   - `set_pet_hidden(false)` 恢复之后：现场是先 `pet.show()`，再由 `set_suppressed(false)` 把 overlay 显示出来，
+     按这个顺序 overlay 又会压回宠物上面。
+   overlay 建窗时设了 `set_ignore_cursor_events(true)`，用户点不到它，所以不会因为点击被抬到前面。
+   路线 (a) 要看 tao 的 `set_always_on_top` 重复调用时会不会重新排序，没有把握，先不试。
+   验收照决策 5，只认 `tools/win-zorder.ps1`。
+
+**建议顺序**：z 序（独立、风险最低，先把对外承诺立住）→ 徽标 → overlay 坐标（对外契约变更，和 B3 的范围重划放在一起做）。
+**工时粗估**：徽标 1–1.5 天；overlay 改坐标、删头顶档、两个插件迁移 1.5–2 天；z 序加验收 0.5–1 天；套件断言与 SDK/文档约 1 天，合计约 4–5.5 天。
 
 ## 后果
 
