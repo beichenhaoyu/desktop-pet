@@ -95,6 +95,8 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
 }
 
 let c = null;
+/** 开跑前存储里的开关原值（null = 从没设过）；finally 里按它复原 */
+let origGameMode = null;
 try {
   await waitForPage(PORT, isPetPage, 60_000);
 } catch {
@@ -107,7 +109,15 @@ try {
   const invoke = hostInvoke(c);
   const token = `game-${Date.now()}`;
   await c.ev(`window.__verifyToken = ${JSON.stringify(token)}; true`);
-  const origGameMode = await c.ev(`localStorage.getItem(${JSON.stringify(GAME_KEY)}) ?? '1'`);
+  origGameMode = await c.ev(`localStorage.getItem(${JSON.stringify(GAME_KEY)})`);
+  // 存储里是「关」时，「默认开」整组会连锁假红（run 38831664667：传感没起，检测器全是空快照）。
+  // 来源可能是用户真关了，也可能是上一跑的复原写入没落盘：WebView2 的 localStorage 约 5 秒批量提交，
+  // 实例被收尾步骤硬杀时，「关」已提交、随后的「复原为开」还在内存里。这里先如实记下，再临时打开跑本轮。
+  if (origGameMode === "0") {
+    r.info("开跑前存储里游戏模式是关", "可能是用户设置，也可能是上一跑残留；本跑临时打开，结束时复原");
+    await c.ev(`localStorage.setItem(${JSON.stringify(GAME_KEY)}, '1'); true`);
+    await invoke("fullscreen_watch_set", { enabled: true });
+  }
 
   // 「还在忙」的观测点用 requestAnimationFrame：主循环每帧都会再调一次全局 rAF，
   // 所以运行中替换全局函数就能数到真实帧数。
@@ -237,7 +247,7 @@ try {
   await sleep(5000); // 给检测足够时间：还会隐身的话这会儿已经隐了
   await reportProbe("开关关闭时");
   r.check("开关关着时全屏不影响显示", true, await waitPetVisible(true, 4_000));
-  await c.ev(`localStorage.setItem(${JSON.stringify(GAME_KEY)}, ${JSON.stringify(origGameMode)}); true`);
+  await c.ev(`localStorage.setItem(${JSON.stringify(GAME_KEY)}, '1'); true`);
   const on = await invoke("fullscreen_watch_set", { enabled: true });
   r.check("传感已恢复", true, on.ok && on.v === true);
   cover2.kill();
@@ -265,7 +275,18 @@ try {
     /* 目录不在就是宿主没起来，无所谓 */
   }
   if (c) {
-    await hostInvoke(c)("fullscreen_watch_set", { enabled: true }).catch(() => undefined);
+    // 复原开跑前的开关（存储与传感一致），再留够 WebView2 把 localStorage 落盘的时间（约 5 秒批量提交），
+    // 否则收尾步骤一杀实例，复原就丢了，下一跑会从「关」开始
+    const restoreOn = origGameMode !== "0";
+    await c
+      .ev(
+        origGameMode === null
+          ? `localStorage.removeItem(${JSON.stringify(GAME_KEY)}); true`
+          : `localStorage.setItem(${JSON.stringify(GAME_KEY)}, ${JSON.stringify(origGameMode)}); true`,
+      )
+      .catch(() => undefined);
+    await hostInvoke(c)("fullscreen_watch_set", { enabled: restoreOn }).catch(() => undefined);
+    await sleep(6500);
     await reloadAndWait(c).catch(() => undefined); // 换新文档，别把本跑的输出留给下一次 attach
     await sleep(1200);
   }
