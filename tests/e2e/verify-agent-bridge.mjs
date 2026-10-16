@@ -486,7 +486,7 @@ try {
   r.check("会话进行中悬浮卡可见", true, await overlayVisible(true));
   r.check("卡片 widget 挂进 overlay 区", true, await overlayMounted());
 
-  r.group("两扇悬浮窗互不抢占：左上角波形与头顶卡片可以同时存在");
+  r.group("两扇悬浮窗互不抢占：按各自请求的坐标同时存在");
   const HR_ID = "com.pet.hr-ble";
   const HR_LABEL = overlayLabelFor(HR_ID);
   // 直接打宿主命令：验的是「窗口按插件分开」这条宿主规则本身，不依赖蓝牙硬件。
@@ -505,7 +505,7 @@ try {
     if (!overlayGranted) await sleep(500);
   }
   r.check("心率插件经同意框拿到 overlay 授权", true, overlayGranted);
-  await invoke("overlay_show", { pluginId: HR_ID, placement: "corner", height: 200 });
+  await invoke("overlay_show", { pluginId: HR_ID, x: 24, y: 24, height: 200 });
   r.check(
     "两张卡片同时可见",
     true,
@@ -519,8 +519,26 @@ try {
       12_000,
     ),
   );
+  // ADR-0010 决策 3：「宠物头顶」那一档已删。agent 桥的插件此刻仍在传 placement:"above-pet"，
+  // 宿主接受并忽略 —— 落点回到缺省 (24,24)。这条钉的是「废弃但不报错、也不再把窗抬到头顶」。
+  const dpr = Number(await c.ev("window.devicePixelRatio")) || 1;
+  const posAgentLegacy = await invoke("plugin:window|outer_position", { label: OVERLAY_LABEL });
+  r.check(
+    "传 above-pet 只落回宿主缺省坐标（头顶档已废弃）",
+    true,
+    Math.abs((posAgentLegacy.v?.x ?? 1e9) - 24 * dpr) <= 6 &&
+      Math.abs((posAgentLegacy.v?.y ?? 1e9) - 24 * dpr) <= 6,
+  );
+  // 同一扇**已存在**的窗再 show 一次并带新坐标：钉 U01 补的「已存在窗也要按新坐标重定位」，
+  // 否则「插件改了位置再显示」只在第一次建窗生效
+  await invoke("overlay_show", { pluginId: AGENT_ID, x: 520, y: 260, height: 104 });
   const posAgent = await invoke("plugin:window|outer_position", { label: OVERLAY_LABEL });
   const posHr = await invoke("plugin:window|outer_position", { label: HR_LABEL });
+  r.check(
+    "已存在的窗按新请求坐标重定位（outer_position 是物理像素，按 dpr 换算）",
+    true,
+    Math.abs((posAgent.v?.x ?? 1e9) - 520 * dpr) <= 6 && Math.abs((posAgent.v?.y ?? 1e9) - 260 * dpr) <= 6,
+  );
   r.check("心率那扇留在桌面左上角", true, (posHr.v?.x ?? 1e9) < 150 && (posHr.v?.y ?? 1e9) < 150);
   r.check(
     "两扇窗的位置不是同一个点",
@@ -529,14 +547,13 @@ try {
   );
   await invoke("overlay_destroy", { pluginId: HR_ID });
   r.check("销毁只收掉那一扇，状态卡不受影响", true, await overlayVisible(true, 8_000));
-  // 位置用 window.screenX/outerHeight 比较：两个窗都在同一 DPI 下，且不需要额外 capability
-  const petGeo = await c.ev(`[window.screenX, window.screenY, window.outerWidth, window.outerHeight]`);
+  // 页面侧再对一次坐标：window.screenX/screenY 是 CSS（逻辑）像素，与上面那条物理像素的
+  // outer_position 互为独立证据（同一 DPI 前提下不需要额外 capability）
   const cardGeo = await withOverlayPage((oc) => oc.ev(`[window.screenX, window.screenY, window.outerWidth, window.outerHeight]`));
-  const centered = cardGeo && Math.abs(cardGeo[0] + cardGeo[2] / 2 - (petGeo[0] + petGeo[2] / 2)) < 60;
   r.check(
-    "卡片贴在宠物正上方（而不是左上角）",
+    "卡片按请求坐标落座（头顶档删了，逻辑像素不经换算就是 screenX/screenY）",
     true,
-    !!cardGeo && cardGeo[1] + cardGeo[3] <= petGeo[1] + 4 && centered,
+    !!cardGeo && Math.abs(cardGeo[0] - 520) <= 6 && Math.abs(cardGeo[1] - 260) <= 6,
   );
   r.check("卡片宽度明显小于左上角整屏", true, !!cardGeo && cardGeo[2] <= 360);
 
