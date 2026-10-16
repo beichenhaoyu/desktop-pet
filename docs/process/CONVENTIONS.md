@@ -107,7 +107,7 @@
   **污染源也包括主会话自己**（2026-10-15 取证到手）：这台机器装了全局 Qoder hook，我每调一次工具就往共享 inbox 写一条 `session_id` 是主会话的 pre/post —— 而 `PET_AGENT_CONFIG_FILES` **只重定向 hook 配置文件，不重定向 inbox**。同一条 `npm run verify:agent`：一边跑一边在会话里干活 **71 passed / 6 failed**，什么都不做等它跑完 **77/0**。
   **这条已经有隔离入口了（`d4f627f`）**：`PET_AGENT_INBOX` 覆盖收件目录，hook 分支、watcher、套件三处按同一规则取，
   `e2e.yml` 把它指到 `temp\agent-inbox`；**不设这个变量时行为与以前一样**，所以手动复演不带它时这条坑仍然成立。所以这套件的复演必须「发出去就别碰任何东西」；判据仍是同环境重跑两次，不是把断言改松。**现在有了隔离入口 `PET_AGENT_INBOX`**（2026-10-16）：宿主实例与 `verify:agent` 都带同一个目录（如 `<仓库>\temp\agent-inbox`），全局 hook 不带它、照旧写默认 inbox，两边不再串；`e2e.yml` 的 job env 已设。本机复演不带这个变量时退回旧行为，上面那条照旧成立。
-- **CDP 运行时套件的 CI 通路是 `.github/workflows/e2e.yml`：`workflow_dispatch` 手动触发，白名单只有 `verify` / `verify:agent` / `verify:worker` / `verify:todo`（清单 A3，2026-10-15 写）**。其余套件各有一条不能进自动门的理由：`verify:game` 是全屏置顶窗 + 定时器（桌面堆风险，见上面那条）、`verify:release` 自占 9224 还要再编一次、`verify:astock|http|skin` 出网且数据形态随时段漂。两条形状要求：起实例前先 `npx tauri build --debug --no-bundle` 编一遍，**把编译时间挡在 `tools/wait-cdp.mjs` 的就绪等待之外**（否则那个超时看着像「webview 起不来」，其实根本没轮到它）；`verify:agent` 的写盘组要求实例带 `PET_AGENT_CONFIG_FILES`（`;` 分隔的两个路径，落在 `<仓库>/temp/a9a/`，**文件由套件自己写**），不带就是 `54 passed / 1 failed` 那种假红。本机按那几步原样复演过：等待脚本正负两支都实测（活实例上 `READY` 退 0；对着空端口 `TIMEOUT` 退 1）、`verify` **270/0**、`verify:agent` **77/0**（就是上面那条并发坑——发出去之后别再碰任何东西）。**这条门已证明跑绿：run 38776535438（2026-10-16，开发机自托管 runner CHEN，跑了 verify + verify:agent）**，
+- **CDP 运行时套件的 CI 通路是 `.github/workflows/e2e.yml`：`workflow_dispatch` 手动触发，白名单是 `verify` / `verify:agent` / `verify:worker` / `verify:todo` / `verify:game`（清单 A3，2026-10-15 写；`verify:game` 于 2026-10-16 `ee533f8` 加入，只在点名时跑，不进默认清单）**。其余套件各有一条不能进默认清单的理由：`verify:game` 是全屏置顶窗 + 定时器（桌面堆风险，见上面那条）、`verify:release` 自占 9224 还要再编一次、`verify:astock|http|skin` 出网且数据形态随时段漂。两条形状要求：起实例前先 `npx tauri build --debug --no-bundle` 编一遍，**把编译时间挡在 `tools/wait-cdp.mjs` 的就绪等待之外**（否则那个超时看着像「webview 起不来」，其实根本没轮到它）；`verify:agent` 的写盘组要求实例带 `PET_AGENT_CONFIG_FILES`（`;` 分隔的两个路径，落在 `<仓库>/temp/a9a/`，**文件由套件自己写**），不带就是 `54 passed / 1 failed` 那种假红。本机按那几步原样复演过：等待脚本正负两支都实测（活实例上 `READY` 退 0；对着空端口 `TIMEOUT` 退 1）、`verify` **270/0**、`verify:agent` **77/0**（就是上面那条并发坑——发出去之后别再碰任何东西）。**这条门已证明跑绿：run 38776535438（2026-10-16，开发机自托管 runner CHEN，跑了 verify + verify:agent）**，
   而**托管 windows-latest 已被证否**（run 38757735230：编译与起 dev 都过，之后每个进程以
   `-1073741502 = 0xC0000142`（DLL 初始化失败）退出，套件一条没跑 —— 服务会话撑不起 WebView2）。
   由此三条约束别图省事改掉：runner 标签 `desktop-pet-e2e` 只给这条工作流用（`ci.yml` 留在托管，PR/fork 不会落到开发机）；
@@ -116,6 +116,10 @@
   自托管还去掉了 `setup-node` / `actions/cache`（开发机上卡 20 分钟，run 38759736236），改为校验本机 Node 24；
   run 块写**纯 ASCII**（Windows PowerShell 5.1 按 GBK 读无 BOM 的临时脚本会解析失败，run 38773272057）；
   `verify:agent` 的收件目录用 `PET_AGENT_INBOX` 指到 `temp\agent-inbox`，全局 Qoder hook 不再串进来。
+  **隔离已在 runner 上实证（2026-10-16）**：run 38832924368 跑 `verify:agent` 时 Qoder 一直在调工具，结果 **77/0**（以前同样的情形是 71/6）。
+  **`verify:game` 在这条门上跑绿**：run 38832007396 **15/0**（runner chen_work）。之前两次红都是套件的问题，不是被测行为的回归：
+  ① 套件探针写到默认 inbox，没读 `PET_AGENT_INBOX`，宿主收不到（`462663c`）；
+  ② 「关掉开关」那组写 `localStorage` 后紧接着复原，WebView2 大约 5 秒才批量落盘，收尾步骤一硬杀，「关」落了盘、复原的那次写入丢了，下一跑从传感关闭开始，连锁 4 条假红（`c1184ad`：开跑前发现是关就临时打开，收尾时复原原值后等 6.5 秒）。
 - **CI 的 node 必须与本仓开发机同大版本（2026-10-15 实测）**：`ci.yml` 曾钉 `node-version: '22'`，
   run #10（2026-10-14 17:12，node 22.23.3）挂在第 9 步 `npm run unit`，报
   `Unable to deserialize cloned data due to invalid or unsupported version.`，`failureType: 'uncaughtException'`，
