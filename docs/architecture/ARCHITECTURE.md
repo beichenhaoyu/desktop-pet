@@ -78,7 +78,7 @@
 │   │   │   └── skins/          # Petdex 图集下载/解析/磁盘布局 + petskin:// 协议
 │   │   └── window/             # 窗口层
 │   │       ├── pet.rs          # 宠物窗：透明/置顶/拖拽/点击穿透
-│   │       ├── overlay.rs      # 悬浮窗：按插件各开一扇（标签 overlay-<id>）
+│   │       ├── overlay.rs      # 悬浮窗：按插件各开一扇（标签 overlay-<id>）、位置由插件直传逻辑像素宿主只夹紧、每次 show 后重放「本体压住 overlay」的层内次序
 │   │       └── tray.rs         # 托盘菜单
 │   └── tauri.conf.json         # 窗口、权限与插件配置
 ├── src/                        # WebView 前端（TypeScript + Vite，不引重框架）
@@ -91,7 +91,7 @@
 │   ├── styles.css              # 页面通用样式
 │   ├── vite-env.d.ts           # Vite 类型声明
 │   ├── pet/                    # 宠物本体：图集切片与九状态规格 + 播放器 + 状态机 + 皮肤解析 + 点击穿透/台词/游戏模式
-│   ├── runtime/                # 插件运行时：发现与启停 + 能力桥 + 事件总线与 topic 归属 + widget 宿主
+│   ├── runtime/                # 插件运行时：发现与启停 + 能力桥 + 事件总线与 topic 归属 + widget 宿主（含徽标可见性仲裁：同一时刻只显一个、5 秒按启用清单序轮）
 │   ├── settings/               # 设置窗：侧栏导航 + 插件页壳 + 形象/快捷键/自启/游戏模式分节
 │   ├── overlay/                # 悬浮窗页：每扇只挂自己那个插件的 overlay widget
 │   └── consent/                # 同意框页：展示插件身份与申请的能力

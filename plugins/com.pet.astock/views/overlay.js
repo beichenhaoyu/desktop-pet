@@ -1,7 +1,7 @@
 import { addStyle, clockOf, fmtPct, fmtPrice, PHASE_TEXT, tag, text, toneOf } from "./dom.js";
 import { watchView } from "./watch.js";
 
-/* ================= overlay：桌面左上角盯盘卡 ================= */
+/* ================= overlay：桌面盯盘卡（位置由插件自己给） ================= */
 
 export function mountOverlay(root, ctx, cleanups) {
   const dom = ctx.dom;

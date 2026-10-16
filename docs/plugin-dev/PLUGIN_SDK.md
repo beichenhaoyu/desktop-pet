@@ -27,7 +27,7 @@ plugins/
 | `entry` | 是 | `^[\w.-]+\.js$`，不能带路径分隔符 |
 | `widget` | 否 | 同上 |
 | `permissions` | 否 | 能力名数组，见第 3 节 |
-| `apiVersion` | 否 | 整数，缺省 1；宿主认识 `1`、`2`。**带 `widget` 的插件要写 `2`**，表示 widget 照第 5.1 节的渲染契约写 —— 仍是 1 的 widget 不会进 Worker，插槽里显示迁移提示 |
+| `apiVersion` | 否 | 整数，缺省 1；宿主认识 `1`、`2`。**带 `widget` 的插件要写 `2`**，表示 widget 照第 5.1 节的渲染契约写 —— 仍是 1 的 widget 不会进 Worker，插槽里显示迁移提示。**这把旋钮只管 widget 的渲染契约**：overlay 的位置参数（§3）与徽标可见性仲裁（§5.2）都**不需要**动 `apiVersion`，前者是可选新增、后者不影响你的代码 |
 | `minHostVersion` | 否 | 三段以内数字版本，高于当前宿主时拒绝加载 |
 
 ## 2. 生命周期
@@ -68,7 +68,7 @@ export async function deactivate() { /* 停用/移除时调用 */ }
 | `ble:scan` | `ctx.ble.startScan/stopScan` | 蓝牙扫描 | — |
 | `ble:connect` | `ctx.ble.connect/disconnect/connectedDevice` | 连接与订阅通知 | — |
 | `widget` | `ctx.widget.update` | 向自己的 widget 推数据（走 `<id>:widget` topic） | — |
-| `overlay` | `ctx.overlay.show(opts?)` / `hide` / `destroy` | **本插件专属**的透明悬浮窗（窗口标签 `overlay-<你的 id>`）。`show({ placement: "above-pet", height: 104 })` 让它贴着宠物头顶并跟随拖动；不传就是桌面左上角 | — |
+| `overlay` | `ctx.overlay.show(opts?)` / `hide` / `destroy` | **本插件专属**的透明悬浮窗（窗口标签 `overlay-<你的 id>`）。`show({ x, y, height })` —— **坐标是逻辑像素、由你决定并自己存**（`ctx.storage`，宿主不记位置）；不传就落桌面 `(24,24)`。宿主只做一件事：把整块窗（含宽度 320）夹进所在显示器的工作区，所以你存错值也不会把卡存到屏外变成"打不开"。窗口已存在时再 `show()` 会按新参数**同时调整位置和高度**。旧的 `placement`（`"above-pet"` / `"corner"`）**已废弃**：传了不报错、被忽略并记一条宿主告警，卡会落在你给的坐标上（缺省就是左上角）。摆放细节见 §6 | — |
 | `http` | `ctx.http.request` | 出站请求，**按域名逐个再授权**（`http:<host>`，键不带默认端口：`https://x.com` 的键是 `x.com`）。`body` 按响应 Content-Type 的 charset 解码：目前支持 UTF-8 与 GBK/GB2312/GB18030（新浪、腾讯行情这类 GBK 接口能直接拿到中文），其余 charset 与不带 charset 的响应仍按 UTF-8 lossy 解 | 风险 |
 | `notify` | `ctx.notify.show` | 系统通知 | — |
 | `pet:react` | `ctx.pet.react` | 让宠物插播一个状态，参数只能是 petdex 的九个状态之一：`idle` `running-right` `running-left` `waving` `jumping` `failed` `waiting` `running` `review`（其余名字会被桥拒绝） | — |
@@ -133,6 +133,8 @@ export function unmount(root) { /* 用 root 找回自己那份清理表 */ }
 2. **清理表按挂载实例存，不要用模块级数组**。同一个 widget 文件会同时在 badge/overlay/settings 三个区域被挂载，模块级数组会让第一个卸载的人把别人的退订函数全清空，导致订阅永久泄漏。推荐用 `WeakMap` 以 `root` 为键。
 3. **设置面板必须回显当前配置**。面板是在别的窗口里新建的，拿不到插件的历史数据；直接渲染模板默认值会出现「配置没保存」的错觉，而且用户一动某个开关，就把面板里没显示出来的另一项一起写回默认。做法：状态每次变化都 `ctx.widget.update(当前配置)`，面板挂载时订阅 `${PID}:widget` 并据此控件。宿主会为 `*:widget` 保留最近一份、在新订阅建立时回灌一次（`bus_peek`），但**这只在你真的推送过配置之后有效**——别把它当成免写 `widget.update` 的理由。
 4. **外部数据一律走 `textContent`，绝不拼进 `innerHTML`**。BLE 广播名、HTTP 响应、其他事件 payload 都算不可信输入；Shadow DOM 不阻止 `<img onerror>` 执行。同理，不要把外部值拼进 CSS 选择器。
+5. **徽标（badge）没有内容时什么都别挂**。宿主靠"插槽外壳有没有布局尺寸"判断你这一格有没有东西，
+   画一个空框（哪怕里面只有 `--` 或一个绿点）就等于宣称"有内容"，你的空框会占用一轮轮播位。详见 §5.2。
 
 `settings` 区出现在**设置窗的插件页**里：侧栏一个插件一条，点进去之后，宿主给的是壳（插件名/版本/id/描述、启停开关、权限列表与「撤销授权」），中间那块「插件页面」整个交给你渲染。宿主不解释其内容，也不会在插件停用时保留它 —— 未启用的插件不会挂载，用户看不到你的页面时也不会挂着你的实例。想让插件页里放展示型内容（不只是表单）也完全可以，这块区域就是你的插件页。
 
@@ -169,7 +171,12 @@ widget 默认就跑在自己的模块 Worker 里：那里**没有 `window` / `do
 `value` `checked` `disabled` `readOnly` `placeholder` `type` `id` / `setAttribute` / `append` / `appendChild` /
 `replaceChildren` / `remove` / `on` / `off` / `nodeId`。没有 `children`、没有 `firstChild`、
 没有 `getBoundingClientRect`、没有 `style.cssText`。注意 `id` 有两写：写的是 DOM 的 `id` property，
-`dataset.x` 才是 `data-x` 属性 —— 迁移时 `setAttribute("id", …)` 换成 `.id = …`，别写成 `dataset.id`。词表的唯一真相是 `src/runtime/widget-protocol.ts` 那五张名单（标签 / SVG / 属性 /
+`dataset.x` 才是 `data-x` 属性 —— 迁移时 `setAttribute("id", …)` 换成 `.id = …`，别写成 `dataset.id`。
+**同一对陷阱也长在 `type` 与 `name` 上**：`type` 只在 property 表里（写 `el.type = "number"`），
+`setAttribute("type", …)` 会被宿主判非法 op 静默拒收、输入框成不了数字框；
+`name` 反过来只在 attribute 表里（radio 分组靠它），只能 `setAttribute("name", …)`。
+这两条都是实测出来的（两位执行者各撞了一次，第二次留下了 `unit:migrate` 从 18/0 掉到 17/1 的原文）。
+词表的唯一真相是 `src/runtime/widget-protocol.ts` 那五张名单（标签 / SVG / 属性 /
 样式属性 / 事件），本文只指路不抄表 —— 抄了就会漂。
 
 三条容易踩的：
@@ -187,13 +194,46 @@ widget 默认就跑在自己的模块 Worker 里：那里**没有 `window` / `do
 5. **停用钩子两个名字都认**：`unmount(root)`（宿主 realm 一直用的）与 `deactivate(root)`（Worker 侧新名），
    两个都导出时只调 `deactivate` —— 调两次等于重复退订。老插件迁进来不必改导出名。
 
+### 5.2 徽标（badge）的可见性仲裁（ADR-0010 决策 1）
+
+宠物旁边那块徽标区**同一时刻只显示一个插件的徽标**。宿主只仲裁"谁的插槽可见"，不接管内容：
+每格停 5 秒（`BADGE_ROTATE_INTERVAL_MS`），轮换顺序 = 启用清单的数组序（**不是**谁先登记的顺序 ——
+登记先后受加载竞态影响，清单序才是稳定判据）。你不需要为轮播写任何代码，也**收不到**"你被藏起来了"的通知。
+
+三条对你的写法有直接后果：
+
+1. **"有没有内容"由插槽外壳的布局尺寸判定**。所以没有内容时要**什么都不挂**，而不是挂一个空框：
+   四个自带插件过去不管有没有数据都画框，从渲染指令流里永远分不出"空"，尺寸才是宿主在外面看得见的信号。
+   各自的空态口径：待办=一条任务都没有；心率=未连接设备；Agent 桥=本次激活以来没有任何会话痕迹；盯盘=无自选或行情还没到。
+2. **要藏就整块不建；非要藏请用 `visibility` 并把尺寸收起来，绝不要用 `display: none`** ——
+   那会让这一格尺寸恒为 0，把判据本身搞坏。宿主藏别的插件的格子用的就是 `visibility:hidden` + `position:absolute`。
+3. **一个插件有多条徽标内容时，在你自己的 badge widget 里轮**。宿主只轮"哪个插件可见"，两层分工不合并。
+
+宠物被全屏抑制（游戏模式）时轮播**暂停**（`host:fullscreen` 的第二个消费者），恢复后从暂停那一格继续；
+不可见期间不通知插件、不暂停你的 Worker、不折叠内容 —— 这点性能占用是明确判断过不在乎的。
+全部插槽都没有内容时，整个徽标区隐藏（不是显示一块空白格子）。
+
 ## 6. 共享资源
 
 BLE 会话与扫描是**全插件共享**的单一资源。宿主按插件记账：`ctx.ble.disconnect()` 只在"你是最后一个持有者"时才真正释放；停用某个插件也不会掐断别的插件正在用的会话。所以你可以放心调用清理，不必担心误伤。overlay 悬浮窗**不共享**：宿主按插件各开一扇（`overlay-<id>`），`hide()` / `destroy()` 只影响你自己那扇。
 
 宠物被游戏模式隐身时，宿主会把 overlay 一起收掉（你不需要处理），恢复显示时按你当时的意愿重新显示 —— 也就是说 `hide()` 过就不会再出现。
 
-overlay 的**摆放与尺寸属于你自己那扇窗**：`show()` 传什么就按什么建，窗口已存在时再 `show()` 会按新参数调整高度与摆放方式，不会影响别的插件的悬浮层。插件停用时宿主会 `destroy` 掉它的悬浮窗，你不需要自己收尾（`deactivate()` 里调 `destroy()` 也无害）。
+overlay 的**位置与尺寸属于你自己那扇窗**：`show({ x, y, height })` 收的是**逻辑像素**，宿主只做屏内夹紧
+（整块留在工作区内，宽度 320 也参与），**不持久化你的坐标、不提供锚点预设、不支持拖拽取位** ——
+位置要存就存进 `ctx.storage`，这是 [adr/0010](../adr/0010-badge-visibility-overlay-position-and-window-layering.md)
+决策 4 的定样。窗口已存在时再 `show()` 会按新参数同时挪位置和改高度（这条是被断言钉住的，
+不是"只在第一次建窗生效"）。旧的 `placement` 处于过渡期：接受、忽略、记一条宿主告警，不报错。
+
+**宠物本体永远压在所有 overlay 之上**，这是对外承诺，判据用真窗次序（`tools/win-zorder.ps1`），
+不接受"读代码看谁设了 alwaysOnTop"式的论证。所以你不需要为自己的窗"抢回来"做什么。
+
+要核对落点有两条通道，注意单位不同：宿主命令侧 `outer_position` 返回**物理**像素（换算要乘页面的
+`devicePixelRatio`），页面侧 `window.screenX/screenY` 是**逻辑**像素。写断言时请用**非对称**坐标（x≠y）——
+对称坐标连 x/y 对调这种接线错都看不出来，本项目真的漏过一次。
+
+插件停用时宿主会 `destroy` 掉它的悬浮窗，你不需要自己收尾（`deactivate()` 里调 `destroy()` 也无害）。
+
 
 ## 7. 调试
 

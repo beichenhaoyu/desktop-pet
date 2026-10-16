@@ -62,6 +62,10 @@ npm run verify         # 终端 2：宿主回归（147 条）
    序列/明细类数据单开一条 `<id>:xxx`，只在需要它的区域订阅（见 `com.pet.astock:panel` 的理由）。
 10. **出网走 `ctx.http.request`，按域名逐个授权**，键不带默认端口（`https://x.com` 的键是 `x.com`）。
     首次访问新域名会弹一次同意框 —— 多域名就是多次弹框，这是设计，不是 bug。
+11. **徽标（badge）没有内容时什么都别挂**。宿主按"插槽外壳有没有布局尺寸"判你有没有内容，
+    空框会被当成有内容并占用一轮 5 秒的轮播位（ADR-0010 决策 1，详见 SDK §5.2）。
+12. **悬浮卡的位置由你自己决定并自己存进 `ctx.storage`**：`overlay.show({ x, y, height })` 收逻辑像素，
+    宿主只做屏内夹紧，不持久化、不预设锚点、不支持拖拽。别再传老的 `placement`（接受、忽略、告警，行为已变）。
 
 ## 4. 我们踩过的坑（照抄能省一轮返工）
 
@@ -74,6 +78,10 @@ npm run verify         # 终端 2：宿主回归（147 条）
 | 字段魔数/编码 | 中文名乱码、接口静默丢字段 | **先实测再写解析**，拿第二个独立源交叉验证（我们用腾讯 GBK 盘口对东财字段号）；把口径和「为什么这么写」记进代码注释与 AGENTS.md |
 | CSP 只在打包版生效 | dev 一切正常，`tauri build` 产物黑屏/加载失败 | 涉及新脚本源、图片源、协议，收尾必须跑 `npm run verify:release`；判断 CSP 不能用 CDP 求值（它不受 CSP 约束），要看页面自身代码的副作用 |
 | 测试脚本造窗口 | 全屏置顶窗 + `timeout` 杀父进程会耗尽会话 desktop heap（真发生过，只能强制重启） | 测试窗**非置顶、任务栏可见、定时自关**，脚本自己检查父进程存活；**不要在外层套 `timeout`** |
+| 还在传 `placement:"above-pet"` | 卡不报错，但**落在桌面 (24,24)**，不再贴头顶 —— 头顶那一档已由 ADR-0010 删除 | 改传 `{ x, y, height }`（逻辑像素）并把坐标存进你自己的 `ctx.storage`；宿主只夹紧 |
+| 徽标空态画了个空框 | 你那一格被宿主判成"有内容"，白占 5 秒轮播位，用户点开是空的 | 没有内容就**整块不挂**（`badge.remove()` / 不 append），别用 `display:none` 藏 —— 那会让尺寸判据恒为 0 |
+| widget 里 `setAttribute("type", …)` | 输入框成不了数字框，而且**不抛错**（表外名字是静默拒收，拒满 64 次实例自锁） | `type` 走 property（`el.type = "number"`）；只有 `name` 这类走 attribute。词表看 `src/runtime/widget-protocol.ts` |
+| 坐标类断言用对称值（x=y） | 接线把 x/y 对调了，全套件照样绿 —— 本项目真漏过一次 | 断言用**非对称坐标**，并分别对命令侧（物理像素×`devicePixelRatio`）与页面侧（逻辑像素）两条通道 |
 | 杀进程 | `pkill -f` / `taskkill /IM` 会连带杀掉工具自身的进程 | 只按 PID + 可执行路径精确杀 |
 | 临时文件 | 污染工作区 | 只进 `<仓库>/temp/`，收尾删干净；打包产物进 `<仓库>/release-package/`（**不要放 `dist/`**，那是 Vite 输出目录，每次 `npm run build` / `tauri build` 都会把它清空，已经丢过两次成品包） |
 
@@ -81,17 +89,21 @@ npm run verify         # 终端 2：宿主回归（147 条）
 
 ```bash
 npm run build                 # tsc + vite 必须过
-npm run verify                # 147 条宿主回归
+npm run verify                # 宿主回归（CDP 驱动真实运行时）；条数会随形态漂，别拿数字当门
 npm run verify:<你的 id>       # 你自己写的端到端
 ```
 
 - [ ] 关掉再打开插件能生效；停用后定时器停了、订阅回收了、悬浮窗收了
 - [ ] 设置页打开时改一次配置，重开设置页配置还在（回显）
+- [ ] **徽标在没有内容时什么都不挂**（空框会被宿主判成"有内容"，白占一轮轮播位）
+- [ ] **有悬浮卡就验一次落点**：`plugin:window|outer_position`（物理像素，乘 `devicePixelRatio`）
+      或页面侧 `screenX/screenY`（逻辑像素），**用非对称坐标**（x≠y）—— 对称坐标连 x/y 对调都看不出来
 - [ ] 撤销授权后存储目录被清，再启用会重新弹同意框
 - [ ] 界面里没有任何一处把外部值拼进 `innerHTML` 或 CSS 选择器
 - [ ] `permissions` 里的每一项都真的用到；用到的每一项都声明了
 - [ ] 你的 verify 脚本跑完把状态还原了（授权撤销、插件下线、enabled 列表复原）
-- [ ] `temp/` 已清空；没有留下你起的进程（`Get-Process desktop-pet`）
+- [ ] 改了宿主侧 `src/runtime/widget-protocol.ts` 的词表？那 `unit:migrate` 与 SDK §5.1 必须同步
+- [ ] `temp/` 已清空；没有留下你起的进程（按 PID + 可执行路径核对，`Get-Process desktop-pet` 只做计数）
 
 ## 6. 越界了怎么办
 

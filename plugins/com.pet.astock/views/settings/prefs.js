@@ -16,7 +16,7 @@ const INDEXES = [
   { secid: "1.000300", name: "沪深300" },
 ];
 
-const MODE_TEXT = { badge: "宠物旁小字", overlay: "桌面左上角盯盘卡", off: "不显示" };
+const MODE_TEXT = { badge: "宠物旁小字", overlay: "桌面盯盘卡（位置自定）", off: "不显示" };
 
 /**
  * 挂「显示方式 / 刷新与提醒 / 最近提醒」三个分节。
