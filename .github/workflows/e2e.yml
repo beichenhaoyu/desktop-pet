@@ -20,8 +20,9 @@
 # 本机已跑过的等价复演（2026-10-15，Windows 开发机，按本文件的步骤顺序）：
 #   起 `npm run dev:debug`（带 PET_AGENT_CONFIG_FILES）→ `node tools/wait-cdp.mjs` 就绪（READY，退 0；
 #   对着空端口跑则 TIMEOUT，退 1 —— 两支都实测过）→ `npm run verify` **270/0** → `npm run verify:agent` **77/0**。
-# 那一段证的是「步骤与 env 的形状对得上」；**证不了的只有 runner 本身**：GitHub 的 Windows 会话里
-# WebView2 能不能起真 webview、能不能拿到 CDP 端点。
+# 那一段证的是「步骤与 env 的形状对得上」。**runner 本身当时是未知项，现已有答案**：
+# 托管 windows-latest 起不来 WebView2（0xC0000142，见上面那段），改跑开发机自托管 runner 才真跑绿
+# （run 38776535438，verify + verify:agent）。所以这段复演的价值只剩「本地手动复现时的步骤顺序」。
 #
 # 下面这条坑已用 PET_AGENT_INBOX 隔离（job env 里设了，实例与套件读同一个 temp 目录）；留着原文是给本机不带
 # 这个变量手动复演的人看的。
