@@ -55,5 +55,10 @@ pub async fn set_pet_hidden(
         }
     }
     super::overlay::set_suppressed(&app, hidden);
+    if !hidden {
+        // ADR-0010 落地口径第 4 条的第二个重放点：恢复时 overlay 的 show() 会把
+        // 它们抬到宠物上面，把「宠物在上」的层内相对次序在这里重放一次
+        super::overlay::raise_above_pet_all(&app);
+    }
     Ok(())
 }

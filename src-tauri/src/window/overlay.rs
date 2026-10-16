@@ -121,6 +121,47 @@ fn place_above_pet(app: &AppHandle, label: &str) {
     let _ = overlay.set_position(PhysicalPosition::new(x, y));
 }
 
+/// 把悬浮窗压回宠物窗**正下方**，落实「本体永远压住 overlay」这条对外承诺
+/// （ADR-0010 决策 5，路线 b）。宠物窗与 overlay 同在 topmost 层内，`show()` 会把
+/// 窗口抬到层顶（现场三次采样都是 overlay 压着宠物），所以每次 show 之后重放一次层内相对次序。
+///
+/// 全程安静失败：句柄拿不到、`SetWindowPos` 报错都只记一条 warn ——
+/// 宁可少一次抬升，不能让整条显示链路挂掉（宿主对 GUI 稳定性的口径）。
+#[cfg(windows)]
+fn raise_above_pet(app: &AppHandle, label: &str) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    };
+
+    let (Some(pet), Some(overlay)) = (app.get_webview_window("pet"), app.get_webview_window(label))
+    else {
+        return;
+    };
+    let (Ok(pet_hwnd), Ok(overlay_hwnd)) = (pet.hwnd(), overlay.hwnd()) else {
+        log::warn!("z 序重放：拿不到窗口句柄（pet 或 {label}），跳过");
+        return;
+    };
+    // SAFETY: 两个句柄都来自本进程存活中的窗口；只调 overlay 的层内次序，
+    // SWP_NOMOVE|SWP_NOSIZE 保证不碰位置尺寸，SWP_NOACTIVATE 保证不抢焦点。
+    let placed = unsafe {
+        SetWindowPos(
+            overlay_hwnd,
+            Some(pet_hwnd),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        )
+    };
+    if let Err(e) = placed {
+        log::warn!("z 序重放失败（{label}）：{e}");
+    }
+}
+
+#[cfg(not(windows))]
+fn raise_above_pet(_app: &AppHandle, _label: &str) {}
+
 fn apply_visibility(app: &AppHandle, plugin_id: &str) {
     let Some(state) = snapshot(plugin_id) else {
         return;
@@ -136,6 +177,7 @@ fn apply_visibility(app: &AppHandle, plugin_id: &str) {
         if state.placement == PLACEMENT_ABOVE_PET {
             place_above_pet(app, &label);
         }
+        raise_above_pet(app, &label);
     } else {
         let _ = win.hide();
     }
@@ -163,6 +205,21 @@ pub fn set_suppressed(app: &AppHandle, suppressed: bool) {
         .collect();
     for id in ids {
         apply_visibility(app, &id);
+    }
+}
+
+/// 宠物恢复显示后的整体重放：ADR-0010 落地口径第 4 条点名的第二个重放点，
+/// 由 `window::pet::set_pet_hidden` 在恢复分支调用 —— 现场顺序是「先 `pet.show()`、
+/// 再由 `set_suppressed(false)` 显示 overlay」，逐扇重放一遍层内相对次序。
+pub(super) fn raise_above_pet_all(app: &AppHandle) {
+    let ids: Vec<String> = table()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .keys()
+        .cloned()
+        .collect();
+    for id in ids {
+        raise_above_pet(app, &overlay_label(&id));
     }
 }
 
