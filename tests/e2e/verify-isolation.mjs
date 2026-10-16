@@ -1640,6 +1640,36 @@ export function unmount() {}
       );
     }
 
+    // 设置窗直调卸载（不带 pluginId，宿主路径）：翻候选文件摘自家条目，他人条目必须原样；
+    // 铁律是随后经探针装回 —— 不装回会把后面「连带卸载」两条分支的起点掏空成假绿
+    if (underTemp) {
+      const foreignBeforeDirect = statusFiles.map((f) => foreignOf(readFileSync(f.path, "utf8")));
+      const directUninstall = await sCall("agent_hooks_uninstall");
+      const afterDirect = (await sCall("agent_hooks_status")).v;
+      const marksAfterDirect = statusFiles.map((f) => readFileSync(f.path, "utf8").split("--pet-hook").length - 1);
+      const foreignAfterDirect = statusFiles.map((f) => foreignOf(readFileSync(f.path, "utf8")));
+      const reinstall = await sc.ev(`window.__hookProbes.settings.call("install")`);
+      const afterReinstall = reinstall.ok === true ? (await sCall("agent_hooks_status")).v : { managed: -1 };
+      const foreignAfterReinstall = statusFiles.map((f) => foreignOf(readFileSync(f.path, "utf8")));
+      r.check(
+        "宿主路径直调卸载（设置窗、不带 pluginId）：managed 归零、他人条目未变，随后经探针装回",
+        `true|0|${statusFiles.map(() => 0).join(",")}|true|${statusFiles.length * afterDirect.expectedPerFile}`,
+        [
+          directUninstall.ok === true,
+          afterDirect.managed,
+          marksAfterDirect.join(","),
+          JSON.stringify(foreignBeforeDirect) === JSON.stringify(foreignAfterDirect) &&
+            JSON.stringify(foreignAfterReinstall) === JSON.stringify(foreignBeforeDirect),
+          reinstall.ok === true && afterReinstall.managed,
+        ].join("|"),
+      );
+    } else {
+      r.info(
+        "跳过「直调卸载再装回」断言",
+        "hook 配置未指向 temp/：直调卸载会改写真实用户配置，与本组 install 断言同一开关（PET_AGENT_CONFIG_FILES）",
+      );
+    }
+
     // ---------- 撤销授权两条分支（CONTEXT.md 生命周期） ----------
     // 先重载设置窗：manifest 改写后要拿到刷新过的权限列表（nav 的 data-search 带权限名）。
     await reloadAndWait(sc);
@@ -1750,6 +1780,17 @@ export function unmount() {}
     const liveAccel = (await sCall("hotkey_status")).v?.accelerator;
     const liveTest = await sCall("hotkey_test", { accelerator: liveAccel });
     r.check("当前生效的键试注册必得 true（不把已占用误报成冲突）", true, liveTest.v);
+    // 试注册不得有副作用：命令只做瞬时的注册/注销。当前生效键恰好就是它时对「当前键」直接放行 true，
+    // 两次仍走 true 分支，所以不需要为这种情形另设前置分支
+    const hkBefore = JSON.stringify((await sCall("hotkey_status")).v);
+    const t1 = await sCall("hotkey_test", { accelerator: "Ctrl+Alt+F9" });
+    const t2 = await sCall("hotkey_test", { accelerator: "Ctrl+Alt+F9" });
+    const hkAfter = JSON.stringify((await sCall("hotkey_status")).v);
+    r.check(
+      "试注册不改变现状：同一空闲键连试两次都 true、hotkey_status 前后不变",
+      "true|true|true",
+      [t1.v, t2.v, hkBefore === hkAfter].join("|"),
+    );
 
     const auto = await sCall("autostart_status");
     r.check("自启状态带真实路径与 dev 标记", true, typeof auto.v?.devBuild === "boolean" && /\.exe$/.test(auto.v?.exe ?? ""));
