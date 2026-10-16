@@ -54,11 +54,8 @@ pub async fn set_pet_hidden(
                 .map_err(|e| HostError::new(INTERNAL, e.to_string()))?;
         }
     }
+    // 层内相对次序只由 `set_suppressed` 里的逐扇重放负责（ADR-0010 修订 2026-10-16：
+    // 这里原来还有一次整体重放，三态实测证明在同一条路径上是重复保险，已删）
     super::overlay::set_suppressed(&app, hidden);
-    if !hidden {
-        // ADR-0010 落地口径第 4 条的第二个重放点：恢复时 overlay 的 show() 会把
-        // 它们抬到宠物上面，把「宠物在上」的层内相对次序在这里重放一次
-        super::overlay::raise_above_pet_all(&app);
-    }
     Ok(())
 }

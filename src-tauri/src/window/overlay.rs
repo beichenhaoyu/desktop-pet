@@ -225,6 +225,9 @@ fn apply_visibility(app: &AppHandle, plugin_id: &str) {
 /// 宠物隐身/恢复时由宿主调用（见 window::pet::set_pet_hidden）：
 /// 卡片贴在宠物身上或桌面上，宠物隐身时留着既难看又泄露信息，所以一起收掉；
 /// 恢复时按各插件当时的意愿决定显不显示。
+///
+/// 这里同时是「本体压住 overlay」在恢复路径上的**唯一**重放点：`show()` 会把窗口抬到
+/// topmost 层顶，所以每扇窗 show 之后紧跟一次 `raise_above_pet`（ADR-0010 修订 2026-10-16）。
 pub fn set_suppressed(app: &AppHandle, suppressed: bool) {
     SUPPRESSED.store(suppressed, Ordering::SeqCst);
     let ids: Vec<String> = table()
@@ -235,21 +238,6 @@ pub fn set_suppressed(app: &AppHandle, suppressed: bool) {
         .collect();
     for id in ids {
         apply_visibility(app, &id);
-    }
-}
-
-/// 宠物恢复显示后的整体重放：ADR-0010 落地口径第 4 条点名的第二个重放点，
-/// 由 `window::pet::set_pet_hidden` 在恢复分支调用 —— 现场顺序是「先 `pet.show()`、
-/// 再由 `set_suppressed(false)` 显示 overlay」，逐扇重放一遍层内相对次序。
-pub(super) fn raise_above_pet_all(app: &AppHandle) {
-    let ids: Vec<String> = table()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .keys()
-        .cloned()
-        .collect();
-    for id in ids {
-        raise_above_pet(app, &overlay_label(&id));
     }
 }
 

@@ -82,7 +82,11 @@ while ((Get-Date) -lt $deadline -and $samples -lt 3) {
 }
 if ($samples -eq 0) {
   Write-Host "结论：整个窗口期没有同时看到宠物窗与 overlay（overlay 没开起来，或标题变了）"
+  # 机器读的那一行刻意用纯 ASCII：pwsh 子进程的 stdout 在中文 Windows 上按 GBK 落字节，
+  # node 侧按 utf8 解会得到乱码（今天就被这个坑成「没有结论行」）。人读中文，程序读这行。
+  Write-Host "ZORDER samples=0 verdict=no-overlapping-sample"
   exit 2
 }
 Write-Host "结论：$verdict"
+Write-Host "ZORDER samples=$samples verdict=$verdict"
 if ($verdict -eq "pet-top") { exit 0 } else { exit 1 }

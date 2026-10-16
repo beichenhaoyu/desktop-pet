@@ -2,6 +2,7 @@
 //   终端 1: npm run dev:debug     终端 2: npm run verify
 // 只覆盖 dev 能验证的部分；CSP 与打包路径见 verify-release.mjs（每波次收尾手工跑一次）。
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join, resolve, sep } from "node:path";
 import { argv, env } from "node:process";
 import {
@@ -93,6 +94,25 @@ async function driveConsent(how, wantId = "") {
 
 const isPetPage = (t) => /localhost:1420\/(src\/)?index\.html$/.test(t.url);
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
+/**
+ * 「本体压住 overlay」的真窗判据：交回 `tools/win-zorder.ps1` 的退出码 + 它打的 ASCII 机器行。
+ * 拼成一条字符串是为了失败时一眼分清 `overlay-covers-pet`（承诺真的破了）与
+ * `no-overlapping-sample`（前置没满足，根本没采到同框样本）—— 探针只在有交互桌面的机器上跑得动
+ * （托管 runner 连 WebView2 都起不来），所以这条不进 ci.yml。
+ */
+function probeZOrder(seconds) {
+  const script = resolve(import.meta.dirname, "../../tools/win-zorder.ps1");
+  const run = spawnSync("pwsh.exe", ["-NoProfile", "-File", script, "-Seconds", String(seconds)], {
+    encoding: "utf8",
+    timeout: (seconds + 60) * 1000,
+    windowsHide: true,
+  });
+  if (run.error) return `spawn失败 ${run.error.message}`;
+  const out = `${run.stdout ?? ""}\n${run.stderr ?? ""}`;
+  const machine = out.split(/\r?\n/).find((l) => l.startsWith("ZORDER "))?.trim() ?? "没有 ZORDER 行";
+  return `${run.status} ${machine}`;
+}
 
 /**
  * 武装一次「本窗自己发起的整页重载」：location.reload() 不换 CDP target，
@@ -740,6 +760,10 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
     true,
     await waitUntil(c, `(async () => (await window.__TAURI_INTERNALS__.invoke('overlay_list')).some(([id]) => id === ${JSON.stringify(PROBE_ID)}))()`, 10_000),
   );
+  // 「本体永远压住所有 overlay」这条真窗判据不挂在这里：探针那扇"窗"其实是空注册表条目
+  // （实测 `plugin:window|is_visible` 回 `window not found`，而 overlay_list 里有条目）——
+  // 拿它当前提会把"前置没满足"误报成回归。判据挪到 overlay_owner 组之后，
+  // 那里两扇插件窗可证活着（它们的页面刚被 attach 过并答出归属）。
   await invoke_("overlay_hide", { pluginId: PROBE_ID });
   r.check(
     "授权后收得掉",
@@ -870,6 +894,53 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
   r.check("左上角波形那扇答出自己属于 com.pet.hr-ble", OWNER_HR, ownerMap[OWNER_LABEL[OWNER_HR]] ?? null);
   const petOwner = await invoke_("overlay_owner");
   r.check("宠物窗（非悬浮窗）问归属得到 null", true, petOwner.ok === true && petOwner.v === null);
+
+  // 「本体永远压住所有 overlay」是对外承诺，判据只认真窗次序（ADR-0010 决策 5，不接受
+  // "读代码看谁设了 alwaysOnTop"式的论证）。挂在这里是因为这两扇插件窗**可证活着** ——
+  // 它们的页面刚被 attach 过并各自答出了归属；可见性也由每扇窗自己问自己（标签取自页面
+  // metadata，不靠拼规则），免掉上一版把探针的空注册表条目当活窗、把前置没满足误报成回归的坑。
+  // 恢复路径上的重放点只有一处（`set_suppressed` → `apply_visibility` 逐扇重放；原先
+  // `set_pet_hidden` 尾部还有一次整体重放，三态实测证明是重复保险，已删）。本条钉承诺本身，
+  // 不钉哪一处起作用 —— 三态实验（两处都在／只掐前者／只掐后者）的真窗结果记在 ADR-0010。
+  r.group("隐身再恢复：本体仍压住在场的每一扇 overlay（真窗次序）");
+  const aliveLabels = Object.keys(ownerMap);
+  r.check("这条判据的前提：至少一扇 overlay 页答过归属", true, aliveLabels.length > 0);
+  r.check("隐身命令由宠物窗发出并被放行", true, (await invoke_("set_pet_hidden", { hidden: true })).ok === true);
+  await sleep(900);
+  r.check("恢复命令被放行", true, (await invoke_("set_pet_hidden", { hidden: false })).ok === true);
+  const selfVisible = async () => {
+    const out = [];
+    for (const t of (await listPages(PORT).catch(() => [])).filter((p) => /overlay\.html/.test(p.url))) {
+      const oc = await attach(PORT, (x) => x.webSocketDebuggerUrl === t.webSocketDebuggerUrl, 8_000).catch(() => null);
+      if (!oc) {
+        out.push("attach失败");
+        continue;
+      }
+      const v = await oc
+        .ev(
+          `(async () => { const I = window.__TAURI_INTERNALS__;
+             try { return String(await I.invoke('plugin:window|is_visible', { label: I.metadata.currentWindow.label })); }
+             catch (e) { return 'err:' + String((e && e.message) ?? e); } })()`,
+        )
+        .catch(() => "ev失败");
+      oc.close();
+      out.push(String(v));
+    }
+    return out.join(",");
+  };
+  let visObserved = "";
+  for (let i = 0; i < 24 && !/^true(,true)*$/.test(visObserved); i++) {
+    visObserved = await selfVisible();
+    if (!/^true(,true)*$/.test(visObserved)) await sleep(500);
+  }
+  r.check(
+    "恢复后在场的每一扇 overlay 都自报可见（探针的前置）",
+    "yes",
+    visObserved.split(",").length > 0 && visObserved.split(",").every((v) => v === "true")
+      ? "yes"
+      : `no: ${visObserved || "(没采到 overlay 页)"}`,
+  );
+  r.check("隐藏再恢复宠物后，本体仍压住 overlay", "0 ZORDER samples=3 verdict=pet-top", probeZOrder(45));
 
   // 收尾：本来就显示着的窗原地不动；其余（我们补开的、或本来就带病/隐藏的）收掉 ——
   // 插件下次需要它时会自己 show 回来。新授的 overlay 撤销前先让插件真的下线 ——
