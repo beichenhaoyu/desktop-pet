@@ -73,10 +73,25 @@ function makeConsentPump(seen) {
       try {
         const cs = await attach(PORT, (t) => t.webSocketDebuggerUrl === target.webSocketDebuggerUrl, 8_000);
         try {
-          seen.push({
-            who: String(await cs.ev(`document.getElementById('plugin-name')?.textContent ?? ''`)),
-            caps: await cs.ev(`[...document.querySelectorAll('#cap-list li')].map(li => li.textContent)`),
-          });
+          // **窗口出现在列表里 ≠ 已渲出内容**：同意框要等 `consent_details` 回来才填
+          // `#plugin-name` 与 `#cap-list`（`src/consent/main.ts:17` 之后才是同步的渲染 + 挂监听）。
+          // 抢在渲染前读会记下 `{who:'', caps:[]}` 这条假证据，而紧跟的 click 在监听器挂上之前是空操作；
+          // 一旦渲染恰好落在"读完、点下去"之间，这扇框就被应答掉而账上没有任何内容 ——
+          // 「探针首次调用弹出的同意框列出了 agent:hooks」的偶发红（三轮一次）就是这么来的。
+          // 反过来，读到 `li` 存在就说明那段同步尾巴已经跑完（填内容与挂监听之间没有 await），
+          // 所以「渲出了」是「点了会生效」的可靠前置条件。
+          let rendered = false;
+          for (let i = 0; i < 40 && !rendered; i++) {
+            rendered = (await cs.ev(
+              `(() => { const n = document.getElementById('plugin-name');` +
+              ` return !!n && (n.textContent ?? '').trim() !== '' && !!document.querySelector('#cap-list li'); })()`,
+            )) === true;
+            if (!rendered) await sleep(100);
+          }
+          const who = String(await cs.ev(`document.getElementById('plugin-name')?.textContent ?? ''`));
+          const caps = await cs.ev(`[...document.querySelectorAll('#cap-list li')].map(li => li.textContent)`);
+          if (!rendered) console.log("  · 同意框 4 秒内没渲出内容，仍按原样应答（这条记账不算证据）");
+          seen.push({ who, caps, rendered });
           await cs.ev(`document.getElementById('btn-allow').click()`);
         } finally {
           cs.close();
@@ -234,12 +249,20 @@ try {
     const api = createAgentHooksApi({ id: ${JSON.stringify(PROBE_ID)}, name: 'Agent 授权探针', permissions: ['agent:hooks'] });
     try { await api.status(); return { ok: true }; } catch (e) { return { ok: false, e: String(e?.message ?? e) }; }
   })()`;
-  const probeBoxes = () => grantedCaps.filter((x) => x.who.includes(PROBE_ID));
+  const probeBoxes = () => grantedCaps.filter((x) => x.rendered === true && x.who.includes(PROBE_ID));
   await settings.client.ev(probeStatus);
   r.check(
     "探针首次调用弹出的同意框列出了 agent:hooks",
     true,
     probeBoxes().some((x) => x.caps.some((c) => String(c).includes("agent:hooks"))),
+  );
+  // 把"抢读未渲出的框"从**静默假阴**变成硬失败：pump 现在只在渲出内容后才记账并应答，
+  // 4 秒内渲不出会带着 rendered:false 记账（照样应答，免得宿主 60 秒超时误判成拒绝）。
+  // 没有这条，将来再出现同类竞态只会表现为"某条断言莫名红一次"，排查成本就是这次的三轮一次。
+  r.check(
+    "pump 应答过的每一扇同意框都渲出过内容",
+    [],
+    grantedCaps.filter((x) => x.rendered !== true).map((x) => `${x.who || "(空)"}|${x.caps.length}项`),
   );
   // 第二次调用同一条能力：授权已在表里（且桥有会话内缓存），不该再弹框。
   // 按探针自己的框数对比，别的插件 concurrent 弹框不进这条证据。
