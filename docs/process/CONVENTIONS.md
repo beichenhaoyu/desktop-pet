@@ -87,6 +87,14 @@
 
 ## 其余约定
 
+- **带打包（NSIS）的构建在这台机器上是跑通了的（2026-10-16 实测，两轮都 0 退出）**：工具链落在
+  `%LOCALAPPDATA%\tauri\NSIS`，落成之后就会被复用（第二次 2m22s，日志零 `Downloading`）。
+  **别把这个目录当缓存删掉** —— 它没有版本标记文件，删了就要重新联网。产物落
+  `src-tauri/target/release/bundle/nsis/`，按发布口径另存一份到 `release-package/`（**不放 `dist/`**，
+  那是 Vite 输出目录、每次构建清空）。这条门再红时**先探 URL 再定性**：
+  `curl -o /dev/null -w "http=%{http_code}"` 打一次 `nsis-3.11.zip`，GitHub release 资产通路和 A股 push2
+  一样是状态量，历史上的 `timeout: global` 就是网络态不是配置错。装机运行（安装器跑起来）仍未证明，
+  细节与否证记在 [本体任务卡](HOST-BACKLOG.md) 的 S1 段。
 - 标准事件 topic：`ble:heart-rate`、`agent:state`（`running｜needs_input｜completed｜idle`，只在变化时广播）、`agent:event`（细粒度 hook 事件：phase / toolName / detail / steps / title，每次工具调用都发）、`llm:token-usage`、`com.pet.todo:changed`
 - 宿主窗口事件（不是总线 topic，插件收不到）：`host:fullscreen`（`{active,title}`，最近 3 次采样的多数票）
 - Agent 会话状态：`Stop` 之后 2 秒内到达的 pre/post 算迟到事件，不再把会话打回 running（否则卡片会挂着「正在执行」直到 90 秒 TTL 过期）；新一轮的 user-prompt/session-start 立刻作废该宽限期

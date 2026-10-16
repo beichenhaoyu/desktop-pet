@@ -83,6 +83,20 @@ MVP 范围：<这一轮只做什么>
   `src-tauri/target/release/build/*/build-script-build.exe`，cargo 报 `拒绝访问。(os error 5) (never executed)`。
   文件没有被隔离 —— 手动执行同一个脚本立刻 0 退出。**结论：这是瞬时拦截，重试即可；不要删 `target/`，不要怀疑代码，不要动安全软件。**
   本机 Defender 实时防护是关闭的，360 是唯一拦截者。
+- **NSIS 带打包：2026-10-16 实测跑通（此前记在提交信息里的「这台机器跑不通」已否证）**
+  `npm run tauri build`（不带 `--no-bundle`）连跑两次都 0 退出：第一次下载工具链并解压，
+  第二次 **2m22s**、日志里没有一行 `Downloading` —— 说明 `%LOCALAPPDATA%\tauri\NSIS` 落成之后就会被复用。
+  产物 `src-tauri/target/release/bundle/nsis/DesktopPet_0.1.0_x64-setup.exe`（2.50 MiB，
+  sha256 `b7f43a53d0c5eed484967059334539089a1f7189bf78790e1002f2728b5f227a`），已按上面的产物口径
+  存进 `release-package/`（**不往 `dist/` 放**，那里每次构建都被清空）。
+  **当时为什么会红**：缓存里留下的是半个 `nsis-3.11` 目录，而 bundler 要的是名为 `NSIS` 的那个 —— 目录名不对它就去重下，
+  而那时 GitHub release 资产拉不通就成了 `timeout: global`。是不是同一条 360 瞬时拦截（被锁的换成刚解压出来的
+  `makensis.exe`／改名那一步）**没有现场证据，别写成结论**。今天探了一次：
+  `curl -o /dev/null -w` 打 `nsis-3.11.zip` 得 `http=200 / 9.3s` —— **release 资产通路和 A股 push2 一样是状态量**，
+  下次这条门红，先探 URL 再定性，别急着改配置。
+  **仍然没证明的**：装机运行（静默 `/S /D=` 装到 temp、跑一轮真装机布局的断言、再卸载）。用户 2026-10-16 明确选择不做，
+  所以别把「能构建」写成「打包版安装后已验证」。`verify:release` 走的是 `target/release/desktop-pet.exe`
+  （`resource_dir()/plugins` 的解析路径与装机布局同形），覆盖的是 CSP 与插件加载，不是安装器。
 - **收尾**：`git status` 复核提交里有无凭据；版本号四处一致（`package.json` / `package-lock.json` /
   `tauri.conf.json` / `Cargo.toml` + `Cargo.lock` 的 `desktop-pet` 条目）。
 
