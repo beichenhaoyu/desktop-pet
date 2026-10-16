@@ -39,6 +39,12 @@ MVP 范围：<这一轮只做什么>
 | A10 | A股封板判定改用交易所涨跌停价 | 插件缺陷 | **已放行**（`.dispatch/A股盯盘质量加固/cards/A10-封板判定与权重注释.md`，派单工作区、不入库，R4 口径；批次 2；单测 397 条、6 处变异抽查全杀掉、`verify:astock` 的 10 条红与它无关） | — | `1cd4b5b` | — |
 | A11 | `verify:astock` 源归属断言改回源无关（回归套件的测试缺陷） | 工程/回归 | **已放行**（第二轮：PM 现场复现 **154 passed / 0 failed**，且是在**与执行者不同的网络形态**下——PM 这轮 preflight 七台主机全"可达"、新浪 5100ms 通了，而执行者那轮新浪不可达；判定层靠 `attempted` 的尝试记录把"东财 API 失败→下移腾讯"判成绿，预算档位自动放宽到 [3,12]。变异抽查 4/4 全杀掉） | B2（已满足） | 本次提交 | — |
 | A9b | agent 桥：去掉会话状态卡 + 多 Agent 单选（依赖本体新能力） | 插件 | 待排（**批次 6**），**等 B3/B4 放行** | B3 B4 | — | — |
+| U02 | 本体窗永远压住 overlay：`SetWindowPos` 层内相对序 + 两处重放点（[adr/0010](../adr/0010-badge-visibility-overlay-position-and-window-layering.md) 决策 5） | 本体窗口 | **已放行**（`.dispatch/ui-surfaces/cards/U02-window-layering-above-overlay.md`，派单工作区、不入库，R4 口径；PM 冷重启实测 cargo 185/0、clippy `-D warnings` 与 fmt `--check` 退出码 0、`check:shape` 48 条全 0；真机 `tools/win-zorder.ps1` 三次采样都是 pet 在 1 位／overlay 在 2 位 → pet-top、退出码 0，同轮 `verify:todo` 31/0；变异：把 `raise_above_pet` 掐成首行 return → 同一探针三次全翻回 overlay-covers-pet、退出码 1。**两条欠账**：这段逻辑没有可离线钉住的纯逻辑，L3 要求的 ≥6 个变异点只做得到 1 个；`pet.rs` 的第二重放点在现有调用链上是幂等重复保险，独立贡献要「隐藏宠物→恢复→仍 pet-top」的真机断言才能证明，本轮未做） | — | `c4dcc8c` | — |
+| U03 | 徽标只显一个：尺寸判据 + 5 秒轮播（启用清单序）+ 四插件空态不渲染（[adr/0010](../adr/0010-badge-visibility-overlay-position-and-window-layering.md) 决策 1） | 本体运行时 + 四插件 | **已放行**（`.dispatch/ui-surfaces/cards/U03-badge-visibility-arbiter.md`，派单工作区、不入库，R4 口径；新单测 24 条，`unit` 1212→**1236**、`unit:widget` 110→134、`unit:migrate` 18/0，tsc／typecheck:plugins／biome 143 files／`check:shape`／`check:docs` 退出码全 0；`verify:worker` 59→**66/0**（⑨ 组 8 条全新增）、`verify` 270/0；`audit-assertions` 59→67 条标题且 0 条消失；PM 独立变异 7 点 → 6 杀 1 存活，存活那点是 `candidates()` 里经公开 API 不可达的防御性冗余子句（一次性探针证实），已补一条断言把入口那层钉住并实测能杀；两条 grep 判据：宿主侧无 `display` 藏法、仲裁模块无计时器） | — | `d378565` | — |
+| U01 | overlay 位置改插件直传逻辑像素坐标，删头顶档与跟随定时器（[adr/0010](../adr/0010-badge-visibility-overlay-position-and-window-layering.md) 决策 2/3/4） | 本体命令 + 插件 | 待派（卡已写好：`.dispatch/ui-surfaces/cards/U01-overlay-position-api.md`，派单工作区、不入库，R4 口径） | ~~U02~~ 已满足 | — | — |
+| U04 | 三插件迁到自定坐标 + 三套运行时断言重写 | 插件 + 回归 | **卡未写**（等 U01 放行，否则新参数形状要写两遍） | U01, U03 | — | — |
+| U05 | SDK / HANDBOOK 契约面 + B3 卡片范围重划 | 文档 | 待排（PM 自留） | U01, U03 | — | — |
+| U06 | 7 条零调用命令的运行时断言 | 回归 | **卡未写** | U01 | — | — |
 
 **两处调度纠正（2026-10-10 规划方复核）**：
 
