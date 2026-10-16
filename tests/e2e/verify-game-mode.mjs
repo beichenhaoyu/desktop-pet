@@ -12,11 +12,13 @@ const PORT = Number(env.CDP_PORT ?? argv.find((a) => a.startsWith("--port="))?.s
 const GAME_KEY = "host:game-mode";
 // 没有 APPDATA 的话这里会拼出 `undefined\com...`，脚本就在一个不存在的路径上跑断言：
 // 那种失败和被测行为的失败长得一模一样，必须当场拒绝开跑
-if (!env.APPDATA) {
-  console.error("缺 APPDATA 环境变量：找不到宿主收件目录，拒绝开跑。");
+// 收件目录与宿主同一规则：PET_AGENT_INBOX 优先（e2e.yml 把它指到 temp\agent-inbox），否则落默认位置。
+// 读错目录的话探针写进去没人收，「隐藏时宿主事件仍能进总线」会假红（run 38831082143 就是这样）。
+if (!env.PET_AGENT_INBOX && !env.APPDATA) {
+  console.error("缺 APPDATA 环境变量（也没设 PET_AGENT_INBOX）：找不到宿主收件目录，拒绝开跑。");
   process.exit(2);
 }
-const INBOX = `${env.APPDATA}\\com.desktoppet.pet\\agent\\inbox`;
+const INBOX = env.PET_AGENT_INBOX || `${env.APPDATA}\\com.desktoppet.pet\\agent\\inbox`;
 const isPetPage = (t) => /localhost:1420\/(src\/)?index\.html$/.test(t.url);
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 const r = createReport("游戏模式（dev）");
