@@ -87,6 +87,7 @@ L2 把 widget 搬进 Worker 之后，「UI 面归谁」这件事只剩一半答�
    - `placement` 在过渡期**接受但忽略**，传 `above-pet` 时打一条 `console.warn`，**不报错**。做法与 apiVersion 2 一样：第三方老插件不能一升级就坏掉。
 4. **z 序先走路线 (b)**：`SetWindowPos(overlay, insertAfter = 宠物 HWND, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)`，
    只动 overlay、不抢焦点；`windows` 0.62 已经开了 `Win32_UI_WindowsAndMessaging`，HWND 用 tauri 的 `hwnd()` 拿。**重放点**有两个：
+   <!-- 本条写下时是两处；2026-10-16 的三态实测把 `set_pet_hidden` 那处削减掉了，现状只有一处，见文末「修订」。 -->
    - `apply_visibility` 里 `win.show()` 之后：show 会把窗口抬到 topmost 层最上面；
    - `set_pet_hidden(false)` 恢复之后：现场是先 `pet.show()`，再由 `set_suppressed(false)` 把 overlay 显示出来，
      按这个顺序 overlay 又会压回宠物上面。
@@ -113,3 +114,22 @@ L2 把 widget 搬进 Worker 之后，「UI 面归谁」这件事只剩一半答�
   表现为"返回 true 却一次都不回调"。
 - **B3 的范围要重划**：并入 agent 桥的节点状态之后，常驻行/台词分层与"来自 agent 的状态"是同一条带上的同一件事。
 - 性能上明确接受：**四个 badge Worker 常驻**，只是同时显示一个；宿主不告知插件它当前不可见。
+
+## 修订（2026-10-16 三态实测：恢复路径上的重放点删到一处）
+
+落地口径第 4 条写了两个重放点。`pet.rs` 的那个（`set_pet_hidden(false)` 尾部的整体重放）在现场是幂等重复保险，
+但一直没有证据能证明它独立起作用 —— `d378565` 放行时把这条欠账记在 [本体任务卡](../process/HOST-BACKLOG.md) 的 U02 行。
+本轮补做完了，结论是**这条路径上它不是必要的**：
+
+- 实验做法：在 `verify-isolation` 里新增一组真窗断言「隐身再恢复：本体仍压住在场的每一扇 overlay」，
+  三态各跑一次冷启动 —— **V0** 两处都在（现行）、**V1** 只掐 `apply_visibility` 里的逐扇重放、**V2** 只掐 `pet.rs` 的整体重放。
+  V2 顺带暴露 `raise_above_pet_all` 只有这一个调用点（掐掉即 `dead_code` 告警）。
+- 真窗结果：**三态全绿**（各 278 passed / 0 failed，`tools/win-zorder.ps1` 每次三次采样一致 `verdict=pet-top`）。
+  原因是恢复路径本身是同步的一条链：`pet.show()` → `set_suppressed(false)` → 逐扇 `win.show()` + `raise_above_pet`，
+  最后一动作已经把每扇 overlay 压回宠物正下方，第二次整体重放改不了任何次序。
+- 处置：**删掉 `pet.rs` 的整体重放与 `raise_above_pet_all`**，恢复路径上的重放点只剩 `apply_visibility` 一处
+  （代码注释点名这条修订）。删的是机制，钉住的是承诺 —— 新那一组真窗断言留在 `verify` 里，
+  以后谁再动 `raise_above_pet` 都会在同一轮翻红（U02 那轮已验证过掐首行 return 会让探针退 1）。
+- 为什么不需要为「两处」各留一条断言：判据只认真窗次序，而这两处在同一条同步链上无法分别被观测；
+  要用断言区分只能造出「前者不生效」的路径，那条路径在本体里不存在。
+

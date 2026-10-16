@@ -110,6 +110,19 @@
   **污染源也包括主会话自己**（2026-10-15 取证到手）：这台机器装了全局 Qoder hook，我每调一次工具就往共享 inbox 写一条 `session_id` 是主会话的 pre/post —— 而 `PET_AGENT_CONFIG_FILES` **只重定向 hook 配置文件，不重定向 inbox**。同一条 `npm run verify:agent`：一边跑一边在会话里干活 **71 passed / 6 failed**，什么都不做等它跑完 **77/0**。
   **这条已经有隔离入口了（`d4f627f`）**：`PET_AGENT_INBOX` 覆盖收件目录，hook 分支、watcher、套件三处按同一规则取，
   `e2e.yml` 把它指到 `temp\agent-inbox`；**不设这个变量时行为与以前一样**，所以手动复演不带它时这条坑仍然成立。所以这套件的复演必须「发出去就别碰任何东西」；判据仍是同环境重跑两次，不是把断言改松。**现在有了隔离入口 `PET_AGENT_INBOX`**（2026-10-16）：宿主实例与 `verify:agent` 都带同一个目录（如 `<仓库>\temp\agent-inbox`），全局 hook 不带它、照旧写默认 inbox，两边不再串；`e2e.yml` 的 job env 已设。本机复演不带这个变量时退回旧行为，上面那条照旧成立。
+- **同意框应答泵的老缺陷：「窗口在 CDP 列表里」≠「已渲出内容」（2026-10-16 定位并修掉，三轮一次的偶发红有了根因）**：
+  `tests/e2e/verify-agent-bridge.mjs` 的 pump 一在页面列表里看到 `consent` 就 attach、读 `#plugin-name`/`#cap-list` 并点「允许」。
+  但同意框的内容要等 `consent_details` 这条 IPC 回来才填（`src/consent/main.ts:17` 之后才是同步的填内容 + 挂监听），
+  抢在那个 `await` 之前读会记下 `{ who: "", caps: [] }` 这种**假证据**，而紧接着的 click 在监听器挂上之前是空操作。
+  于是「渲染恰好落在读完与点下去之间」时，框被应答掉了而账上没内容 —— 红的却是离它很远的
+  「探针首次调用弹出的同意框列出了 agent:hooks」，看起来像能力清单回归。修法两条：pump 先轮询到**渲出内容**（`#cap-list` 里有 `li`
+  就是那段同步尾巴跑完的可靠前置）再读再点，最多等 4 秒，超时仍照原样应答（免得宿主 60 秒超时把它误判成拒绝）；
+  并新增一条硬失败「pump 应答过的每一扇同意框都渲出过内容」，把这类竞态从**静默假阴**变成点名可归因的红。
+  两轮冷启动各 **80 passed / 0 failed**；把等待轮询掐成空转后这条当场翻红（不是靠"再跑一次没红"交差）。
+- **`check:docs` 的 R-G 会把 `verify:agent` 的临时探针插件当成目录漂移**（2026-10-16 现场误判一次）：
+  那套件的 `PROBE_ID=zz.agentconsent` 是**跑起来才写进 `plugins/`、收尾删掉**的（`verify-agent-bridge.mjs:128` 与 `:809`），
+  所以与它并发跑 `npm run check:docs` 会得到 `tree=102 … broken=1` 的红。判据本身没错，是并发窗口撞上了夹具 ——
+  要么等套件跑完再跑文档门，要么把它排进互斥清单。**这条与「一套件一实例」是同一条纪律的两侧**：并发不只抢 CDP 端口，也抢磁盘上的插件目录。
 - **CDP 运行时套件的 CI 通路是 `.github/workflows/e2e.yml`：`workflow_dispatch` 手动触发，白名单是 `verify` / `verify:agent` / `verify:worker` / `verify:todo` / `verify:game`（清单 A3，2026-10-15 写；`verify:game` 于 2026-10-16 `ee533f8` 加入，只在点名时跑，不进默认清单）**。其余套件各有一条不能进默认清单的理由：`verify:game` 是全屏置顶窗 + 定时器（桌面堆风险，见上面那条）、`verify:release` 自占 9224 还要再编一次、`verify:astock|http|skin` 出网且数据形态随时段漂。两条形状要求：起实例前先 `npx tauri build --debug --no-bundle` 编一遍，**把编译时间挡在 `tools/wait-cdp.mjs` 的就绪等待之外**（否则那个超时看着像「webview 起不来」，其实根本没轮到它）；`verify:agent` 的写盘组要求实例带 `PET_AGENT_CONFIG_FILES`（`;` 分隔的两个路径，落在 `<仓库>/temp/a9a/`，**文件由套件自己写**），不带就是 `54 passed / 1 failed` 那种假红。本机按那几步原样复演过：等待脚本正负两支都实测（活实例上 `READY` 退 0；对着空端口 `TIMEOUT` 退 1）、`verify` **270/0**、`verify:agent` **77/0**（就是上面那条并发坑——发出去之后别再碰任何东西）。
 **同一条环境教训在 2026-10-16 U01 复测时又踩了一次**：只给实例带 `PET_AGENT_INBOX`、漏掉 `PET_AGENT_CONFIG_FILES`，
 `verify` 不会报红而是**少跑 15 条**（当场读数 256/0，看着像"回归缩了"）—— 两套件的假红形态不一样，
@@ -119,6 +132,10 @@
 **同日 U04 / U06 / U07 三张卡放行后再复测（同一环境、一套件一冷启动）：`verify` 273/0、`verify:todo` 36/0、
 `verify:astock` 159/0、`verify:worker` 66/0，`tools/win-zorder.ps1` 仍 exit 0** —— 悬浮卡挪到插件自定坐标之后
 「本体压住 overlay」这条没回退；159 只是那次盘面形态下的读数，判覆盖仍比标题集合。
+**同日收尾两笔欠账后再复测（同一环境）：`verify` 278/0（新加「隐身再恢复」一组 5 条，r.check 唯一标题 252→257）、
+`verify:agent` 两轮冷启动各 80/0（同意框那一组 +1 条，唯一标题 75→76）、`unit` 1236/0、cargo 189/0、
+clippy `-D warnings` 与 fmt `--check` 退出码 0、`check:shape` 48 全 0、`check:docs` rules=8 failing=0**
+（文档门那次 `broken=1` 是与 `verify:agent` 并发撞到的临时探针夹具，见上面 R-G 那条）。
 **这条门已证明跑绿：run 38776535438（2026-10-16，开发机自托管 runner CHEN，跑了 verify + verify:agent）**，
   而**托管 windows-latest 已被证否**（run 38757735230：编译与起 dev 都过，之后每个进程以
   `-1073741502 = 0xC0000142`（DLL 初始化失败）退出，套件一条没跑 —— 服务会话撑不起 WebView2）。
