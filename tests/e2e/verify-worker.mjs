@@ -87,6 +87,10 @@ let cdp = null;
 let settings = null;
 let origEnabled = [];
 let invoked = false;
+/** ⑨ 组临时占用过的宿主状态：传感开关与游戏模式键，finally 里照原样还回去 */
+let origFullscreenWatch = null;
+let origGameMode = null;
+let gameModeTouched = false;
 
 try {
   if (!existsSync(join(FIXTURE, "manifest.json"))) throw new Error(`探针夹具缺失: ${FIXTURE}`);
@@ -442,6 +446,108 @@ try {
     (await waitWidgetRealm(c, PROBE, "badge", "worker")).actual,
   );
 
+  r.group("⑨ 徽标仲裁：同一时刻至多一个插槽可见、全屏期间轮播暂停（ADR-0010 决策 1）");
+  // 判据是插槽外壳的布局尺寸非零（ADR 落地口径第 1 条），所以先把 todo 徽标喂出内容：
+  // 探针的 L1W 恒有内容而 todo 平时是空态（空态不渲染是本卡的配套改动），两格有内容才轮得起来。
+  await c.ev(`(async () => {
+    const { bus } = await import('/src/runtime/event-bus.ts');
+    await bus.publish(${JSON.stringify(`${TODO}:cmd`)}, { action: "add", text: "U03 轮播夹具" }, ${JSON.stringify(TODO)});
+  })()`);
+  const BADGE_SLOTS = `[...document.querySelectorAll('#widget-badge div[data-plugin-id]')]`;
+  const SHOWN_IDS = `(() => ${BADGE_SLOTS}.filter((el) => getComputedStyle(el).visibility !== "hidden").map((el) => el.dataset.pluginId).join(","))()`;
+  const badgeSample = await c.ev(
+    `(async () => {
+      const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+      const sized = () => ${BADGE_SLOTS}.filter((el) => el.offsetWidth > 0 && el.offsetHeight > 0).map((el) => el.dataset.pluginId);
+      const until = Date.now() + 15_000;
+      while (Date.now() < until && sized().length < 2) await sleep(200);
+      const samples = [];
+      for (let i = 0; i < 40; i += 1) {
+        samples.push(${BADGE_SLOTS}.filter((el) => getComputedStyle(el).visibility !== "hidden").length);
+        await sleep(150);
+      }
+      return { sized: sized(), samples };
+    })()`,
+    25_000,
+  );
+  r.info("有内容的徽标格", JSON.stringify(badgeSample.sized));
+  r.check("至少两格有内容（轮播有得轮）", true, badgeSample.sized.length >= 2);
+  r.check("同一时刻至多一个徽标插槽不带 visibility:hidden", true, badgeSample.samples.every((n) => n <= 1));
+  r.check(
+    "采样后半段一直恰有一格可见（轮播在走，不是整片藏起来）",
+    0,
+    badgeSample.samples.slice(5).filter((n) => n !== 1).length,
+  );
+  // 全屏暂停：人工造 host:fullscreen。先把传感与游戏模式开关都按住，否则真检测器或
+  // game-mode 的联动（隐藏宠物窗）会跟这一组抢事件；两样都在本组末尾与 finally 里还原。
+  const watchStatus = await invoke("fullscreen_watch_status");
+  if (watchStatus.ok) origFullscreenWatch = watchStatus.v === true;
+  origGameMode = (await c.ev(`localStorage.getItem("host:game-mode")`)) ?? null;
+  gameModeTouched = true;
+  await c.ev(`localStorage.setItem("host:game-mode", "0"); true`);
+  if (watchStatus.ok) await invoke("fullscreen_watch_set", { enabled: false });
+  // watch_set(false) 会在一个采样周期内强制补发一次 active=false，等它落地再开始测量
+  await sleep(1800);
+  const emitFullscreen = (active) => c.ev(`(async () => {
+    try {
+      await window.__TAURI_INTERNALS__.invoke('plugin:event|emit', { event: 'host:fullscreen', payload: { active: ${active} } });
+      return { ok: true };
+    } catch (e) { return { ok: false, e: typeof e === 'string' ? e : (e?.message ?? JSON.stringify(e)) }; }
+  })()`);
+  // 「事件送到了」与「轮播没停」在下面那条断言里长得一样，所以先用一个裸监听单独取证送达
+  await c.ev(`(async () => {
+    window.__fsSeen = [];
+    const handler = window.__TAURI_INTERNALS__.transformCallback((e) => { window.__fsSeen.push(e.payload?.active === true); });
+    window.__fsUnlisten = await window.__TAURI_INTERNALS__.invoke('plugin:event|listen', { event: 'host:fullscreen', target: { kind: 'Any' }, handler });
+    return true;
+  })()`);
+  const beforeIds = await c.ev(SHOWN_IDS);
+  const emitOn = await emitFullscreen(true);
+  if (emitOn.ok !== true) r.info("emit 失败原因", String(emitOn.e));
+  r.check("host:fullscreen 能从页面发出去（能力与回环都通）", true, emitOn.ok === true);
+  await sleep(6500); // 6.5s > 一个 5 秒拍子：没被压住的轮播在这段时间里必换人
+  const duringIds = await c.ev(SHOWN_IDS);
+  const fsSeen = await c.ev(`window.__fsSeen.filter((v) => v === true).length`);
+  r.check("同窗口 JS 监听收到了 active=true（是送到了，不是没发出去）", true, fsSeen >= 1);
+  r.check("前提：期间确实有一格可见，且前后都非空", true, beforeIds.length > 0 && duringIds.length > 0);
+  r.check("host:fullscreen active 期间轮播可见者不变", beforeIds, duringIds);
+  await emitFullscreen(false);
+  const resumedIds = await c.ev(
+    `(async () => {
+      const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+      const shown = () => ${SHOWN_IDS};
+      const until = Date.now() + 12_000;
+      while (Date.now() < until) {
+        const now = shown();
+        if (now !== ${JSON.stringify(duringIds)}) return now;
+        await sleep(250);
+      }
+      return shown();
+    })()`,
+    15_000,
+  );
+  r.check("恢复之后轮播继续推进（可见者换人，证明刚才的暂停不是没有轮子）", true, resumedIds !== duringIds && resumedIds.length > 0);
+  await c.ev(`(async () => {
+    await window.__TAURI_INTERNALS__.invoke('plugin:event|unlisten', { event: 'host:fullscreen', eventId: window.__fsUnlisten });
+    return true;
+  })()`);
+  if (watchStatus.ok) await invoke("fullscreen_watch_set", { enabled: origFullscreenWatch });
+  await c.ev(
+    origGameMode === null
+      ? `localStorage.removeItem("host:game-mode"); true`
+      : `localStorage.setItem("host:game-mode", ${JSON.stringify(origGameMode)}); true`,
+  );
+  gameModeTouched = false;
+  // 收夹具：把本组加的那条待办删掉，别给后面的「零噪音」和下一跑留状态
+  const u03Tasks = (await invoke("store_get", { pluginId: TODO, key: "tasks" })).v ?? [];
+  const u03Task = u03Tasks.find((t) => t.text === "U03 轮播夹具");
+  if (u03Task) {
+    await c.ev(`(async () => {
+      const { bus } = await import('/src/runtime/event-bus.ts');
+      await bus.publish(${JSON.stringify(`${TODO}:cmd`)}, { action: "remove", id: ${JSON.stringify(u03Task.id)} }, ${JSON.stringify(TODO)});
+    })()`);
+  }
+
   r.group("零噪音");
   r.info("导航过渡期告警", String(c.transitionNoise.length));
   r.check("无 console 错误与未捕获异常", [], c.noise);
@@ -458,6 +564,19 @@ try {
     settings = null;
   }
   if (cdp) {
+    // ⑨ 组中途抛错时也要把宿主状态还回去：传感开关与游戏模式键
+    if (origFullscreenWatch !== null) {
+      await hostInvoke(cdp)("fullscreen_watch_set", { enabled: origFullscreenWatch }).catch(() => undefined);
+    }
+    if (gameModeTouched) {
+      await cdp
+        .ev(
+          origGameMode === null
+            ? `localStorage.removeItem("host:game-mode"); true`
+            : `localStorage.setItem("host:game-mode", ${JSON.stringify(origGameMode)}); true`,
+        )
+        .catch(() => undefined);
+    }
     await cdp.ev(`localStorage.removeItem(${JSON.stringify(FLAG)})`).catch(() => undefined);
     await clearWidgetHostRealm(cdp).catch(() => undefined);
     await sleep(1200);

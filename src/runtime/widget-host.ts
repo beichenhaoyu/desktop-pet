@@ -3,11 +3,16 @@
 // widget 能力（事件总线）由宿主经 ctx 注入为受限视图。
 // widget 与插件其余文件一样经 petplugin 协议按目录提供，因此可以用相对 import
 // 拆分子模块（示例插件把 topic 常量抽进 topics.js 就是这个用法）。
+import { listen } from "@tauri-apps/api/event";
 import { bus } from "./event-bus";
 import { pluginFileUrl, pluginFileVersion } from "./plugin-url";
 import { createScopedBus } from "./topic-acl";
 import { createAgentHooksApi } from "./bridge";
 import { WIDGET_HOST_REALM_FLAG, legacyWidgetReason, widgetUsesWorker } from "./widget-protocol";
+import { BADGE_ROTATE_INTERVAL_MS, type BadgeArbiter, createBadgeArbiter } from "./badge-arbiter";
+// 与 plugin-runtime 是一对循环 import：两边都只在函数体里用对方（它是 widgetHost，这边是 getEnabled），
+// 函数声明在模块求值前就已初始化，所以两个窗口的入口先引哪一个都不会炸
+import { getEnabled } from "./plugin-runtime";
 import type { WidgetContext, WidgetRegion } from "../../packages/sdk";
 
 export interface WidgetManifest {
@@ -38,9 +43,74 @@ class WidgetHost {
   private mounting = new Map<string, Promise<void>>(); // `${id}#${region}` → 在途挂载
   /** 每次 unmount 递增：在途的挂载完成后据此判断「我该不该真的留下来」 */
   private epoch = new Map<string, number>();
+  /** 徽标可见性仲裁（ADR-0010）：懒建，只有真出现 badge 插槽的窗口才开计时器与订阅 */
+  private badgeArbiter: BadgeArbiter | null = null;
+  /** badge 插槽外壳的尺寸观测：外壳在 light DOM，closed shadow 不影响量它 */
+  private badgeObservers = new Map<HTMLDivElement, ResizeObserver>();
 
   private epochOf(pluginId: string): number {
     return this.epoch.get(pluginId) ?? 0;
+  }
+
+  /* ---------- 徽标区可见性仲裁（ADR-0010 决策 1） ---------- */
+
+  private ensureBadgeArbiter(): BadgeArbiter {
+    if (this.badgeArbiter) return this.badgeArbiter;
+    const arbiter = createBadgeArbiter({ enabled: () => getEnabled() });
+    arbiter.onChange((visibleId) => this.applyBadgeVisibility(visibleId));
+    // 全屏（游戏模式）期间暂停轮播：本卡加的第二位消费者，写法照 src/pet/game-mode.ts 的订阅
+    listen<{ active: boolean }>("host:fullscreen", (e) => {
+      arbiter.setSuppressed(e.payload?.active === true);
+    }).catch((err) => {
+      console.error("[widget] 订阅 host:fullscreen 失败", err);
+    });
+    // 宿主侧唯一的轮播计时器落点；间隔是 badge-arbiter 里的具名常量，纯模块自己不持计时器
+    setInterval(() => arbiter.tick(), BADGE_ROTATE_INTERVAL_MS);
+    this.badgeArbiter = arbiter;
+    return arbiter;
+  }
+
+  /**
+   * badge 插槽建出来的那一刻登记，并把「有没有内容」的观测钉在**外壳**上：
+   * 插槽是 closed shadow root，外面读不到里面的字，但壳是 light DOM 的 div ——
+   * 布局尺寸是宿主在外面唯一观测得到的信号（ADR 落地口径第 1 条）。
+   */
+  private watchBadgeSlot(pluginId: string, host: HTMLDivElement): void {
+    const arbiter = this.ensureBadgeArbiter();
+    arbiter.register(pluginId);
+    const observer = new ResizeObserver(() => {
+      const { width, height } = host.getBoundingClientRect();
+      arbiter.setHasSize(pluginId, width > 0 && height > 0);
+      // 有内容却没人可见就立刻抛一个出来，别干等下一个 5 秒拍子（空候选时 tick 是空操作）
+      if (arbiter.visible() === null) arbiter.tick();
+    });
+    observer.observe(host);
+    this.badgeObservers.set(host, observer);
+  }
+
+  /** 摘下 badge 插槽：断开尺寸观测并注销登记，漏了会让仲裁器留着死名字继续轮 */
+  private dropBadgeSlot(pluginId: string, host: HTMLDivElement): void {
+    const observer = this.badgeObservers.get(host);
+    if (!observer) return;
+    observer.disconnect();
+    this.badgeObservers.delete(host);
+    this.badgeArbiter?.unregister(pluginId);
+  }
+
+  /**
+   * 按仲裁结果落可见性：非当前可见者 `visibility:hidden` + `position:absolute` 脱流藏起，
+   * 当前可见者解除；`visible()` 为 null 时整个 `#widget-badge` 容器隐藏。
+   * **不许改用 display 藏法**：那样 ResizeObserver 恒量到 0，判据当场失效（ADR 写死）。
+   */
+  private applyBadgeVisibility(visibleId: string | null): void {
+    const container = document.getElementById("widget-badge");
+    if (!container) return;
+    for (const slot of container.querySelectorAll<HTMLElement>("div[data-plugin-id]")) {
+      const show = visibleId !== null && slot.dataset.pluginId === visibleId;
+      slot.style.visibility = show ? "" : "hidden";
+      slot.style.position = show ? "" : "absolute";
+    }
+    container.style.visibility = visibleId === null ? "hidden" : "";
   }
 
   /** 把插件 widget 挂载到指定区域；容器缺省按 id 约定 widget-<region> 查找 */
@@ -81,6 +151,7 @@ class WidgetHost {
     host.dataset.widgetRealm = realm;
     const shadow = host.attachShadow({ mode: "closed" });
     root.appendChild(host);
+    if (region === "badge") this.watchBadgeSlot(pluginId, host);
     return { host, shadow };
   }
 
@@ -104,11 +175,13 @@ class WidgetHost {
     try {
       await workerWidgetHost.mount({ manifest, region, url, host, shadow });
     } catch (err) {
+      this.dropBadgeSlot(manifest.id, host);
       host.remove(); // 半途失败的容器不能留下删不掉的孤儿节点
       throw err;
     }
     if (this.epochOf(manifest.id) !== startedAt) {
       await workerWidgetHost.deactivate(manifest.id, region);
+      this.dropBadgeSlot(manifest.id, host);
       host.remove();
       return;
     }
@@ -203,6 +276,7 @@ class WidgetHost {
       await mod.mount(shadow, ctx);
 
       if (this.epochOf(manifest.id) !== startedAt) {
+        this.dropBadgeSlot(manifest.id, host);
         host.remove();
         return;
       }
@@ -211,6 +285,7 @@ class WidgetHost {
       this.mounted.set(manifest.id, list);
       host = undefined; // 挂载成功，交由 mounted 管理
     } catch (err) {
+      if (host) this.dropBadgeSlot(manifest.id, host);
       host?.remove(); // 半途失败的容器不能留下删不掉的孤儿节点
       throw err;
     }
@@ -240,6 +315,7 @@ class WidgetHost {
       } catch (err) {
         console.error(`[widget] unmount error: ${pluginId}`, err);
       }
+      this.dropBadgeSlot(pluginId, record.host);
       record.host.remove();
     }
   }

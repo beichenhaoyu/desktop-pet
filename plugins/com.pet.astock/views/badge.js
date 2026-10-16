@@ -23,7 +23,8 @@ export function mountBadge(root, ctx, cleanups) {
   const nm = text(dom, "盯盘", "nm");
   const pc = text(dom, "", "flat");
   box.append(nm, pc);
-  root.append(box);
+  // 空态（无自选或无行情）不把框挂进树：外壳尺寸非零是宿主判断「有内容」的唯一信号
+  //（ADR-0010 落地口径第 1 条），样式表本身是零尺寸、常驻不影响量法
 
   cleanups.push(
     watchView(ctx, (d) => {
@@ -31,10 +32,14 @@ export function mountBadge(root, ctx, cleanups) {
       const first = list.length ? d.quotes?.[list[0].secid] : null;
       const idx = d.config?.showIndex ? d.quotes?.[d.config.indexSecid] : null;
       const q = first ?? idx;
-      box.style.display = q || list.length ? "inline-flex" : "none";
-      nm.textContent = q?.name ?? (list.length ? "盯盘" : "未加自选");
-      pc.textContent = q ? fmtPct(q.pct) : "";
+      if (!q) {
+        box.remove();
+        return;
+      }
+      nm.textContent = q.name ?? "盯盘";
+      pc.textContent = fmtPct(q.pct);
       pc.className = toneOf(q);
+      root.append(box);
     }),
   );
 }

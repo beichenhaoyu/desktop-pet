@@ -54,11 +54,20 @@ function mountBadge(root, ctx, cleanups) {
   dot.className = "dot";
   const text = ctx.dom.createElement("span");
   el.append(dot, text);
-  root.append(style, el);
+  // 空态（没见过任何会话活动）什么都不进树，外壳尺寸才量得到 0（ADR-0010 落地口径第 1 条）
+  root.append(style);
 
   watch(ctx, cleanups, (d) => {
+    const steps = typeof d.steps === "number" ? d.steps : 0;
+    const idleEmpty =
+      (d.state ?? "idle") === "idle" && steps === 0 && !d.toolName && !d.title && !d.detail;
+    if (idleEmpty) {
+      el.remove();
+      return;
+    }
     dot.style.background = STATE_COLOR[d.state] ?? "#9aa4b2";
     text.textContent = `${d.label ?? d.state ?? "待命"}${d.steps ? ` · ${d.steps} 步` : ""}`;
+    root.append(el);
   });
 }
 

@@ -56,12 +56,26 @@ function mountBadge(root, ctx, cleanups) {
   };
   const num = span(ctx.dom, "num", "--");
   el.append(span(ctx.dom, "heart", "♥"), num, span(ctx.dom, "unit", "BPM"));
-  root.append(style, el);
+  // 空态（未连接设备）什么都不进树：老是画一个「♥ -- BPM」的框正是判据分不出
+  // 「有没有内容」的现场证据（ADR-0010 落地口径第 1 条）。样式先挂，它零尺寸不干扰量外壳。
+  root.append(style);
 
+  let connected = false;
+  const sync = () => {
+    if (connected) root.append(el);
+    else el.remove();
+  };
   cleanups.push(
     ctx.bus.subscribe(TOPIC_BPM, ({ bpm }) => {
       // 广播数据不可信：只写 textContent，永不把总线 payload 拼进 innerHTML
       num.textContent = Number.isFinite(bpm) ? String(bpm) : "--";
+    }),
+  );
+  // 连接状态由插件自己经 `${PID}:widget` 推来（连上/断开都会推一次）；挂载时宿主的回灌补齐当前值
+  cleanups.push(
+    ctx.bus.subscribe(TOPIC_WIDGET, (d) => {
+      connected = d?.connected === true;
+      sync();
     }),
   );
 }

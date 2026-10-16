@@ -88,12 +88,18 @@ function mountBadge(root, ctx, cleanups) {
   const dot = el(dom, "i", "dot");
   const text = el(dom, "span", null, "待办");
   badge.append(dot, text);
-  root.append(style, badge);
+  // 徽标本体先不挂：空态（一条都没有）什么都不进树，外壳尺寸才量得到 0（ADR-0010 落地口径第 1 条）
+  root.append(style);
 
   watch(ctx, cleanups, (d) => {
     const open = d.openCount ?? 0;
+    if (open === 0 && (d.doneCount ?? 0) === 0) {
+      badge.remove();
+      return;
+    }
     dot.style.background = open > 0 ? "#ffb454" : "#7ee2a8";
     text.textContent = open > 0 ? `${open} 项待办` : "没有待办";
+    root.append(badge);
   });
 }
 
