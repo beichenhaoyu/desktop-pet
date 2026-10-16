@@ -1195,7 +1195,58 @@ try {
       true,
       await oc.ev(`!!document.querySelector('#widget-overlay div[data-plugin-id=${JSON.stringify(PID)}]')`),
     );
+    // 首开落点（页面侧）：这扇窗是刚按插件缺省坐标建的，套件此时还没改过 cardX/cardY
+    // （开头 permission_revoke 连带清了插件存储，配置回到缺省）。420/180 故意不对称：
+    // 对称点抓不到 x/y 对调的接线错（U01 那轮变异抽查全套件全绿就是这么漏的）
+    const geoOpen = await oc.ev(`[window.screenX, window.screenY]`);
+    r.check(
+      "卡片首次打开就落在插件缺省坐标 (420,180)（页面侧逻辑像素）",
+      true,
+      Array.isArray(geoOpen) && Math.abs(geoOpen[0] - 420) <= 6 && Math.abs(geoOpen[1] - 180) <= 6,
+    );
   }
+
+  // —— 落点（U07 / ADR-0010 决策 3/4）：位置由插件直传逻辑像素坐标并自己存，宿主只做屏内夹紧 ——
+  // 两条独立通道对同一件事：命令侧 plugin:window|outer_position 是物理像素（×页面 devicePixelRatio，容差 6），
+  // 页面侧 window.screenX/screenY 是逻辑像素（不经换算，与请求值直接比）。坐标一律用非对称值。
+  const CARD_LABEL = "overlay-com_pet_astock";
+  const ocDpr = Number(await c.ev("window.devicePixelRatio")) || 1;
+  const cardPos = async () => (await invoke("plugin:window|outer_position", { label: CARD_LABEL })).v ?? null;
+  // ㈠ 首开那一下（命令侧）：落点不是宿主缺省 (24,24)，说明插件真的传了自己的坐标。
+  //    插件没传坐标的形态在这条与上面那条上同时红，蹭缺省藏不住
+  const posOpen = await cardPos();
+  r.check(
+    "卡片首开落点不是宿主缺省 (24,24)（命令侧物理像素；防插件没传坐标蹭缺省）",
+    true,
+    !!posOpen && !(Math.abs(posOpen.x - 24 * ocDpr) <= 6 && Math.abs(posOpen.y - 24 * ocDpr) <= 6),
+  );
+  // ㈡ 先开在一个坐标 → 发 config 改成另一个 → 再看它有没有真的动：
+  //    「坐标存下了但没触发一次重 show、窗停在旧位置」的形态在这里必红
+  await c.ev(`window.__bus.publish(${JSON.stringify(`${PID}:cmd`)}, ${JSON.stringify({ action: "config", value: { cardX: 300, cardY: 420 } })}); true`);
+  const movedByConfig = await waitUntil(
+    c,
+    `(async () => {
+      try {
+        const p = await window.__TAURI_INTERNALS__.invoke('plugin:window|outer_position', { label: ${JSON.stringify(CARD_LABEL)} });
+        const k = window.devicePixelRatio || 1;
+        return Math.abs((p?.x ?? 1e9) - 300 * k) <= 6 && Math.abs((p?.y ?? 1e9) - 420 * k) <= 6;
+      } catch { return false; }
+    })()`,
+    12_000,
+  );
+  const posMoved = await cardPos();
+  r.check(
+    "发 config 改坐标后卡片真的移动：命令侧物理落点 = 请求值×devicePixelRatio（容差 6）",
+    true,
+    movedByConfig && Math.abs((posMoved?.x ?? 1e9) - 300 * ocDpr) <= 6 && Math.abs((posMoved?.y ?? 1e9) - 420 * ocDpr) <= 6,
+  );
+  // ㈢ 页面侧独立核对同一件事（上面是物理像素、这里是逻辑像素，互为两路证据）
+  const geoMoved = oc ? await oc.ev(`[window.screenX, window.screenY]`) : null;
+  r.check(
+    "页面侧独立核对：卡片页 window.screenX/screenY = (300,420)（逻辑像素）",
+    true,
+    Array.isArray(geoMoved) && Math.abs(geoMoved[0] - 300) <= 6 && Math.abs(geoMoved[1] - 420) <= 6,
+  );
 
   r.group("提醒链路（通知 + 宠物反应）");
   await c.ev(`(async () => {

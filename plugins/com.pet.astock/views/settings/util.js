@@ -81,6 +81,16 @@ export function intervalOf(cfg) {
   return cfg?.intervalSec ?? 20;
 }
 
+/** 配置回显：盯盘卡 X 坐标缺省 420（与 main.js DEFAULT_CONFIG 同值） */
+export function cardXOf(cfg) {
+  return cfg?.cardX ?? 420;
+}
+
+/** 配置回显：盯盘卡 Y 坐标缺省 180（缺省非对称是故意的：对称点抓不到 x/y 对调的错） */
+export function cardYOf(cfg) {
+  return cfg?.cardY ?? 180;
+}
+
 /** 配置回显：勾选项「没显式关掉就是开着」（alertsOn / petOn / showIndex 同一个口径） */
 export function prefChecked(value) {
   return value !== false;

@@ -38,6 +38,10 @@ export const DEFAULT_CONFIG = {
   showIndex: true,
   indexSecid: "1.000001",
   mode: "badge", // badge | overlay | off
+  // 盯盘卡位置（逻辑像素，插件自己存；ADR-0010 决策 4）。缺省故意非对称：
+  // 对称坐标抓不到 x/y 对调的接线错（宿主那轮变异抽查全套件全绿就是这么漏的）
+  cardX: 420,
+  cardY: 180,
 };
 
 /** 轮询间隔下限：再小就是在压公共接口，个人盯盘也没这个必要 */
@@ -84,8 +88,8 @@ async function syncOverlayOnce() {
   const want = config.mode === "overlay";
   try {
     if (want) {
-      // 盯盘卡放桌面左上角：贴在宠物头顶会挡住角色，也和心率波形抢同一块地方
-      await ctx.overlay.show({ placement: "corner", height: 96 + 26 * Math.min(watch.length + 1, 8) });
+      // 盯盘卡位置由插件自己给（cardX/cardY，设置页可改）：宿主只做屏内夹紧（ADR-0010 决策 3/4）
+      await ctx.overlay.show({ x: config.cardX, y: config.cardY, height: 96 + 26 * Math.min(watch.length + 1, 8) });
     } else {
       await ctx.overlay.hide();
     }
@@ -117,6 +121,25 @@ export function resolveTarget(cmd) {
   if (!code) return null;
   const id = secidOf(code);
   return id ? { secid: id, code, name: typeof cmd.name === "string" ? cmd.name.slice(0, 40) : code } : null;
+}
+
+/** 坐标归一：真数字才算（非空数字串也收），其余给 null —— 存储里的怪值不许把位置变成 NaN 或字符串 */
+function coordOf(v) {
+  const n = typeof v === "string" && v.trim() !== "" ? Number(v.trim()) : v;
+  return typeof n === "number" && Number.isFinite(n) ? Math.round(n) : null;
+}
+
+/**
+ * config 的恢复 = 既有 restore("config") 的逐字段归整 + cardX/cardY 的严格收口。
+ * 这两个坐标不在 restore 的字段表里：逐字段收 —— 不是有限数字就回落缺省，与命令入口同一条口径。
+ */
+function restoreConfig(saved) {
+  const s = saved && typeof saved === "object" ? saved : {};
+  return {
+    ...restore("config", saved, config),
+    cardX: coordOf(s.cardX) ?? DEFAULT_CONFIG.cardX,
+    cardY: coordOf(s.cardY) ?? DEFAULT_CONFIG.cardY,
+  };
 }
 
 async function handleCmd(cmd) {
@@ -193,6 +216,14 @@ async function handleCmd(cmd) {
         config.indexSecid = c.indexSecid;
       }
       if (c.mode === "badge" || c.mode === "overlay" || c.mode === "off") config.mode = c.mode;
+      if (c.cardX !== undefined) {
+        const n = coordOf(c.cardX);
+        if (n !== null) config.cardX = n;
+      }
+      if (c.cardY !== undefined) {
+        const n = coordOf(c.cardY);
+        if (n !== null) config.cardY = n;
+      }
       await afterChange(`刷新间隔 ${config.intervalSec}s、提醒 ${config.alertsOn ? "开" : "关"}`);
       return;
     }
@@ -267,7 +298,7 @@ export async function activate(context) {
     try {
       const saved = await ctx.storage.get(key);
       if (key === "watch") watch = restore("watch", saved, []);
-      else if (key === "config") config = restore("config", saved, config);
+      else if (key === "config") config = restoreConfig(saved);
       else if (key === "sources") sourcePrefs = restore("sources", saved, sourcePrefs);
       else alerted = restore("alerted", saved, {});
     } catch (err) {

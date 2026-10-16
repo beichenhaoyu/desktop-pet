@@ -6,7 +6,7 @@
 import { sourceLabelOf } from "../../market.js";
 import { TOPIC_CMD } from "../../topics.js";
 import { button, clockOf, input, PHASE_TEXT, tag, text } from "../dom.js";
-import { intervalOf, modeOf, netText, prefChecked, statusText } from "./util.js";
+import { cardXOf, cardYOf, intervalOf, modeOf, netText, prefChecked, statusText } from "./util.js";
 
 const INDEXES = [
   { secid: "1.000001", name: "上证指数" },
@@ -42,6 +42,34 @@ export function mountPrefs(ctx, state) {
     radios.append(label);
     modeInputs[value] = box;
   }
+
+  // 盯盘卡位置：位置由插件自己给、自己存（ADR-0010 决策 3/4），这两个字段就是它的设置入口。
+  // 契约：type 走 property（attr 表里没有 type，见 widget-protocol 的 WIDGET_PROPS/WIDGET_ATTRS，
+  // input() 助手就是这么写的），name 走 attribute（与上面 radio 同一条）；change 回来的 value 是
+  // 净化后的字符串 —— 这里 Number 一道只做提示，落库的收口在 main.js 的 config 处理里
+  const posField = (key, placeholder) => {
+    const el = input(dom, "text", "num");
+    el.setAttribute("name", `astock-${key}`);
+    el.placeholder = placeholder;
+    let editing = false; // Worker 里没有 document.activeElement，同间隔输入项：正在输入就别回显覆盖
+    el.on("input", () => {
+      editing = true;
+    });
+    el.on("change", () => {
+      editing = false;
+      const n = el.value.trim() === "" ? Number.NaN : Number(el.value);
+      if (!Number.isFinite(n)) {
+        state.status.set("卡片坐标要填数字", "error");
+        return;
+      }
+      ctx.bus.publish(TOPIC_CMD, { action: "config", value: { [key]: Math.round(n) } });
+    });
+    return { el, editing: () => editing };
+  };
+  const cardXField = posField("cardX", "420");
+  const cardYField = posField("cardY", "180");
+  const cardRow = tag(dom, "div", "row");
+  cardRow.append(text(dom, "卡片 X "), cardXField.el, text(dom, "卡片 Y "), cardYField.el);
 
   /* ---------- 刷新与提醒 ---------- */
   const intervalInput = input(dom, "text", "num");
@@ -118,6 +146,8 @@ export function mountPrefs(ctx, state) {
 
     for (const [value, box] of Object.entries(modeInputs)) box.checked = modeOf(cfg) === value;
     if (!editing) intervalInput.value = String(intervalOf(cfg));
+    if (!cardXField.editing()) cardXField.el.value = String(cardXOf(cfg));
+    if (!cardYField.editing()) cardYField.el.value = String(cardYOf(cfg));
     alertsBox.checked = prefChecked(cfg.alertsOn);
     petBox.checked = prefChecked(cfg.petOn);
     showIndexBox.checked = prefChecked(cfg.showIndex);
@@ -142,7 +172,7 @@ export function mountPrefs(ctx, state) {
 
   return {
     // 次序与原 wrap.append 一致：显示方式 → 刷新与提醒 → 最近提醒
-    sections: [state.section("显示方式", radios), state.section("刷新与提醒", row, checks, netLine), state.section("最近提醒", alertList)],
+    sections: [state.section("显示方式", radios, cardRow), state.section("刷新与提醒", row, checks, netLine), state.section("最近提醒", alertList)],
     render,
     renderAlerts,
   };
