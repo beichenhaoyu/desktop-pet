@@ -1,6 +1,6 @@
 // 待办插件的界面渲染。区域约定：
 //   badge   = 宠物旁的小徽标（还剩几项）
-//   overlay = 贴在宠物头顶的桌面卡片（可勾选）
+//   overlay = 桌面浮层卡片，窗口位置由插件自己定（可勾选）
 //   settings= 设置窗里的完整清单与开关
 // 渲染契约写法（Worker 路线，ADR-0008 / PLUGIN_SDK.md §5.1）：节点一律经 ctx.dom 创建、
 // 事件经节点自身的 on() 订阅，本文件不再直接触碰宿主 realm 的 DOM；
@@ -149,6 +149,7 @@ function mountSettings(root, ctx, cleanups) {
     .td-set { display:flex; flex-direction:column; gap:8px; font-size:12.5px; color:#2b2f36; }
     .td-set .row { display:flex; gap:6px; align-items:center; }
     .td-set input[type=text] { flex:1; min-width:0; font-size:12px; padding:4px 6px; }
+    .td-set input[type=number] { width:76px; font-size:12px; padding:4px 6px; }
     .td-btn { font-size:12px; padding:4px 12px; border-radius:5px;
       border:1px solid #d0d5dd; background:#fff; cursor:pointer; }
     .td-btn:hover { background:#f2f4f7; }
@@ -196,6 +197,31 @@ function mountSettings(root, ctx, cleanups) {
   const opts = el(dom, "div", "opts");
   opts.append(cardLabel, remindLabel, clearBtn);
 
+  // 卡片位置：插件自己存、直传宿主的逻辑像素（宿主不记位置，只做屏内夹紧）。
+  // Worker 里没有 document.activeElement：用 editing 标记复现「正在输入就别回写覆盖」
+  // （input 置位、change 复位）；change 事件的 value 由宿主净化后经反向通道回来，
+  // handler 里读到的就是用户改后的新值。
+  const xInput = el(dom, "input");
+  xInput.type = "number";
+  xInput.placeholder = "560";
+  const yInput = el(dom, "input");
+  yInput.type = "number";
+  yInput.placeholder = "140";
+  let editing = false;
+  xInput.on("input", () => {
+    editing = true;
+  });
+  yInput.on("input", () => {
+    editing = true;
+  });
+  const posRow = el(dom, "div", "row");
+  posRow.append(
+    el(dom, "span", "hint", "卡片 X"),
+    xInput,
+    el(dom, "span", "hint", "卡片 Y"),
+    yInput,
+  );
+
   const statusLine = el(dom, "div", "status", "正在读取…");
   const hint = el(
     dom,
@@ -203,17 +229,32 @@ function mountSettings(root, ctx, cleanups) {
     "hint",
     "字段照 todo.txt 约定：`(A)` 优先级、`due:` 到期、`@项目`、`+上下文`。数据只存在插件自己的目录里。",
   );
-  box.append(row, list, opts, statusLine, hint);
+  box.append(row, list, opts, posRow, statusLine, hint);
   root.append(style, box);
 
-  const sendConfig = () =>
-    ctx.bus.publish(TOPIC_CMD, {
-      action: "config",
-      card: cardBox.checked,
-      remind: remindBox.checked,
-    });
+  // 一次 config 命令带全字段：坐标只在输入是有限数字时才随行发出（空值/坏值不写坏配置）
+  const numOf = (node) => {
+    const raw = node.value.trim();
+    return raw === "" ? NaN : Number(raw);
+  };
+  const sendConfig = () => {
+    const cmd = { action: "config", card: cardBox.checked, remind: remindBox.checked };
+    const x = numOf(xInput);
+    const y = numOf(yInput);
+    if (Number.isFinite(x)) cmd.cardX = x;
+    if (Number.isFinite(y)) cmd.cardY = y;
+    ctx.bus.publish(TOPIC_CMD, cmd);
+  };
   cardBox.on("change", sendConfig);
   remindBox.on("change", sendConfig);
+  xInput.on("change", () => {
+    editing = false;
+    sendConfig();
+  });
+  yInput.on("change", () => {
+    editing = false;
+    sendConfig();
+  });
 
   const toggle = (id, done) => ctx.bus.publish(TOPIC_CMD, { action: "toggle", id, done });
   const remove = (id) => ctx.bus.publish(TOPIC_CMD, { action: "remove", id });
@@ -227,6 +268,10 @@ function mountSettings(root, ctx, cleanups) {
     );
     cardBox.checked = d.config?.card === true;
     remindBox.checked = d.config?.remind !== false;
+    if (!editing) {
+      xInput.value = String(d.config?.cardX ?? 560);
+      yInput.value = String(d.config?.cardY ?? 140);
+    }
     statusLine.textContent = `未完成 ${d.openCount ?? 0} · 已完成 ${d.doneCount ?? 0}`;
   });
 

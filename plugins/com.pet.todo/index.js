@@ -7,7 +7,7 @@ import { formatLine, parseLine, sortOpen, today } from "./todo-txt.js";
 
 let ctx = null;
 let tasks = [];
-let config = { card: false, remind: true };
+let config = { card: false, remind: true, cardX: 560, cardY: 140 };
 let notified = {}; // { 任务 id: 已提醒过的日期 }，一天最多提醒一次
 let timer = 0;
 
@@ -53,11 +53,12 @@ function emitChanged() {
   });
 }
 
-/** 同步桌面卡片：开关开着且有未完成项才显示 */
+/** 同步桌面卡片：开关开着且有未完成项才显示；坐标是插件自定的逻辑像素（宿主只做屏内夹紧） */
 async function syncCard() {
   const want = config.card === true && sortOpen(tasks).length > 0;
   try {
-    if (want) await ctx.overlay.show({ placement: "above-pet", height: 176 });
+    // 改完配置会再走一遍这里：已存在的窗带新坐标重 show 时宿主会真的挪窗
+    if (want) await ctx.overlay.show({ x: config.cardX, y: config.cardY, height: 176 });
     else await ctx.overlay.hide();
   } catch (err) {
     ctx?.log?.("桌面卡片切换失败", err);
@@ -142,6 +143,9 @@ async function handleCmd(cmd) {
     case "config": {
       if (cmd.card !== undefined) config.card = cmd.card === true;
       if (cmd.remind !== undefined) config.remind = cmd.remind === true;
+      // 坐标只在是有限数字时收：怪值不落库，卡片继续按上一次的坐标显示
+      if (Number.isFinite(cmd.cardX)) config.cardX = cmd.cardX;
+      if (Number.isFinite(cmd.cardY)) config.cardY = cmd.cardY;
       await persist();
       pushState();
       await syncCard();
@@ -173,8 +177,16 @@ export async function activate(context) {
       if (key === "tasks") {
         if (Array.isArray(saved)) tasks = saved.filter((t) => t && typeof t.id === "string");
       } else if (saved && typeof saved === "object") {
-        // 逐字段严格恢复：存储里混进什么类型都不该让 config.card 变成 truthy 的怪值
-        if (key === "config") config = { card: saved.card === true, remind: saved.remind !== false };
+        // 逐字段严格恢复：存储里混进什么类型都不该让 config.card 变成 truthy 的怪值、
+        // 也不该让坐标变成 NaN／字符串／true（不是有限数字就回兜底缺省）
+        if (key === "config") {
+          config = {
+            card: saved.card === true,
+            remind: saved.remind !== false,
+            cardX: Number.isFinite(saved.cardX) ? saved.cardX : 560,
+            cardY: Number.isFinite(saved.cardY) ? saved.cardY : 140,
+          };
+        }
         if (key === "notified") {
           notified = {};
           for (const [id, day] of Object.entries(saved)) {
