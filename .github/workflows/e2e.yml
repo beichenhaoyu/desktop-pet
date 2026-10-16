@@ -32,8 +32,8 @@
 # **不重定向 inbox**）。边跑这套件边在会话里干活 → 实测 71/6 红；什么都不等它跑完 → 77/0。
 # 判据是同环境重跑两次，不是改判据。
 #
-# 不在默认清单里的套件与原因（别顺手加）：
-#   verify:game    全屏置顶窗 + 定时器，桌面堆（desktop heap）风险；
+# 不在默认清单里的套件与原因（别顺手加进 default）：
+#   verify:game    全屏置顶窗 + 定时器，桌面堆（desktop heap）风险；已进白名单，但只在手动点名时跑，不进默认清单；
 #   verify:release 自己起 release exe 并占 9224，还要 3~4 分钟 tauri build；
 #   verify:astock / verify:http / verify:skin 出网（行情、GBK 源、petdex.dev），数据形态随时段漂。
 name: E2E（手动触发）
@@ -134,7 +134,7 @@ jobs:
         run: |
           # The allowlist is part of this gate (see the file header for why game/release/astock/http/skin
           # stay out). It also pins the input to npm script names so the string never reaches the shell.
-          $allowed = @("verify", "verify:agent", "verify:worker", "verify:todo")
+          $allowed = @("verify", "verify:agent", "verify:worker", "verify:todo", "verify:game")
           $failed = @()
           foreach ($s in ($env:SUITES -split ",")) {
             $name = $s.Trim()
