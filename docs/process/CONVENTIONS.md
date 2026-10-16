@@ -70,7 +70,7 @@
 - **widget 跑在哪个 realm 看插槽壳上的 `data-widget-realm`**：closed shadow root 里面外部读不到，壳的 dataset 是唯一取证点（`widget-host.ts` 的 `createSlot` 戳的）。取值有三个：`host` / `worker` / **`blocked`** —— apiVersion 没到渲染契约那一版的旧 widget 在**取 widget 文件之前**就被拦下，插槽里显示一行可读迁移提示而不是白屏（`2163de4`：`legacyWidgetReason(manifest, pinnedRaw)`，判定排在 `widgetUsesWorker` 之前）。**被点名进宿主 realm 例外名单的插件不受这道拦**，逃生门照旧可用。翻默认之后，`verify` 与 `verify:release` 里那个页面级探针 `zz.probe` 的 widget **必须**点名留在宿主 realm：
 它要测的是「页面自身代码在 CSP 下能不能 eval、能不能注 `<style>`」，结果写进 `window.__probes` 由页面 realm 读 ——
 放进 Worker 那些就不成立了。这条点名顺带就是「例外名单在真实装载路径上管用」的证据，`verify` 里有一条 realm 戳断言钉它。
-同一时间四套运行时套件各钉一条 realm 戳断言：`verify`（hr-ble 的 badge）271 条、`verify:todo`（badge）31 条、`verify:agent`（settings）79 条、`verify:astock`（settings）154 条上下。读戳用 `tests/e2e/harness/widget-realm.mjs` 那三件套（点名 / 读戳 / 等戳），别在套件里各写一份选择器。
+同一时间四套运行时套件各钉一条 realm 戳断言：`verify`（hr-ble 的 badge）273 条、`verify:todo`（badge）36 条、`verify:agent`（settings）79 条、`verify:astock`（settings）159 条上下。读戳用 `tests/e2e/harness/widget-realm.mjs` 那三件套（点名 / 读戳 / 等戳），别在套件里各写一份选择器。
 - **http 授权键不带默认端口**：宿主算的键必须与桥申请的 `new URL(url).host` 一致。早先用 `port_or_known_default()` 会给 https 凭空补出 `:443`，于是**任何 https 请求都判未授权**；本地测试地址带显式端口（`http://127.0.0.1:9`）两边恰好一致，所以这个错一直藏着 —— 加 https 相关断言时别只用带端口的地址
 - **http 按响应 `Content-Type` 的 charset 解码**（`services/http.rs::decode_body`）：只认 `gbk` / `gb2312` / `gb18030` 三个标签（大小写与键名都不敏感，认 `text/html;charset=gbk;` 这种写法），其余一律保持原来的 UTF-8 lossy —— 不猜编码，既有插件不会漂移。腾讯（`charset=GBK`）与新浪（`charset=GB18030`）的实时接口因此才可用。**为什么必须在宿主解**：腾讯行情用 `~` 分段而名称段排在所有数字段之前，GBK 的尾字节允许 `0x7E`（就是 `~`，实测「硚」= `b3 7e`），lossy 之后会变成一个真分隔符，后面每个字段整体挪一位 —— 把「今开」读成「现价」，**静默错价比显示乱码严重**；而字节到 JS 侧已经丢了，救不回来
 - **http 的重定向由宿主逐跳跟**：ureq 设 `redirects(0)`，`http.rs::send_following_redirects` 自己走，每一跳的新 host 都要重新过 `http:<host>` 授权（否则授权一个域名就能被 302 弹到内网 / `169.254.169.254`）；跨主机时不带 `authorization`/`cookie`
@@ -112,7 +112,11 @@
 `verify` 不会报红而是**少跑 15 条**（当场读数 256/0，看着像"回归缩了"）—— 两套件的假红形态不一样，
 `verify:agent` 的写盘组是 `54/1`，`verify` 的 `agent:hooks` 组是静默跳过。带全两个变量冷启动复测：
 **`verify` 271/0**（多的一条是 U01 的「带旧 placement 的调用仍能开窗」过渡期兼容断言）、**`verify:agent` 79/0**
-（位置断言换成「按请求坐标落座」两条，见 `bfd9951`）、`verify:worker` 66/0（含 U03 第⑨组）。**这条门已证明跑绿：run 38776535438（2026-10-16，开发机自托管 runner CHEN，跑了 verify + verify:agent）**，
+（位置断言换成「按请求坐标落座」两条，见 `bfd9951`）、`verify:worker` 66/0（含 U03 第⑨组）。
+**同日 U04 / U06 / U07 三张卡放行后再复测（同一环境、一套件一冷启动）：`verify` 273/0、`verify:todo` 36/0、
+`verify:astock` 159/0、`verify:worker` 66/0，`tools/win-zorder.ps1` 仍 exit 0** —— 悬浮卡挪到插件自定坐标之后
+「本体压住 overlay」这条没回退；159 只是那次盘面形态下的读数，判覆盖仍比标题集合。
+**这条门已证明跑绿：run 38776535438（2026-10-16，开发机自托管 runner CHEN，跑了 verify + verify:agent）**，
   而**托管 windows-latest 已被证否**（run 38757735230：编译与起 dev 都过，之后每个进程以
   `-1073741502 = 0xC0000142`（DLL 初始化失败）退出，套件一条没跑 —— 服务会话撑不起 WebView2）。
   由此三条约束别图省事改掉：runner 标签 `desktop-pet-e2e` 只给这条工作流用（`ci.yml` 留在托管，PR/fork 不会落到开发机）；
