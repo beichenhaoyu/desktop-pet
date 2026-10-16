@@ -242,12 +242,15 @@ export function buildContext(manifest: ManifestLike): PluginContext {
 
     overlay: {
       // 每个插件一扇自己的悬浮窗（标签 overlay-<id>）：位置、高度、显隐互不影响，
-      // 不再是谁先 show 谁定这扇窗
-      show: gated(manifest, OVERLAY, async (options: { placement?: string; height?: number } = {}) => {
+      // 不再是谁先 show 谁定这扇窗。位置（逻辑像素 x/y）由插件直传、自己存，
+      // 宿主只按所在显示器工作区做屏内夹紧；placement 是过渡期参数：宿主接受但忽略（打 warn）
+      show: gated(manifest, OVERLAY, async (options: { x?: number; y?: number; height?: number; placement?: string } = {}) => {
         await hostCall("overlay_show", {
           pluginId: pid,
           placement: options.placement ?? null,
           height: options.height ?? null,
+          x: options.x ?? null,
+          y: options.y ?? null,
         });
       }),
       hide: gated(manifest, OVERLAY, async () => {

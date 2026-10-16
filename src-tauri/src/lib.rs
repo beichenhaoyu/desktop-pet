@@ -89,7 +89,6 @@ pub fn run() {
             services::fullscreen::start(app.handle());
             // 恢复用户上次选的加速键（失败会退回默认值，保证插件页叫得出来）
             services::hotkeys::restore(app.handle());
-            window::overlay::start_follow_timer(app.handle());
             // 首启且本地什么都没有时自动装默认形象（后台跑，离线只留一条 warn）
             services::skins::ensure_default(app.handle().clone());
             Ok(())

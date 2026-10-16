@@ -46,12 +46,19 @@ export interface HttpRequestOptions {
   body?: string;
 }
 
-/** ctx.overlay.show 的 options（bridge.ts:233）。
- * height 实际被钳到 48~900、缺省 200（src-tauri/src/window/overlay.rs:82、84-86）；
- * placement 只认精确值 "above-pet"，其余字符串（含拼错）静默按桌面左上角（overlay.rs:261-265）。 */
+/** ctx.overlay.show 的 options（bridge.ts:247-255）。
+ * x / y 是**逻辑像素**的落点（缺省 24,24）；宿主只保留「屏内夹紧」一件事：按请求点所在
+ * 显示器的工作区整块夹回，找不到显示器就退回主屏（src-tauri/src/window/overlay.rs:103-128）。
+ * height 实际被钳到 48~900、缺省 200（overlay.rs:66-71）。
+ * placement 已废弃、接受但忽略（ADR-0010 决策 3）：位置改由插件直传坐标并自己存。 */
 export interface OverlayShowOptions {
-  placement?: string;
+  /** 逻辑像素；缺省 24（插件第一次显示时不知道屏幕多大，宿主兜底） */
+  x?: number;
+  /** 逻辑像素；缺省 24 */
+  y?: number;
   height?: number;
+  /** @deprecated 位置改由 x / y 决定（ADR-0010 决策 3）：接受但忽略，传值时宿主只记一条 warn */
+  placement?: string;
 }
 
 /** settings 区 widget 专属：ctx.host.agentHooks（bridge.ts:102-108，只经 widget-host.ts:97-105 注入，边界见 ADR-0001）。 */
@@ -130,12 +137,12 @@ export interface PluginContext {
   /** 系统通知（bridge.ts:224-228）。静默改写：折叠空白、title 截 80 字、body 截 240 字；
    * 两者清洗后皆空时 reject（src-tauri/src/services/notify.rs:15-19、29-37）。需要能力 `notify` */
   notify: { show(title: string, body: string): Promise<void> };
-  /** 本插件专属悬浮窗（bridge.ts:230-246），窗标签 overlay-<id>（id 里的点编码成下划线）。
-   * 拒绝面：调用窗归属不对、或插件确实没装着（src-tauri/src/window/overlay.rs:247-260）。需要能力 `overlay` */
+  /** 本插件专属悬浮窗（bridge.ts:243-263），窗标签 overlay-<id>（id 里的点编码成下划线）。
+   * 拒绝面：调用窗归属不对（src-tauri/src/window/overlay.rs:362-364）、或插件确实没装着（overlay.rs:401-413）。需要能力 `overlay` */
   overlay: {
     show(options?: OverlayShowOptions): Promise<void>;
     hide(): Promise<void>;
-    /** 整扇销毁（overlay.rs:305-319）；插件停用时宿主也会收（plugin-runtime.ts:212 走 overlay_reclaim，不查 overlay 能力） */
+    /** 整扇销毁（overlay.rs:451-467）；插件停用时宿主也会收（plugin-runtime.ts:212 走 overlay_reclaim，不查 overlay 能力） */
     destroy(): Promise<void>;
   };
 }

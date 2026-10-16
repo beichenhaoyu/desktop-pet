@@ -718,9 +718,9 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
   r.check("非法 id 直接拒", true, !pubBadId.ok && /invalid plugin id/.test(String(pubBadId.e)));
 
   r.group("悬浮层门禁（S3）：未授权 overlay 开不出置顶窗");
-  const ovBadId = await invoke_("overlay_show", { pluginId: "a/b", placement: "corner", height: 120 });
+  const ovBadId = await invoke_("overlay_show", { pluginId: "a/b", x: 64, y: 64, height: 120 });
   r.check("非法 id 被拒", true, !ovBadId.ok && /非法的插件 id/.test(String(ovBadId.e)));
-  const ovNoGrant = await invoke_("overlay_show", { pluginId: PROBE_ID, placement: "corner", height: 120 });
+  const ovNoGrant = await invoke_("overlay_show", { pluginId: PROBE_ID, x: 64, y: 64, height: 120 });
   r.check("未授权 overlay 的开窗被拒", true, !ovNoGrant.ok && /未授权 overlay/.test(String(ovNoGrant.e)));
   const hideNoGrant = await invoke_("overlay_hide", { pluginId: PROBE_ID });
   r.check("未授权 overlay 的收起同样被拒", true, !hideNoGrant.ok && /未授权 overlay/.test(String(hideNoGrant.e)));
@@ -730,8 +730,11 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
   const reclaimFromSettings = await settings.invoke("overlay_reclaim", { pluginId: PROBE_ID });
   r.check("设置窗调宿主回收通道被窗口门禁拒绝", true, !reclaimFromSettings.ok && /宠物窗/.test(String(reclaimFromSettings.e)));
   r.check("声明并同意后拿到 overlay", true, await grantProbeCap("overlay"));
-  const opened = await invoke_("overlay_show", { pluginId: PROBE_ID, placement: "corner", height: 120 });
+  const opened = await invoke_("overlay_show", { pluginId: PROBE_ID, x: 64, y: 64, height: 120 });
   r.check("授权后开窗命令被放行", true, opened.ok === true);
+  // 过渡期兼容（ADR-0010 决策 3）：第三方老插件还在传 placement —— 接受并忽略，不报错、照常开窗
+  const legacyPlacement = await invoke_("overlay_show", { pluginId: PROBE_ID, placement: "above-pet", height: 120 });
+  r.check("带旧 placement 的调用仍能开窗（过渡期兼容）", true, legacyPlacement.ok === true);
   r.check(
     "注册表里有了这一扇",
     true,
@@ -748,7 +751,7 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
     ),
   );
   // 撤销授权后能力没了，插件面的销毁命令会过不去 —— 宿主必须已经把窗收掉，不能留孤儿窗
-  await invoke_("overlay_show", { pluginId: PROBE_ID, placement: "corner", height: 120 });
+  await invoke_("overlay_show", { pluginId: PROBE_ID, x: 64, y: 64, height: 120 });
   await revoke(PROBE_ID);
   r.check(
     "撤销授权连带收掉该插件的悬浮层",
@@ -818,15 +821,16 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
 
   // 起窗：注册表里的条目**不等于**活窗（窗自关或被停用后条目可能还挂着、页面已经没了），
   // 所以无条件 show 一次 —— 已有活窗时它是幂等的，死条目/无窗时它把窗建回来。
+  // 坐标由插件自定（ADR-0010 决策 4），这里只是给两扇窗一点可区分的落点
   const ownerPrior = {};
   for (const [id, visible] of (await invoke_("overlay_list")).v ?? []) {
     ownerPrior[id] = { entry: true, visible: visible === true };
   }
-  for (const [id, placement, height] of [
-    [OWNER_AGENT, "above-pet", 104],
-    [OWNER_HR, "corner", 200],
+  for (const [id, x, y, height] of [
+    [OWNER_AGENT, 44, 44, 104],
+    [OWNER_HR, 24, 24, 200],
   ]) {
-    const shown = await invoke_("overlay_show", { pluginId: id, placement, height });
+    const shown = await invoke_("overlay_show", { pluginId: id, x, y, height });
     if (!shown.ok) r.info(`给 ${id} 开悬浮窗失败`, String(shown.e));
   }
 
@@ -862,7 +866,7 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
     await sleep(800);
   }
   for (const oc of ownerClients.values()) oc.close();
-  r.check("头顶卡片那扇答出自己属于 com.pet.agent-bridge", OWNER_AGENT, ownerMap[OWNER_LABEL[OWNER_AGENT]] ?? null);
+  r.check("Agent 桥那扇答出自己属于 com.pet.agent-bridge", OWNER_AGENT, ownerMap[OWNER_LABEL[OWNER_AGENT]] ?? null);
   r.check("左上角波形那扇答出自己属于 com.pet.hr-ble", OWNER_HR, ownerMap[OWNER_LABEL[OWNER_HR]] ?? null);
   const petOwner = await invoke_("overlay_owner");
   r.check("宠物窗（非悬浮窗）问归属得到 null", true, petOwner.ok === true && petOwner.v === null);
