@@ -1,6 +1,8 @@
 # A3（优化清单第 41 项）：CDP 运行时套件的可选手动门。
 #
 # **已证明：首次跑绿是 run 38776535438**（2026-10-16，开发机自托管 runner CHEN，套件 verify + verify:agent）。
+# 后续（2026-10-16，runner chen_work）：verify:game 15/0 是 run 38832007396；
+# verify:agent 77/0 是 run 38832924368，跑的时候 Qoder 一直在调工具，证明 PET_AGENT_INBOX 隔离生效。
 #
 # 托管 runner 已证否（run 38757735230，2026-10-15，windows-latest）：编译、起 dev 实例都过，
 # 之后每个进程（含 node 与 actions 的 post 步）都以 -1073741502 = 0xC0000142（DLL 初始化失败）退出，
