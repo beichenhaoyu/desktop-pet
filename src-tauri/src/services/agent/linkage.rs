@@ -307,6 +307,24 @@ pub fn resync(app: &AppHandle) {
     apply(app, Some(broadcast_allowed()), now_on, &ids);
 }
 
+/// 启动阶段广播闸门该拨到哪；返回 `None` 表示**不拨**，保持默认（开）。
+///
+/// 启停清单还不存在时不能推出「联动是关的」：那样宠物对 Agent 一律不响应，要等
+/// `plugin_enabled_migrate` 跑完才恢复 —— 老用户升级后第一次启动正是这个形状，症状与
+/// 「agent 桥坏了」无异。另一个受害者是 `resync`：它拿 `broadcast_allowed()` 当差异基线，
+/// 基线错了后面每一步的装/卸判断都错。
+pub fn startup_broadcast(ids: Option<&[String]>, linkage_on: bool) -> Option<bool> {
+    ids.map(|_| linkage_on)
+}
+
+/// 按 `startup_broadcast` 的结论拨闸；结论是「不拨」就保持原样。单独成函数是为了让
+/// 「清单不存在 → 广播照旧开着」这条能在单测里真的跑一遍，而不是只查判据表。
+fn apply_startup_broadcast(ids: Option<&[String]>, linkage_on: bool) {
+    if let Some(on) = startup_broadcast(ids, linkage_on) {
+        set_broadcast(on);
+    }
+}
+
 /// 应用启动：先补写老用户的选择，再按现状清理。
 ///
 /// 「先补写、后清理」这个顺序本身就是判据，所以它写在 `startup_sequence` 里 —— 那边没有
@@ -315,9 +333,9 @@ pub fn startup(app: &AppHandle) {
     let Some(data) = app_data(app) else { return };
     let files = candidate_files(app);
     let ids = crate::services::enabled::list_ids(app);
-    // 清单还不存在（尚未迁移）= 说不出现状：既不暂停广播，也不动手清理
+    // 清单还不存在（尚未迁移）= 说不出现状：既不拨广播闸门，也不动手清理
     let on = ids.as_ref().is_some_and(|v| linkage_on(app, v));
-    set_broadcast(on);
+    apply_startup_broadcast(ids.as_deref(), on);
     let migrated = startup_sequence(&data, &files, ids.as_deref(), on, &mut |files| {
         let reports = uninstall(files);
         for r in &reports {
@@ -695,6 +713,41 @@ mod tests {
         assert_eq!(after.matches("--pet-hook").count(), 0);
         assert!(after.contains("other-tool --notify"), "别人条目不受影响");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 评审 P0：启停清单还不存在时，启动**不许**把广播闸门关掉 —— 那样宠物对 Agent 一律不
+    /// 响应，要等 `plugin_enabled_migrate` 跑完才恢复（老用户升级后第一次启动正是这个形状，
+    /// 症状与「agent 桥坏了」无异）；`resync` 拿 `broadcast_allowed()` 当差异基线也会跟着错。
+    /// 全仓库只有这一条测试读 `BROADCAST`，且「拨闸」只在这个函数里发生，不会被并行用例踩到。
+    #[test]
+    fn startup_does_not_mute_the_pet_before_the_enabled_list_is_known() {
+        let empty: &[String] = &[];
+        let one = vec!["com.pet.agent-bridge".to_string()];
+
+        assert_eq!(startup_broadcast(None, false), None, "清单不存在 = 不拨");
+        assert_eq!(
+            startup_broadcast(None, true),
+            None,
+            "同上：这种情况下去判断「联动开没开」没有意义"
+        );
+        assert_eq!(startup_broadcast(Some(empty), false), Some(false));
+        assert_eq!(startup_broadcast(Some(one.as_slice()), true), Some(true));
+
+        set_broadcast(true);
+        apply_startup_broadcast(None, false);
+        assert!(
+            broadcast_allowed(),
+            "清单不存在时必须保持开 —— 关掉就是升级后宠物对 Agent 静默失灵"
+        );
+
+        apply_startup_broadcast(Some(empty), false);
+        assert!(!broadcast_allowed(), "现状说得出、且确实关着，才该暂停广播");
+
+        set_broadcast(false);
+        apply_startup_broadcast(None, false);
+        assert!(!broadcast_allowed(), "「不拨」就是不动：不许顺手把它打开");
+
+        set_broadcast(true);
     }
 
     /// 启动「只清不装」的另一半：联动开着、或现状还说不出来时，配置文件一个字都不许动。
