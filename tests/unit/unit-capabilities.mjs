@@ -442,14 +442,15 @@ group("反向钉住·Rust 门禁点");
   }
 }
 
-group("反向钉住·四个插件 manifest");
+group("反向钉住·全部插件 manifest");
 
 {
   const dir = new URL("../../plugins/", import.meta.url);
+  const pluginDirs = readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory());
   const manifests = readdirSync(dir, { recursive: true })
     .map((rel) => String(rel).replaceAll("\\", "/"))
     .filter((rel) => rel.endsWith("manifest.json"));
-  eq("四个在售插件各一份 manifest", manifests.length, 4);
+  eq("每个插件目录各一份 manifest", manifests.length, pluginDirs.length);
   const union = new Set();
   for (const rel of manifests) {
     const parsed = JSON.parse(readFileSync(new URL(rel, dir), "utf8"));
@@ -458,7 +459,7 @@ group("反向钉住·四个插件 manifest");
       check(`${rel} 声明的 ${perm} 在名单里`, capsFile.capabilities.includes(perm), "不在名单 —— 要么改名，要么先登记名单");
     }
   }
-  eq("四份 manifest 的 permissions 并集恰好覆盖 12 名（无漏网）", sorted(union).length, 12);
+  eq("全部 manifest 的 permissions 并集恰好覆盖 12 名（无漏网）", sorted(union).length, 12);
 }
 
 /* ============ 风险面元数据：riskFlags 是名单的子集，TS 与 JSON 逐字相等 ============ */

@@ -100,6 +100,7 @@
 │   ├── com.pet.agent-bridge/   # Agent 桥：订阅宿主 agent:state 转成宠物反应
 │   ├── com.pet.todo/           # 待办事项：增删改勾 + 桌面卡片 + 到期提醒
 │   ├── com.pet.astock/         # A股盯盘：自选/提醒/badge/overlay + 分时/K线/五档
+│   ├── com.pet.goat-gauge/     # Command Code GOAT 用量：额度环/余额/账期/告警
 │   └── # 暂缓：llm-token-usage/ 目录未创建（用户 2026-10-10 决定，勿按存在处理）
 ├── packages/
 │   └── sdk/                    # 插件 SDK：类型声明 + schema + 名单，全部是单一事实源

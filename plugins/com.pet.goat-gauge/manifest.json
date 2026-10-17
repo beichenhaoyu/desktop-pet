@@ -1,0 +1,18 @@
+{
+  "id": "com.pet.goat-gauge",
+  "name": "GOAT 用量",
+  "version": "0.1.0",
+  "entry": "index.js",
+  "apiVersion": 2,
+  "permissions": [
+    "http",
+    "storage",
+    "widget",
+    "bus:publish",
+    "bus:subscribe",
+    "notify",
+    "pet:react",
+    "pet:say"
+  ],
+  "description": "Command Code GOAT 额度与 token 用量看板：5 小时/本周/本月额度、余额与账期统计、低额度提醒（系统通知 + 宠物反应）。移植自 goat-gauge（MIT）。"
+}
