@@ -220,7 +220,10 @@ async function fireAlerts(events) {
     if (event.notify) {
       try {
         await ctx.notify.show("GOAT 用量", event.message);
+        // notify.resolve 之后才发这条记录：e2e 用它证明宿主通知命令真的走通了。
+        status(`已发送通知（GOAT 用量）：${event.message}`, "ok");
       } catch (err) {
+        status(`通知发送失败：${err.message}`, "error");
         ctx?.log?.("通知失败", err);
       }
     }

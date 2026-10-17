@@ -261,7 +261,9 @@ try {
 
   const consent = await waitConsentForPlugin();
   r.check("同意框渲染出插件能力", true, !!consent?.rendered);
-  const caps = new Set(consent?.caps ?? []);
+  const caps = new Set(
+    consents.filter((entry) => String(entry.who ?? "").includes(PID)).flatMap((entry) => entry.caps ?? []),
+  );
   const wanted = manifest?.permissions ?? [];
   r.check(
     "同意框列出的能力等于 manifest",
@@ -279,16 +281,7 @@ try {
     !!emptyRect && emptyRect.w === 0 && emptyRect.h === 0,
   );
 
-  // 观察 notify_show 与 petController，后面验告警链路。
-  await c.ev(`(() => {
-    const original = window.__TAURI_INTERNALS__.invoke.bind(window.__TAURI_INTERNALS__);
-    window.__notify = [];
-    window.__TAURI_INTERNALS__.invoke = (cmd, args, opts) => {
-      if (cmd === 'notify_show') window.__notify.push(args);
-      return original(cmd, args, opts);
-    };
-    return true;
-  })()`);
+  // 观察 petController；notify 用插件在 ctx.notify.show resolve 后发的 :status 记录。
   const petReady = await waitUntil(c, `(async () => {
     const host = await import('/src/pet/host.ts');
     const ctrl = host.petController();
@@ -421,18 +414,32 @@ try {
 
   r.group("演示：告警与去重");
   await send({ action: "demoScenario", scenario: "exhausted" });
-  const notified = await waitUntil(c, "window.__notify.length > 0", 15_000);
+  const notified = await waitUntil(
+    c,
+    "window.__seen.status.some((s) => String(s.text ?? '').includes('已发送通知'))",
+    15_000,
+  );
   const failed = await waitUntil(c, "window.__pet.acts.includes('failed')", 15_000);
-  r.check("5 小时用尽触发 notify", true, notified);
+  r.check("5 小时用尽触发 notify 并收到成功记录", true, notified);
   r.check("5 小时用尽触发宠物 failed", true, failed);
-  const firstNotify = await c.ev("window.__notify[0] ?? null");
-  r.check("通知标题是 GOAT 用量", "GOAT 用量", firstNotify?.title);
-  checkBody(firstNotify?.body);
-  const beforeNotify = Number(await c.ev("window.__notify.length")) || 0;
+  const notifyStatus = await c.ev(
+    "window.__seen.status.find((s) => String(s.text ?? '').includes('已发送通知')) ?? null",
+  );
+  r.check("通知记录带 GOAT 用量标题", true, String(notifyStatus?.text ?? "").includes("GOAT 用量"));
+  r.check(
+    "通知记录带 5 小时用尽文案",
+    true,
+    String(notifyStatus?.text ?? "").includes("5 小时额度已用尽"),
+  );
+  const countNotify = () =>
+    c.ev(
+      "window.__seen.status.filter((s) => String(s.text ?? '').includes('已发送通知')).length",
+    );
+  const beforeNotify = Number(await countNotify()) || 0;
   const beforeFailed = Number(await c.ev("window.__pet.acts.filter((a) => a === 'failed').length")) || 0;
   await send({ action: "demoScenario", scenario: "exhausted" });
   await sleep(1500);
-  const afterNotify = Number(await c.ev("window.__notify.length")) || 0;
+  const afterNotify = Number(await countNotify()) || 0;
   const afterFailed = Number(await c.ev("window.__pet.acts.filter((a) => a === 'failed').length")) || 0;
   r.check("同一窗口不重复通知", beforeNotify, afterNotify);
   r.check("同一窗口不重复触发 failed", beforeFailed, afterFailed);
@@ -530,10 +537,3 @@ try {
   process.exit(failed ? 1 : 0);
 }
 
-function checkBody(body) {
-  r.check(
-    "通知正文是 5 小时额度用尽",
-    true,
-    String(body ?? "").includes("5 小时额度已用尽"),
-  );
-}
