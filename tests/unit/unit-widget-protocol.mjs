@@ -8,6 +8,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
+import { inspect } from "./import-graph.mjs";
 import {
   WIDGET_ATTRS,
   WIDGET_EVENTS,
@@ -28,12 +30,14 @@ import {
 import { WidgetRenderSession, createDomFacade } from "../../src/runtime/widget-node.ts";
 
 const PROTO_SRC = readFileSync(new URL("../../src/runtime/widget-protocol.ts", import.meta.url), "utf8");
-const NODE_SRC = readFileSync(new URL("../../src/runtime/widget-node.ts", import.meta.url), "utf8");
 const SDK_SRC = readFileSync(new URL("../../packages/sdk/index.d.ts", import.meta.url), "utf8");
 
-/** 只认真实 import 形态：注释里写 @tauri-apps 不算命中（这条口径在 unit-worker-host 里被证过一次）。 */
-const importsTauri = (src) => /from\s+"@tauri-apps|import\(\s*"@tauri-apps/.test(src);
-const importsHostError = (src) => /from\s+"[^"]*host-error|import\(\s*"[^"]*host-error/.test(src);
+/** 隔离判据走传递 import 闭包（P2-5），不再用手写正则认引号风格 */
+const here = (rel) => fileURLToPath(new URL(rel, import.meta.url));
+const PROTO_ENTRY = here("../../src/runtime/widget-protocol.ts");
+const NODE_ENTRY = here("../../src/runtime/widget-node.ts");
+const WIDGET_WORKER_ENTRY = here("../../src/runtime/widget-worker.ts");
+const HOST_ENTRY = here("../../src/runtime/worker-plugin-host.ts");
 
 /** 收集 session 发出的每一条 ops 消息 */
 const collect = () => {
@@ -423,25 +427,30 @@ describe("虚拟节点：每次调用只改本地状态并攒一条 op", () => {
 });
 
 describe("隔离：这两个模块不许把 IPC 入口带进 Worker", () => {
-  // 一旦被 Worker 侧拉到，插件 Worker 的 bundle 里就躺着真正的 IPC 入口，隔离当场作废
-  it("widget-protocol.ts 不带 @tauri-apps 也不带 host-error", () => {
-    assert.equal(importsTauri(PROTO_SRC), false);
-    assert.equal(importsHostError(PROTO_SRC), false);
+  // 一旦被 Worker 侧拉到，插件 Worker 的 bundle 里就躺着真正的 IPC 入口，隔离当场作废。
+  // 判据是**传递闭包**（P2-5）：手写正则只认双引号、只看直接 import，改引号风格即绕过。
+  it("widget-protocol.ts 的闭包只有它自己（既不带 @tauri-apps 也不带 host-error，也引不到别的东西）", () => {
+    const hit = inspect(PROTO_ENTRY);
+    assert.deepEqual(hit.files, [PROTO_ENTRY]);
+    assert.deepEqual(hit.tauri, []);
+    assert.deepEqual(hit.hostErrorFiles, []);
   });
 
-  it("widget-node.ts 不带 @tauri-apps 也不带 host-error", () => {
-    assert.equal(importsTauri(NODE_SRC), false);
-    assert.equal(importsHostError(NODE_SRC), false);
+  it("widget-node.ts 的闭包只有它自己与协议模块", () => {
+    const hit = inspect(NODE_ENTRY);
+    assert.deepEqual(hit.files, [NODE_ENTRY, PROTO_ENTRY].sort());
+    assert.deepEqual(hit.tauri, []);
+    assert.deepEqual(hit.hostErrorFiles, []);
   });
 
-  it("协议文件自己谁都不 import（它会被 Worker 侧拉到，引谁都可能是后门）", () => {
-    const specs = [...PROTO_SRC.matchAll(/from\s+"([^"]+)"/g)].map((m) => m[1]);
-    assert.deepEqual(specs, []);
+  it("widget-worker.ts 的整个闭包不触及 IPC 入口", () => {
+    const hit = inspect(WIDGET_WORKER_ENTRY);
+    assert.deepEqual(hit.tauri, []);
+    assert.deepEqual(hit.hostErrorFiles, []);
   });
 
-  it("节点文件只 import 协议，不 import 任何运行时模块", () => {
-    const specs = [...NODE_SRC.matchAll(/from\s+"([^"]+)"/g)].map((m) => m[1]);
-    assert.deepEqual(specs, ["./widget-protocol"]);
+  it("反向对照：宿主侧入口的闭包必须命中 host-error（防这套判据空转）", () => {
+    assert.equal(inspect(HOST_ENTRY).hostErrorFiles.length, 1);
   });
 });
 

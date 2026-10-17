@@ -265,7 +265,6 @@ async function doActivate(manifest: PluginManifest): Promise<void> {
     if (missing.length > 0) {
       const ok = await hostCall<boolean>("permission_request", {
         pluginId: manifest.id,
-        pluginName: manifest.name,
         capabilities: missing,
       });
       if (!ok) {

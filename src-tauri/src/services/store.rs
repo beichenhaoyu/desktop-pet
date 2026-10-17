@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use serde_json::{Map, Value};
 use tauri::{AppHandle, Manager};
@@ -18,16 +18,26 @@ pub struct StoreState {
 
 /// 每个插件一份读写锁。store 是「读整份 → 改一个键 → 写回整份」，
 /// 设置窗与宠物窗同时写同一个插件时，没有这把锁就是后写覆盖先写、静默丢键。
-fn locks() -> &'static Mutex<HashMap<String, Arc<Mutex<()>>>> {
-    static LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+///
+/// 表里存 `Weak`：锁的存活由**正在用它的调用者**决定。插件卸载后没有强引用，
+/// 条目降级成死条目，下一次取锁时被顺手清掉 —— 表的大小跟着「当前活着的插件数」走，
+/// 而不是跟着「历史上出现过的 id 数」走（原先存 `Arc` 时它只增不减）。
+fn locks() -> &'static Mutex<HashMap<String, Weak<Mutex<()>>>> {
+    static LOCKS: OnceLock<Mutex<HashMap<String, Weak<Mutex<()>>>>> = OnceLock::new();
     LOCKS.get_or_init(Default::default)
 }
 
 fn plugin_lock(plugin_id: &str) -> Arc<Mutex<()>> {
     let mut map = locks().lock().unwrap_or_else(|p| p.into_inner());
-    map.entry(plugin_id.to_string())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone()
+    if let Some(alive) = map.get(plugin_id).and_then(Weak::upgrade) {
+        return alive;
+    }
+    // 到这里说明这个 id 当前没有活着的锁：顺手扫掉死条目（同一把表锁下做的，
+    // 不会与别的取锁者抢；`retain` 只删 strong_count == 0 的，正在用的锁不受影响）
+    map.retain(|_, weak| weak.strong_count() > 0);
+    let fresh = Arc::new(Mutex::new(()));
+    map.insert(plugin_id.to_string(), Arc::downgrade(&fresh));
+    fresh
 }
 
 impl StoreState {
@@ -250,5 +260,40 @@ mod tests {
         fs::write(&path, "这不是合法 JSON").unwrap();
         assert!(StoreState::read_map(&path).is_err());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 锁表不许按 plugin_id 只增不减：取过锁又放掉的 id，下一次取锁时要被顺手清掉。
+    /// 断言按"这批 id 是否还在表里"判，不判全表长度 —— 别的用例也在用这张全局表。
+    #[test]
+    fn lock_table_drops_entries_for_ids_that_are_gone() {
+        for i in 0..50 {
+            drop(plugin_lock(&format!("gone.{i}")));
+        }
+        // 这一步会触发 retain（"live" 是新的 id），死条目应当被一并扫走
+        let live = plugin_lock("live");
+        let map = locks().lock().unwrap_or_else(|p| p.into_inner());
+        let survivors: Vec<&String> = map.keys().filter(|k| k.starts_with("gone.")).collect();
+        assert!(
+            survivors.is_empty(),
+            "已不再使用的插件锁条目没被回收，残留 {} 条：{survivors:?}",
+            survivors.len()
+        );
+        drop(map);
+        drop(live);
+    }
+
+    /// 回收必须"只收回死的"：正在被持有的锁不能被清掉，否则同一插件的两个写者会各拿一把锁。
+    #[test]
+    fn lock_table_keeps_locks_that_are_still_held() {
+        let held = plugin_lock("held.plugin");
+        // 别的 id 取一次锁，触发 retain —— held 还在我们手上，必须活下来
+        drop(plugin_lock("bystander"));
+        let again = plugin_lock("held.plugin");
+        assert!(
+            Arc::ptr_eq(&held, &again),
+            "仍被持有的锁被换成了新对象：同一插件的写者会各拿一把锁"
+        );
+        drop(held);
+        drop(again);
     }
 }

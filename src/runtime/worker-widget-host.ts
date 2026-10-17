@@ -45,6 +45,17 @@ interface Session {
 const sessions = new Map<string, Session>();
 const keyOf = (pluginId: string, region: WidgetRegion) => `${pluginId}#${region}`;
 
+/**
+ * 等 Worker 回执 `booted` 的上限。
+ *
+ * 比 phase 1 的 worker-plugin-host（60s）短得多，因为那一条要等插件自己的 `activate()`
+ * 走完、可能正卡在同意框上，而 widget 的 `mount()` 不该等任何跨窗口往返。
+ * 这条超时不是"优化"而是**必需的兜底**：没有它时 Worker 崩在 import 阶段（或 boot 消息
+ * 丢掉）会让 `await booted` 永久挂起 —— 宿主只看到「没报错也没 booted」，
+ * widget-host 的 `mounting` / inflight 两张表跟着一起泄漏，unmount 也就卡死。
+ */
+const WIDGET_BOOT_TIMEOUT_MS = 15_000;
+
 async function resolveSub(session: Session, topic: string, sub: number): Promise<void> {
   const ctx = buildContext(session.manifest as never);
   const off = (await ctx.bus.subscribe(topic, (payload: unknown) => {
@@ -172,11 +183,20 @@ export const workerWidgetHost = {
       permissions: manifest.permissions ?? [],
     } satisfies HostToWidget);
 
+    // settleBoot 是幂等的（resolve 之后再 reject／reject 之后再 resolve 都是 no-op），
+    // 所以超时与迟到的 booted 谁先到都不会产生未处理的 rejection。
+    const bootTimer = setTimeout(() => {
+      session.settleBoot(
+        new Error(`${manifest.id} 的 widget 在 ${WIDGET_BOOT_TIMEOUT_MS}ms 内没有 booted`),
+      );
+    }, WIDGET_BOOT_TIMEOUT_MS);
     try {
       await booted;
     } catch (error) {
       this.destroy(key, session);
       throw error;
+    } finally {
+      clearTimeout(bootTimer);
     }
   },
 

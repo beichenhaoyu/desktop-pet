@@ -28,10 +28,16 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// 切换点击穿透：开启后鼠标事件落到宠物下方的窗口
+/// 切换点击穿透：开启后鼠标事件落到宠物下方的窗口。
+/// 唯一调用者是宠物窗自己的轮询（src/pet/click-through.ts），所以门禁就是 gate::pet ——
+/// 这条以前是**全项目唯一没有门禁**的命令，任意窗口（含绕过 JS 桥的插件）都能让宠物窗穿透。
+/// 顺带把 `let _ =` 吞错改成如实返回（ADR-0007 的形状）。
 #[tauri::command]
-pub fn set_click_through(window: tauri::Window, enabled: bool) {
-    let _ = window.set_ignore_cursor_events(enabled);
+pub fn set_click_through(window: tauri::Window, enabled: bool) -> Result<(), HostError> {
+    crate::gate::pet(&window, "切换点击穿透")?;
+    window
+        .set_ignore_cursor_events(enabled)
+        .map_err(|e| HostError::new(INTERNAL, e.to_string()))
 }
 
 /// 游戏模式的隐身开关：宠物窗与贴在它身上的悬浮 UI（overlay 单窗）一起收放。

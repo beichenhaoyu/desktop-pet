@@ -32,6 +32,8 @@ MVP 范围：<这一轮只做什么>
 | 卡 | 标题 | 类型 | 状态 | 依赖 | 提交 | 评审 |
 |---|---|---|---|---|---|---|
 | S1 | 发布 0.2.0 便携包 | 工程发布 | **已完成**（2026-10-16 用户直接要求出包；B3/B4/A9b 未落地，包按当期 main 切，证据见卡面） | — | `93a6eef` + 本次提交 | — |
+| S2 | P1/P2 加固：同意框身份、订阅侧 ACL、点击穿透门禁、widget boot 超时、store 锁表回收、裸 IPC 判据换真执行 | 安全边界 + 工程 | **已落地待验收**（本次提交；离线门禁全绿，e2e 未跑 —— 理由与影响面见卡面与 [adr/0011](../adr/0011-consent-identity-and-subscribe-acl.md)） | — | 本次提交 | — |
+| S3 | settings 区强制进 Worker（门禁粒度从"窗口"收到"身份"） | 安全边界 | **待排**（改法一行，但要重写 `verify-isolation` 的 settings 区探针组并冷启动复跑 CDP 套件，本轮无桌面会话，故意不改） | — | — | — |
 | B2 | `agent:hooks` 受控能力：钩子配置从设置窗移交到插件页 | 本体功能 + 安全边界 | **已放行**（第二轮返工后 PM 全量重跑：cargo 72、`verify` **189/0**、`verify:agent` 53、`verify:release` 12、build 0；三条打回问题都修在脚本侧，根因见卡 §10 与提交说明） | — | `7b9b558` | — |
 | A9a | agent 桥：把 hook 装/卸入口接到自己的插件页（**补 B2 留下的空窗**） | 插件 | **已放行**（`.dispatch/A股盯盘质量加固/cards/A9a-插件页承接hook入口.md`，派单工作区、不入库，R4 口径；PM 重跑 `verify:agent` 53→**71**、`verify` 189 不变、cargo 72、build 0；HEAD 的 54 条断言标题逐条核对仍全在） | B2（已满足） | `f3be069` | — |
 | B3 | 本体气泡常驻状态行 + 节点台词分层（**范围已重划**：agent 桥那张头顶 overlay 会话卡的移除并入本卡，ADR-0010 决策 6） | 本体功能 | **已写执行卡**（`.dispatch/A股盯盘质量加固/cards/B3-气泡常驻状态行.md`，派单工作区、不入库，R4 口径；**批次 4**；T04 已回，几何结论见 ../adr/0003 修订。2026-10-16 补三点：① 「宠物头顶」那一档已由 U01（`134dfce`）从宿主整体删除，所以 B3 不再需要处理跟随与游戏模式压制那套机制；② agent 桥此刻仍传 `placement:"above-pet"`，被宿主接受但忽略，那张卡现在漂在桌面 (24,24) —— **这是过渡态，不等于 B3 已完成**；③ B3 落地时要连插件侧的 `overlay` 权限声明一起收回，别让插件仍为一扇不再需要的窗要授权） | ~~T04~~ 已解 | — | — |
@@ -271,6 +273,49 @@ MVP 范围：<这一轮只做什么>
   - 改了 Rust 与命令注册 → `npm run verify:release` ≥ **12**，且 `cargo tree -p tauri` 仍必须是 **2.12.0**。
 - **交付**：git 提交（不 push）、temp 清空、无遗留进程、`cargo test` + `verify-agent-bridge` 尾部汇总与退出码粘贴、
   贴出 qoder 适配器 install 前后同一份样例配置的 diff（应为空或仅顺序稳定）。
+
+### S2 P1/P2 加固 · 状态：**已落地待验收**（2026-10-17，本会话直接实施）
+
+- 分支：`fix/p1p2-security-reliability`（本次提交）。方案全文 `docs/process/OPTIMIZATION-PLAN-2026-10-17.md`，
+  决定与理由 [adr/0011](../adr/0011-consent-identity-and-subscribe-acl.md)。
+- 改了什么（逐项）：
+  1. `permission_request` 去掉 `plugin_name` 形参，名字只从磁盘 manifest 读
+     （`commands/plugins.rs::manifest_display_name`）；前端 `bridge.ts` / `plugin-runtime.ts` 与三个 e2e
+     的调用点同步去掉该字段；`permission.tests.rs` 的签名钉**加**了一条负向断言（谁把入参加回来就红）。
+  2. `topic-acl.ts` 订阅侧收紧到 `PUBLIC_TOPICS`（在 `packages/sdk/topics.js` 新增，单一事实源）；
+     `unit-sdk-topics.mjs` 反向钉住名单，`unit-capabilities.mjs` / `unit-widget-worker.mjs` 补正反用例。
+  3. `pet.rs::set_click_through` 加 `gate::pet`，并改返回 `HostError`（不再 `let _ =` 吞错）。
+  4. `worker-widget-host.ts` 的 `await booted` 加 15s 超时（超时 destroy + 抛错）。
+  5. `store.rs` 的 per-plugin 锁表改 `Weak` + 顺手回收，新增两条单测（死条目被清、在用的锁不被换）。
+  6. 裸 IPC 判据换成**传递 import 闭包**（新增 `tests/unit/import-graph.mjs`），三个套件里的手写正则删掉，
+     并加了「单引号 + 隔一层的 host-error」负向对照防判据空转。
+- **离线门禁（本机实测全绿）**：`npm run unit` **1249/0**（本轮基线 1236）、`check:docs rules=8 failing=0`、
+  `check:shape failing=0`、`lint` / `build` 退出码 0；cargo 三件套见提交说明。
+- **未验项（如实标注，不许当已验）**：
+  - `npm run verify*` 一族**本轮未跑**（需真实桌面会话 + CDP 9223 + 冷启动实例，见 §4 那条「改过 `src/` 必须先冷重启」）。
+    受影响的断言已逐条按现有口径核对「应当仍成立」：同意框名那几条断的是 fixture 的 manifest 名（与新口径同值）、
+    现场 topic 全在公开名单内、`verify-isolation` 的 settings 区探针组依赖 `host:widget-realm-plugin-host`
+    而本轮**没动**例外名单分流（那是 S3），前提未变。**「核对过」不等于「跑过」，验收方必须冷启动复跑。**
+  - `verify:release` 另需打包产物，未跑。
+  - **欠一条 e2e**：widget 起不来时 `mount()` 要在超时内失败（第 4 项只落了实现与常量，
+    这段没有可离线钉住的接缝 —— 真行为在 Worker 里）。派给下一次有桌面会话的批次。
+
+### S3 settings 区强制进 Worker · 状态：**待排**
+
+- 目标：`settings` 区的插件 widget 不认例外名单，一律进 Worker。因为设置窗的 realm 就是宿主壳的 realm，
+  而设置窗的命令门禁只认 `window.label()` —— 插件代码落在那里即拿到宿主级命令
+  （`permission_revoke` / `plugin_enabled_set` / `autostart_set` / `hotkey_set` / `pet_skin_*` / hook 安装）。
+- 为什么本轮没做（**别当成"改一行就完"**）：`verify-isolation.mjs` 的「agent:hooks 受控能力（settings 区专属）」整组，
+  靠 `localStorage` 把 `zz.probe` 点名留在宿主 realm，探针要把事实写进 `window.__hookProbes`；
+  且它的 manifest **没写 `apiVersion`**（= 旧接口）。settings 区一律进 Worker 之后，该探针会被判 legacy →
+  `mountNotice` 拦下 → 该组 12+ 条断言当场变红。探针按设计必须在宿主 realm 才能自证，
+  所以要么把它改成 Worker 契约（`ctx.dom` 建节点 + 自己 `bus.publish` 回传事实），要么换区域再另想办法验 settings 区。
+- 边界（白名单）：只准动 `src/runtime/widget-host.ts`、`src/runtime/widget-protocol.ts`、
+  `tests/e2e/verify-isolation.mjs`、`tests/e2e/verify-release.mjs`、`tests/unit/unit-widget-protocol.mjs` 与相关文档。
+- 已定口径：旧接口 widget 在 settings 区的正确表现是**被拦下并给出可读原因**，不是「留在宿主 realm 跑起来」。
+- 验收：`npm run unit` 新增「settings 区忽略例外名单」的纯逻辑钉并全绿；桌面会话冷启动复跑
+  `verify-isolation` / `verify-release` 全绿，且探针按新契约重写后仍覆盖
+  「settings 区拿得到 `ctx.host.agentHooks`、badge/overlay 区拿不到」这条不变量。
 
 ## 3. 验收证据矩阵（本体改动必须跑哪个套件）
 

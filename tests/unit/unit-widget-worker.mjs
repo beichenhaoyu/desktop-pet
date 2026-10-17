@@ -7,6 +7,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
+import { inspect } from "./import-graph.mjs";
 import {
   WIDGET_CALL_METHODS,
   isWidgetCallAllowed,
@@ -18,6 +20,8 @@ import {
 import { createWidgetRuntime } from "../../src/runtime/widget-worker.ts";
 
 const WORKER_SRC = readFileSync(new URL("../../src/runtime/widget-worker.ts", import.meta.url), "utf8");
+/** 隔离判据的入口（P2-5）：走 import 闭包，不读源码文本 */
+const WORKER_ENTRY = fileURLToPath(new URL("../../src/runtime/widget-worker.ts", import.meta.url));
 // 只读文本、不 import：worker-widget-host 带着 `?worker` 说明符，node 一解析就炸
 const PROTO_SRC = readFileSync(new URL("../../src/runtime/widget-protocol.ts", import.meta.url), "utf8");
 const WIDGET_HOST_SRC = readFileSync(new URL("../../src/runtime/widget-host.ts", import.meta.url), "utf8");
@@ -231,9 +235,14 @@ describe("topic ACL 复用宿主同一份规则（同步 throw，不是 reject�
     assert.equal(h.sent.filter((m) => m.t === "unsub").length, 1, "重复退订不该再发 unsub");
   });
 
-  it("订别人的 topic 未声明 bus:subscribe → throw", async () => {
+  it("订别人插件的私有 topic → throw（ADR-0011：声明了 bus:subscribe 也不放行）", async () => {
+    const { ctx } = await withBus(["bus:subscribe"]);
+    assert.throws(() => ctx.bus.subscribe("com.pet.other:x", () => undefined), /被拒/);
+  });
+
+  it("订公开 topic 未声明 bus:subscribe → throw", async () => {
     const { ctx } = await withBus([]);
-    assert.throws(() => ctx.bus.subscribe("com.pet.other:x", () => undefined), /bus:subscribe/);
+    assert.throws(() => ctx.bus.subscribe("agent:state", () => undefined), /bus:subscribe/);
   });
 
   it("通配订阅不得越过自己前缀", async () => {
@@ -454,14 +463,12 @@ describe("接缝：默认进 Worker，例外名单点名的才留宿主 realm", 
 });
 
 describe("隔离：Worker 侧不许把 IPC 入口带进 bundle", () => {
-  it("widget-worker.ts 不 import @tauri-apps / host-error", () => {
-    assert.equal(/from\s+"@tauri-apps|import\(\s*"@tauri-apps/.test(WORKER_SRC), false);
-    assert.equal(/from\s+"[^"]*host-error/.test(WORKER_SRC), false);
-  });
-
-  it("widget-worker.ts 只 import 这三个纯模块", () => {
-    const specs = [...WORKER_SRC.matchAll(/from\s+"([^"]+)"/g)].map((m) => m[1]);
-    assert.deepEqual(specs.sort(), ["./topic-acl", "./widget-node", "./widget-protocol"]);
+  // 判据是传递闭包（P2-5）：手写正则只认双引号、只看直接 import，改引号风格即绕过
+  it("widget-worker.ts 的闭包只有相对导入，且不触及 IPC 入口", () => {
+    const hit = inspect(WORKER_ENTRY);
+    assert.deepEqual(Object.keys(hit.external), [], "闭包里出现了裸包名依赖");
+    assert.deepEqual(hit.tauri, []);
+    assert.deepEqual(hit.hostErrorFiles, []);
   });
 
   it("自举有守卫，所以 node 里 import 它不会炸", () => {

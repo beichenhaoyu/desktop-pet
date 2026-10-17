@@ -19,10 +19,11 @@ const todoTopics = await import(new URL("../../plugins/com.pet.todo/topics.js", 
 /** AGENTS.md「约定」段的标准事件 topic 五条（K2 卡 §3 原文） */
 const EXPECTED = ["ble:heart-rate", "agent:state", "agent:event", "llm:token-usage", "com.pet.todo:changed"];
 
-/** 宿主原生注入、但不在五条标准名单里的 BLE 事件（src/runtime/plugin-runtime.ts:244-247 的 listen 清单；
- * docs/plugin-dev/PLUGIN_SDK.md:111 把它们单列为标准事件名）。**钉死**在此：在这两个之外，插件源码里新增任何
- * 冒号 topic 都会红 —— 到时要么收进 topics.js，要么带着出处把名字加到这份清单（PM 裁决）。 */
-const HOST_EXTRA_ALLOWED = Object.freeze(["ble:device-found", "ble:disconnected"]);
+/** 宿主原生注入、但不在五条标准名单里的 BLE 事件（src/runtime/plugin-runtime.ts:359-362 的 listen 清单；
+ * docs/plugin-dev/PLUGIN_SDK.md:111 把它们单列为标准事件名）。**钉死**在此：在这几条之外，插件源码里新增任何
+ * 冒号 topic 都会红 —— 到时要么收进 topics.js，要么带着出处把名字加到这份清单（PM 裁决）。
+ * ADR-0011 起，这份清单同时是 PUBLIC_TOPICS 的宿主侧部分（见下面的同源断言）。 */
+const HOST_EXTRA_ALLOWED = Object.freeze(["ble:device-found", "ble:disconnected", "ble:error"]);
 
 const SRC = {
   "hr-ble": new URL("../../plugins/com.pet.hr-ble/index.js", import.meta.url),
@@ -55,6 +56,19 @@ eq("LLM_TOKEN_USAGE 的值", sdk.LLM_TOKEN_USAGE, "llm:token-usage");
 eq("TODO_CHANGED 的值", sdk.TODO_CHANGED, "com.pet.todo:changed");
 eq("host:fullscreen 不是总线 topic，不在名单里", sdk.STANDARD_TOPICS.includes("host:fullscreen"), false);
 
+/* ============ 公开名单：可跨命名空间订阅的那批（ADR-0011） ============ */
+group("可跨命名空间订阅的公开名单");
+
+deep(
+  "PUBLIC_TOPICS 恰好等于标准名单 ∪ 宿主 BLE 扩展事件",
+  [...sdk.PUBLIC_TOPICS].sort(),
+  [...EXPECTED, ...HOST_EXTRA_ALLOWED].sort(),
+);
+check("PUBLIC_TOPICS 已冻结（Object.freeze）", Object.isFrozen(sdk.PUBLIC_TOPICS));
+eq("公开名单无重复项", new Set(sdk.PUBLIC_TOPICS).size, sdk.PUBLIC_TOPICS.length);
+eq("ble:error 在公开名单里（宿主 inject 的第三条，别漏）", sdk.PUBLIC_TOPICS.includes(sdk.BLE_ERROR), true);
+eq("host:fullscreen 不在公开名单里（它不是总线 topic）", sdk.PUBLIC_TOPICS.includes("host:fullscreen"), false);
+
 /* ==================== 反向钉住：插件现场字面串 ==================== */
 group("插件现场字面串都在名单内");
 
@@ -65,9 +79,9 @@ check(
 );
 for (const topic of [...allFound].sort()) {
   check(
-    `现场字面串 ${topic} 在标准名单或钉死的宿主例外内`,
-    sdk.STANDARD_TOPICS.includes(topic) || HOST_EXTRA_ALLOWED.includes(topic),
-    `不在 STANDARD_TOPICS 也不在宿主例外 [${HOST_EXTRA_ALLOWED.join(", ")}] —— 新增未登记的冒号 topic 必须先登记`,
+    `现场字面串 ${topic} 在公开名单内`,
+    sdk.PUBLIC_TOPICS.includes(topic),
+    `不在 PUBLIC_TOPICS [${[...sdk.PUBLIC_TOPICS].join(", ")}] —— 新增未登记的冒号 topic 必须先登记`,
   );
 }
 

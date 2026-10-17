@@ -76,7 +76,6 @@ async function ensurePermissions(manifest: ManifestLike, capabilities: string[])
   }
   const accepted = await hostCall<boolean>("permission_request", {
     pluginId: pid,
-    pluginName: manifest.name,
     capabilities: missing,
   });
   if (accepted) {

@@ -27,3 +27,14 @@ export type StandardTopic =
 
 /** 冻结的标准 topic 名单（顺序与应用无关）。 */
 export const STANDARD_TOPICS: readonly StandardTopic[];
+
+/** 宿主 BLE 服务注入的扩展事件（不在五条标准名单里，docs/PLUGIN_SDK.md 单列）。 */
+export const BLE_DEVICE_FOUND: "ble:device-found";
+export const BLE_DISCONNECTED: "ble:disconnected";
+export const BLE_ERROR: "ble:error";
+
+/**
+ * 插件可以跨命名空间订阅的公开 topic（ADR-0011）：五条标准 topic ∪ 宿主 BLE 扩展事件。
+ * 订阅 `<别人 id>:xxx` 一律拒 —— 只有这份名单里的名字才放行（仍需 `bus:subscribe`）。
+ */
+export const PUBLIC_TOPICS: readonly string[];

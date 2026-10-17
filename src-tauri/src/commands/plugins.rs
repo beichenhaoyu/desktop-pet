@@ -184,6 +184,22 @@ pub fn installed_plugin_ids(app: &tauri::AppHandle) -> Result<Vec<String>, HostE
         .collect())
 }
 
+/// 磁盘 manifest 里的展示名，供同意框显示「你在给谁授权」（ADR-0011）。
+/// 缺 name 或写错类型时退回 id：名字缺失不该让整条授权流程失败，
+/// 但**绝不**退回调用方自报的值 —— 那正是这条要堵的洞。
+pub fn manifest_display_name(app: &tauri::AppHandle, plugin_id: &str) -> Result<String, HostError> {
+    if !is_safe_id(plugin_id) {
+        return Err(HostError::new(INVALID_ARG, "invalid plugin id"));
+    }
+    let manifest = read_manifest(&plugins_dir(app)?, plugin_id)?;
+    Ok(manifest
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(plugin_id)
+        .to_string())
+}
+
 /// manifest 声明的能力列表。以磁盘上的 manifest 为唯一事实来源，
 /// 供 permission_request 校验「请求的能力确实声明过」。
 /// 非字符串元素与不在名单里的名字都是明确错误，不再静默丢弃（K4）。

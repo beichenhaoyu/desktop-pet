@@ -249,7 +249,6 @@ pub async fn permission_request(
     app: AppHandle,
     state: tauri::State<'_, PermissionState>,
     plugin_id: String,
-    plugin_name: String,
     capabilities: Vec<String>,
 ) -> Result<bool, HostError> {
     checked_plugin_id(&plugin_id)?;
@@ -258,6 +257,9 @@ pub async fn permission_request(
     if capabilities.iter().all(|c| state.is_granted(&plugin_id, c)) {
         return Ok(true);
     }
+    // 同意框上的名字只认磁盘 manifest（ADR-0011）：以前它是调用方传进来的入参，
+    // 于是绕过 JS 桥的插件能把同意框显示成任意名字 —— 而同意的对象恰恰是「这个插件是谁」。
+    let plugin_name = crate::commands::plugins::manifest_display_name(&app, &plugin_id)?;
     ask_user(app, &state, plugin_id, plugin_name, capabilities).await
 }
 

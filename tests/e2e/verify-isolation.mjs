@@ -192,7 +192,6 @@ async function grantProbeCap(capability) {
   // （见 cdp.mjs::send），弹框慢一点就会把整条断言链打断。改成应答之后轮询授权表。
   invoke(c)("permission_request", {
     pluginId: PROBE_ID,
-    pluginName: manifest.name ?? PROBE_ID,
     capabilities: [capability],
   }).catch(() => undefined);
   try {
@@ -323,7 +322,6 @@ try {
   r.group("宿主侧规则（直打 invoke，绕过 JS 能力桥）");
   const undeclared = await invoke_("permission_request", {
     pluginId: "com.pet.hr-ble",
-    pluginName: "心率蓝牙",
     capabilities: ["camera:record"],
   });
   r.check("未声明能力被拒", true, !undeclared.ok && /未在 manifest 声明/.test(String(undeclared.e)));
@@ -639,7 +637,7 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
   const savedConfig = await invoke_("store_get", { pluginId: HR, key: "config" });
   await revoke(HR);
   const pending = c.ev(
-    `window.__TAURI_INTERNALS__.invoke('permission_request', { pluginId: ${JSON.stringify(HR)}, pluginName: '心率蓝牙', capabilities: ['ble:scan'] })`,
+    `window.__TAURI_INTERNALS__.invoke('permission_request', { pluginId: ${JSON.stringify(HR)}, capabilities: ['ble:scan'] })`,
   );
   let consentClosed = false;
   try {
@@ -662,7 +660,7 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
   // 还原用户授权：重新走一次同意框并点「允许」
   if (hrManifest?.permissions?.length) {
     const regrant = c.ev(
-      `window.__TAURI_INTERNALS__.invoke('permission_request', { pluginId: ${JSON.stringify(HR)}, pluginName: ${JSON.stringify(hrManifest.name)}, capabilities: ${JSON.stringify(hrManifest.permissions)} })`,
+      `window.__TAURI_INTERNALS__.invoke('permission_request', { pluginId: ${JSON.stringify(HR)}, capabilities: ${JSON.stringify(hrManifest.permissions)} })`,
     );
     try {
       const again = await driveConsent("allow", HR);
@@ -799,7 +797,6 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
   r.group("overlay_owner：悬浮窗归属由窗口标签决定（两扇插件窗都在）");
   const OWNER_AGENT = "com.pet.agent-bridge";
   const OWNER_HR = "com.pet.hr-ble";
-  const OWNER_NAME = { [OWNER_AGENT]: "Agent 桥", [OWNER_HR]: "心率蓝牙" };
   const OWNER_LABEL = { [OWNER_AGENT]: "overlay-com_pet_agent-bridge", [OWNER_HR]: "overlay-com_pet_hr-ble" };
 
   // 前置一：起窗要求插件在启停清单里（overlay 页 sync 会自我关闭未启用插件的窗）
@@ -819,7 +816,7 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
       continue;
     }
     const pending = c
-      .ev(`window.__TAURI_INTERNALS__.invoke('permission_request', { pluginId: ${JSON.stringify(id)}, pluginName: ${JSON.stringify(OWNER_NAME[id])}, capabilities: ['overlay'] })`)
+      .ev(`window.__TAURI_INTERNALS__.invoke('permission_request', { pluginId: ${JSON.stringify(id)}, capabilities: ['overlay'] })`)
       .catch(() => undefined);
     try {
       await driveConsent("allow", id);
@@ -956,7 +953,7 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
     const revoked = await settings.invoke("permission_revoke", { pluginId: id });
     if (revoked.ok && ownerBackup[id].prior.length) {
       const regrant = c
-        .ev(`window.__TAURI_INTERNALS__.invoke('permission_request', { pluginId: ${JSON.stringify(id)}, pluginName: ${JSON.stringify(OWNER_NAME[id])}, capabilities: ${JSON.stringify(ownerBackup[id].prior)} })`)
+        .ev(`window.__TAURI_INTERNALS__.invoke('permission_request', { pluginId: ${JSON.stringify(id)}, capabilities: ${JSON.stringify(ownerBackup[id].prior)} })`)
         .catch(() => undefined);
       try {
         await driveConsent("allow", id);
@@ -987,14 +984,13 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
   const HOST_CAP = "http:localhost:1420";
   const badAsk = await invoke_("permission_request", {
     pluginId: PROBE_ID,
-    pluginName: "隔离探针",
     capabilities: [HOST_CAP],
   });
   r.check("未声明 http 的插件不能申请按域名放行", true, !badAsk.ok && /未在 manifest 声明/.test(String(badAsk.e)));
 
   const grant = c
     .ev(
-      `window.__TAURI_INTERNALS__.invoke('permission_request', { pluginId: ${JSON.stringify(NET_ID)}, pluginName: '网络探针', capabilities: ["http", ${JSON.stringify(HOST_CAP)}] })`,
+      `window.__TAURI_INTERNALS__.invoke('permission_request', { pluginId: ${JSON.stringify(NET_ID)}, capabilities: ["http", ${JSON.stringify(HOST_CAP)}] })`,
     )
     .catch((e) => "ERR " + e);
   let granted = false;
@@ -1025,7 +1021,7 @@ export function deactivate() { window.__probeDeactivated = (window.__probeDeacti
   );
   // 给 example.com 走一次真实同意框授权（http 已给过，缺的是这一跳的域名）
   const grantPending = c.ev(
-    `window.__TAURI_INTERNALS__.invoke('permission_request', { pluginId: ${JSON.stringify(NET_ID)}, pluginName: '网络探针', capabilities: ['http', 'http:example.com'] })`,
+    `window.__TAURI_INTERNALS__.invoke('permission_request', { pluginId: ${JSON.stringify(NET_ID)}, capabilities: ['http', 'http:example.com'] })`,
   );
   try {
     await driveConsent("allow", NET_ID);
