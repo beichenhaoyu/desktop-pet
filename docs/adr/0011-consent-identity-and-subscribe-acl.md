@@ -1,7 +1,8 @@
 # 同意框身份只认磁盘 manifest、topic 订阅侧只认公开名单（2026-10-17 加固）
 
 2026-10-17 对全仓通读评审后落地的 P1/P2 加固（方案见 [优化方案 2026-10-17](../process/OPTIMIZATION-PLAN-2026-10-17.md)）。
-其中三条改变了**对外可观察的行为或契约**，所以先写下来。
+其中四条改变了**对外可观察的行为或契约**，所以先写下来（第 4 条是同一类缺口在**读取侧**的那一半，
+S4 卡补上，见下）。
 
 **决定：**
 
@@ -14,6 +15,14 @@
    `bus:subscribe` 就放行。发布侧规则不动。
 3. **`set_click_through` 补上 `gate::pet`**，并把 `let _ =` 吞错改成如实返回 `HostError`。
    它是全项目唯一没有门禁的命令。
+4. **`bus_peek` 增加 `plugin_id` 并校验 topic 归属**（S4，同日补上）：读 `<id>:widget` 的最近一份
+   回灌时，调用方要先报自己是谁，归属照 `bus_publish` 那一套解析（悬浮窗只认宿主注册表，其余中继
+   窗口才认自报值），且 topic 必须恰好是 `{id}:widget`，否则回 `None`；缺 `plugin_id` 也回 `None`
+   （fail-closed）。这与第 2 条是同一类缺口的两侧：第 2 条堵的是插件「订」别人的展示数据，
+   本条堵的是直接 `invoke("bus_peek")` 把别人的展示数据读走。
+   插件与 widget 的订阅路径（`topic-acl` / `bridge`）传下去的是**订阅方自己的身份**，不是从 topic
+   前缀解析出来的 —— 否则订别人的 topic 会自动带上别人的 id，校验就形同虚设（`unit-runtime` 里
+   有一条反例专门钉这一点）。
 
 同批落地但不构成决策（不改对外契约，只修工程面）：widget boot 加 15s 超时、
 `store` 的 per-plugin 锁表改 `Weak` 回收、Worker 侧「不许带进裸 IPC」的判据从手写正则改成
@@ -65,5 +74,7 @@ permission_request(pluginId, pluginName, capabilities)   ← pluginName 由前�
   于是它能调 `permission_revoke` / `plugin_enabled_set` / `autostart_set` / `hotkey_set` /
   `pet_skin_*` 这类宿主级命令。默认路（Worker）够不着，但逃生门被点名时够得着。见 P1-1 卡。
 - **能力门禁的 `plugin_id` 仍由调用方自报**，同 realm 插件之间分不出（ADR-0006 那条老缺口）。
+  第 4 条（`bus_peek`）是同一处残余：绕过 JS 桥直接 `invoke` 的插件仍可自报成别人去读别人的
+  `:widget` —— S4 收掉的是「不报归属也能读」这条默认路，不是这条老缺口本身。
 - `http` 的域名白名单纯按域名判，对 DNS rebinding 无防护；重定向只复核 host 不复核 scheme。
   本轮未动（需要真机与专门的取证设计）。
