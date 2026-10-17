@@ -202,14 +202,17 @@ try {
   await sleep(1500);
 
   r.group("停用后回收");
-  const sessionCount = await c.ev(`(async () => {
+  // sessionCount 是全表计数：套件保留了用户原本启用的插件（origEnabled），它们默认也在 Worker 里，
+  // 所以不能断言「归零」—— runner 上多开一个插件（如 Agent 桥）就是假红。改比停用前后的差值。
+  const sessionDelta = await c.ev(`(async () => {
     const rt = await import('/src/runtime/plugin-runtime.ts');
     const wh = await import('/src/runtime/worker-plugin-host.ts');
+    const before = wh.workerPluginHost.sessionCount;
     await rt.deactivatePlugin(${JSON.stringify(TODO)});
     await rt.deactivatePlugin(${JSON.stringify(PROBE)});
-    return wh.workerPluginHost.sessionCount;
+    return before - wh.workerPluginHost.sessionCount;
   })()`);
-  r.check("两个 Worker 会话都收掉了", 0, sessionCount);
+  r.check("两个 Worker 会话都收掉了（停用前后差 2，不受用户其他已启用插件影响）", 2, sessionDelta);
   r.check("插件自己的 deactivate 在 Worker 里跑完", true, (await storeGet("deactivated")) === true);
 
   r.group("⑥ 例外名单是逃生口：点名的插件留在宿主 realm");
