@@ -34,6 +34,11 @@
     "active": true,
     "targets": ["nsis"],
     "resources": ["../plugins/**/*"],
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/installer-hooks.nsi"
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

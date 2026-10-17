@@ -781,6 +781,105 @@ try {
     // 插件的授权弹过框」，用户本就启用并授权 com.pet.agent-bridge 时收尾门控原样保留授权，
     // 这一轮不弹框，断言随继承状态红绿交替。同一宿主规则（声明 agent:hooks 的插件第一次
     // 调用必经同意框）改由上面探针组的首调断言钉住（起手必然没授权，那一扇框必然弹）。
+
+    // ⑥ 启停联动（派单 §2 验收第一条）：停用插件要把自家条目摘净，再启用要装回来。
+    // reconcile 就跑在同一次 plugin_enabled_set 调用里（装卸失败不拦启停，但顺序是先落盘
+    // 再装卸），所以命令一返回磁盘上就已是结果 —— 不需要轮询等副作用追上来。
+    r.group("启停联动：停用摘净、再启用恢复（只碰 temp 样例）");
+    const ours = (p) => readFileSync(p, "utf8").split("--pet-hook").length - 1;
+    // 状态文件在宿主自己的数据目录（不是 Agent 的配置），套件只读它取证
+    const identifier = JSON.parse(
+      readFileSync(resolve(import.meta.dirname, "../../src-tauri/tauri.conf.json"), "utf8"),
+    ).identifier;
+    const LINKAGE_FILE = join(env.APPDATA, identifier, "agent-linkage.json");
+    const agentField = () => {
+      try {
+        return JSON.parse(readFileSync(LINKAGE_FILE, "utf8")).agent ?? null;
+      } catch {
+        return "<读不到>";
+      }
+    };
+
+    // 起点：先经设置页装一次 —— 那是「用户显式选择」的唯一记录点，也是下面能自动装回来的前提
+    const clickedReinstall = await clickShadow(".hk-install", "「安装」按钮再次可点（联动恢复的起点）");
+    r.check(
+      "再点安装后回显为已安装",
+      true,
+      clickedReinstall && (await waitUntil(settings.client, stateExpr("installed"), 20_000)),
+    );
+    const perFile = (await settings.invoke("agent_hooks_status")).v?.expectedPerFile ?? 0;
+    r.check("停用前基线：两个样例各装满", [perFile, perFile], [ours(cfgA), ours(cfgB)]);
+    r.check("设置页装成功就记下了用户选的 Agent", "qoder", agentField());
+    const foreignBeforeToggle = `${foreignOf(cfgA)}|${foreignOf(cfgB)}`;
+
+    const disabledIds = origEnabled.filter((id) => id !== AGENT_ID);
+    await writeEnabledIds(settings.invoke, disabledIds);
+    r.check("停用插件后自家条目归零", [0, 0], [ours(cfgA), ours(cfgB)]);
+    r.check("停用插件不动用户自己的 hook 条目", foreignBeforeToggle, `${foreignOf(cfgA)}|${foreignOf(cfgB)}`);
+    r.check("停用不清空 agent 字段（再启用全靠它恢复）", "qoder", agentField());
+
+    // 暂停广播：停用期间落一条事件，watcher 只该推进偏移量 —— 不发 agent:event、不进状态机。
+    // 再启用后再写一条并真的跑一轮：只有新那条该被广播，停用期间那条永远不重放
+    // （偏移量已经走过去）。两半合起来才是「只推进偏移量」，只看前一半等于没测后一半。
+    const eventCount = async () =>
+      (await c.ev(`window.__topics.filter(([k]) => k === 'host-event').length`));
+    const eventsBeforePause = await eventCount();
+    emitPhase("pre", { tool_name: "Bash", session_id: "verify-paused" });
+    await sleep(1_500);
+    r.check("停用期间不广播 agent 事件", eventsBeforePause, await eventCount());
+
+    // 不先钉这条授权，下面的绿可能只是「没授权所以本来就不会装」
+    r.check("再启用所需的 agent:hooks 授权仍在", true, await awaitGranted("agent:hooks"));
+    await writeEnabledIds(settings.invoke, [...disabledIds, AGENT_ID]);
+    r.check("再启用后条目装回来", [perFile, perFile], [ours(cfgA), ours(cfgB)]);
+    r.check("再启用同样不动别人条目", foreignBeforeToggle, `${foreignOf(cfgA)}|${foreignOf(cfgB)}`);
+
+    emitPhase("post", { tool_name: "Bash", session_id: "verify-resumed" });
+    await sleep(1_500);
+    r.check(
+      "再启用只广播新事件、不重放停用期间那条",
+      eventsBeforePause + 1,
+      await eventCount(),
+    );
+
+    // ⑦ --pet-hook-cleanup：NSIS 卸载前那条清理分支。跑在真的 dev 实例旁边，
+    // 顺带证明分流发生在单实例锁与建窗之前 —— 排错了要么条目不被清，要么现成实例被干扰。
+    r.group("卸载前清理分支（起一个 exe --pet-hook-cleanup）");
+    const readInboxLen = () => {
+      try {
+        return readFileSync(join(INBOX, "pre.jsonl"), "utf8").length;
+      } catch {
+        return 0;
+      }
+    };
+    const pagesBefore = (await listPages(PORT).catch(() => [])).length;
+    const inboxBefore = readInboxLen();
+    const cleanup = spawnSync(EXE, ["--pet-hook-cleanup"], { encoding: "utf8", timeout: 5_000 });
+    r.check("清理分支 5 秒内退出且退出码为 0", 0, cleanup.status);
+    r.check("清理分支没有被超时杀掉", undefined, cleanup.error);
+    r.check("stdout 报告摘掉了条目", true, /result=done .*stripped=[1-9]\d* .*failed=0/.test(String(cleanup.stdout)));
+    r.check("清理后自家条目归零", [0, 0], [ours(cfgA), ours(cfgB)]);
+    r.check("清理不动别人条目与其他键", foreignBeforeToggle, `${foreignOf(cfgA)}|${foreignOf(cfgB)}`);
+    r.check("清理分支不往收件目录写（没被当成一条 hook 事件）", inboxBefore, readInboxLen());
+    // 只判「没多出页面」：本组前后可能有一张状态卡按自己的超时收起，那与清理分支无关
+    const pagesAfter = (await listPages(PORT).catch(() => [])).length;
+    r.check("清理分支没有开新窗口", true, pagesAfter <= pagesBefore);
+    r.check("dev 实例仍然存活（没被单实例锁抢占或重载）", token, await c.ev(`window.__verifyToken ?? null`));
+
+    // 第二遍专撞坏配置：清理失败绝不能拦住卸载，所以退码仍是 0 且文件一字不改
+    const broken = "{ 半截 JSON";
+    writeFileSync(cfgA, broken);
+    const brokenB = readFileSync(cfgB, "utf8");
+    const cleanup2 = spawnSync(EXE, ["--pet-hook-cleanup"], { encoding: "utf8", timeout: 5_000 });
+    r.check("撞到坏配置仍然退出码 0", 0, cleanup2.status);
+    r.check("坏配置文件一字不改", broken, readFileSync(cfgA, "utf8"));
+    r.check("坏配置不牵连另一个文件", brokenB, readFileSync(cfgB, "utf8"));
+    r.check("坏配置在 stdout 里留痕", true, /failed=1/.test(String(cleanup2.stdout)));
+
+    // 复位成套件后面用例需要的样子：两份样例都只留用户自己的条目，不带我们的东西
+    writeFileSync(cfgA, foreignOnly("a"));
+    writeFileSync(cfgB, foreignOnly("b"));
+    r.info("样例配置已复位", "两份都只剩用户自己的 hook 条目");
   }
 
   r.group("收尾前的完整性");

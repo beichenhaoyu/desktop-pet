@@ -82,9 +82,25 @@ pub fn plugin_enabled_list(app: AppHandle) -> Result<Option<Vec<String>>, HostEr
     read_ids(&file(&app)?)
 }
 
+/// 宿主认定的当前清单，供联动现算「已启用插件里有没有声明 agent:hooks」。
+/// `None` = 说不出现状（还没写过，或读坏了）—— 调用方必须把这两种情况都当成
+/// 「不要动手」，而不是「全都没启用」。
+pub fn list_ids(app: &AppHandle) -> Option<Vec<String>> {
+    match read_ids(&file(app).ok()?) {
+        Ok(ids) => ids,
+        Err(e) => {
+            log::warn!("读取启停清单失败: {e}");
+            None
+        }
+    }
+}
+
 /// 设置窗写启停清单。读回的值由宿主给出，不信任前端传来的顺序与重复。
 /// 写完向所有窗口广播 `host:enabled-changed`：每个窗口手里是一份同步缓存，
 /// 谁写的人都必须让别窗知道，否则设置页会拿旧名单判定「这个插件没启用」而不挂它的页面。
+///
+/// 联动挂在**这里**（比较新旧清单来装卸 hook），并且必须在清单已落盘之后：
+/// 装卸失败不能拦启停，所以 `reconcile` 没有 Result，也没人拿 `?` 拦它。
 #[tauri::command]
 pub fn plugin_enabled_set(
     app: AppHandle,
@@ -93,15 +109,39 @@ pub fn plugin_enabled_set(
 ) -> Result<Vec<String>, HostError> {
     crate::gate::settings(&window, "改动插件启停清单")?;
     let cleaned = sanitize(&ids);
+    let previous = read_ids_before_write(&app);
     write_ids(&app, &cleaned)?;
     let _ = app.emit("host:enabled-changed", &cleaned);
+    crate::services::agent::linkage::reconcile(&app, previous.as_deref(), &cleaned);
     Ok(cleaned)
+}
+
+/// 写盘前把旧清单读出来。读失败不拦这次写入，只降级成「说不出」（None）。
+/// 独立成函数是为了把 `?` 留在能传播错误的那一侧，命令体里只做一件事。
+fn read_ids_before_write(app: &AppHandle) -> Option<Vec<String>> {
+    let path = match file(app) {
+        Ok(path) => path,
+        Err(e) => {
+            log::warn!("拿不到启停清单路径，联动本次按「说不出」处理: {e}");
+            return None;
+        }
+    };
+    match read_ids(&path) {
+        Ok(ids) => ids,
+        Err(e) => {
+            log::warn!("读旧启停清单失败，联动本次按「说不出」处理: {e}");
+            None
+        }
+    }
 }
 
 /// 一次性迁移：把 WebView 里那份旧清单搬进宿主。
 /// 只认宠物窗里的运行时，且**只在文件还不存在（或读坏了）时**写入 —— 之后重复调用
 /// 一律原样回读现有那份，免得某个带着旧 localStorage 的窗口把用户最新的启停覆盖回去。
 /// 返回值就是宿主认定的那份，调用方直接拿来用（不用自己猜过滤结果）。
+///
+/// 迁移这一次也要过联动，但**不会自动装 hook**：第一次写清单不是用户点了开关
+/// （见 `linkage::decide` 的 `prev_on = None` 分支），这里只是把广播闸门拨到与现状一致。
 #[tauri::command]
 pub fn plugin_enabled_migrate(
     app: AppHandle,
@@ -116,6 +156,7 @@ pub fn plugin_enabled_migrate(
     let cleaned = sanitize(&ids);
     write_ids(&app, &cleaned)?;
     let _ = app.emit("host:enabled-changed", &cleaned);
+    crate::services::agent::linkage::reconcile(&app, None, &cleaned);
     log::info!("已从 WebView 迁移插件启停清单到宿主");
     Ok(cleaned)
 }

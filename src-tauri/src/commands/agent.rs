@@ -9,6 +9,11 @@
 //! 挡不住的是同 realm 里插件的主动越权 —— settings 区的 widget 本来就跑在设置窗里，
 //! `label == "settings"` 对它天然成立，边界靠 manifest 声明 + 同意框，不是靠窗口身份。
 //! 那条缺口要等 Web Worker 宿主才收口，别在这条注释里给自己假安全感。
+//!
+//! 这两个命令还是「用户显式选择」的唯一写入口（`agent-linkage.json` 的 `agent` 字段，
+//! 见 services/agent/linkage.rs）：装成功记 qoder，卸载记 null。
+//! 启停联动、删除插件、启动清理和 `--pet-hook-cleanup` 都只读它 ——
+//! 停用插件导致的卸载不是退出，重新启用时全靠这个字段把安装恢复回来。
 
 use std::path::{Path, PathBuf};
 
@@ -16,6 +21,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
 use crate::host_error::{HostError, INTERNAL, NOT_FOUND};
+use crate::services::agent::linkage;
 use crate::services::agent::HOOK_PHASES;
 use crate::services::agent_hooks;
 use crate::services::permission::PermissionState;
@@ -104,6 +110,8 @@ pub fn agent_hooks_install(
     assert_caller(&app, &window, plugin_id.as_deref(), "查询或改动 Agent hook")?;
     let files = required_hook_configs(&home_dir(&app)?)?;
     let reports = agent_hooks::install_files(&files, &exe_path()?);
+    // 只有真装上才算用户的选择；全失败不写，见 linkage::note_installed
+    linkage::note_installed(&app, &reports);
     Ok(json!({ "files": reports }))
 }
 
@@ -116,6 +124,8 @@ pub fn agent_hooks_uninstall(
     assert_caller(&app, &window, plugin_id.as_deref(), "查询或改动 Agent hook")?;
     let files = agent_hooks::candidate_files(&home_dir(&app)?);
     let reports = agent_hooks::uninstall_files(&files);
+    // 卸载（含「撤销授权」连带的宿主卸载）算明确退出：记 null，别再自动装回来
+    linkage::note_uninstalled(&app);
     Ok(json!({ "files": reports }))
 }
 

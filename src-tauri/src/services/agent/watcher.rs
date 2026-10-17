@@ -74,6 +74,12 @@ fn drain_file(state: &Arc<AgentState>, app: &AppHandle, path: &Path) {
         .unwrap_or_else(|p| p.into_inner())
         .insert(path.to_path_buf(), next);
 
+    // 联动关着：偏移量照样推进（这是「只推进偏移量」的字面意思 —— 重新启用插件时
+    // 不会把这些陈旧事件当作新事件重放一遍），但不进状态机、不发 agent:event、不拨总状态。
+    if !super::linkage::broadcast_allowed() {
+        return;
+    }
+
     let phase_from_name = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -182,7 +188,10 @@ pub fn spawn_agent_watcher(app: &AppHandle) -> Result<AgentWatcher, String> {
             drain_all(&state, &app, &root);
             std::thread::sleep(Duration::from_millis(120));
             drain_all(&state, &app, &root);
-            state.publish(&app, None);
+            // 暂停时连总状态也不拨：见 drain_file 里同一条口径的注释
+            if super::linkage::broadcast_allowed() {
+                state.publish(&app, None);
+            }
             flag.store(false, Ordering::SeqCst);
         });
     })
@@ -204,6 +213,9 @@ pub fn start_agent_ticker(app: &AppHandle) {
         let dir = inbox_dir(&app_data);
         enforce_inbox_cap(&dir);
         let state = sink.state::<Arc<AgentState>>().inner().clone();
-        state.publish(&sink, None);
+        // 收件目录的上限检查照做（那是磁盘卫生，与广播无关），只是暂停时不往外拨状态
+        if super::linkage::broadcast_allowed() {
+            state.publish(&sink, None);
+        }
     });
 }
