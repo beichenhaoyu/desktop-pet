@@ -481,6 +481,16 @@ try {
     0,
     badgeSample.samples.slice(5).filter((n) => n !== 1).length,
   );
+  // 徽标建槽/内容到达不得把 window error 弹成红条。这条错误的唯一可观测点就是红条本身：
+  // RO 交付回调里改被观察外壳的 position，Chromium 报
+  // "ResizeObserver loop completed with undelivered notifications" 并当 window error 派发，
+  // 而它**不进 CDP 的 console 通道**（c.noise 看不见），所以只能读 #err-overlay。
+  // 红条只增不清，启动期触发过就一直是 block —— 整轮跑完再读即可。
+  r.check(
+    "徽标整轮下来没把 window error 弹成红条",
+    "none|",
+    await c.ev(`(() => { const el = document.getElementById('err-overlay'); return el ? getComputedStyle(el).display + '|' + el.textContent : 'no-el'; })()`),
+  );
   // 全屏暂停：人工造 host:fullscreen。先把传感与游戏模式开关都按住，否则真检测器或
   // game-mode 的联动（隐藏宠物窗）会跟这一组抢事件；两样都在本组末尾与 finally 里还原。
   const watchStatus = await invoke("fullscreen_watch_status");

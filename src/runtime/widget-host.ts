@@ -80,9 +80,18 @@ class WidgetHost {
     arbiter.register(pluginId);
     const observer = new ResizeObserver(() => {
       const { width, height } = host.getBoundingClientRect();
-      arbiter.setHasSize(pluginId, width > 0 && height > 0);
-      // 有内容却没人可见就立刻抛一个出来，别干等下一个 5 秒拍子（空候选时 tick 是空操作）
-      if (arbiter.visible() === null) arbiter.tick();
+      // 反应必须出交付回调：applyBadgeVisibility 翻转的正是**被观察的那个外壳**的 position，
+      // 而翻转本身会改它的尺寸（absolute 被塌缩容器夹紧 ↔ 流内展开）。在交付回调里改「本次
+      // 已交付的元素」，Chromium 记一条 "ResizeObserver loop completed with undelivered
+      // notifications" 并把它当 window error 派发；boot-error 的兜底条不筛消息，于是宠物窗
+      // 顶部就出一条红条（现场：徽标首次拿到内容那一拍）。
+      // 量尺寸留在回调里 —— 观察者说「它变了」的那一刻只该读；写挪到下一帧前，交付循环里没人改 DOM。
+      requestAnimationFrame(() => {
+        if (this.badgeObservers.get(host) !== observer) return; // 槽已摘：别拿旧尺寸写账
+        arbiter.setHasSize(pluginId, width > 0 && height > 0);
+        // 有内容却没人可见就立刻抛一个出来，别干等下一个 5 秒拍子（空候选时 tick 是空操作）
+        if (arbiter.visible() === null) arbiter.tick();
+      });
     });
     observer.observe(host);
     this.badgeObservers.set(host, observer);
