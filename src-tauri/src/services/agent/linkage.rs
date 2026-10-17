@@ -309,30 +309,44 @@ pub fn resync(app: &AppHandle) {
 
 /// 应用启动：先补写老用户的选择，再按现状清理。
 ///
-/// 联动开着时**不重装** —— 用户可能就是在 Agent 那边故意把条目删掉的，
-/// 每次开机把他刚做的事恢复回去是跟用户较劲。
+/// 「先补写、后清理」这个顺序本身就是判据，所以它写在 `startup_sequence` 里 —— 那边没有
+/// AppHandle，单测能真的把顺序跑红；这里只负责把路径与现状凑出来。
 pub fn startup(app: &AppHandle) {
     let Some(data) = app_data(app) else { return };
     let files = candidate_files(app);
-    // 顺序即判据：migrate 必须早于清理，反了就把用户的 opt-in 证据先擦掉了
-    let migrated = migrate_from_legacy(&data, &files);
-    log::info!("启动补写联动状态: {migrated:?}");
-    let Some(ids) = crate::services::enabled::list_ids(app) else {
-        // 还没迁移过：说不出现状就别动手，也不暂停广播（保持升级前的既有行为）
-        return;
-    };
-    let now_on = linkage_on(app, &ids);
-    set_broadcast(now_on);
-    if now_on {
-        return;
-    }
-    let reports = uninstall(&files);
-    for r in &reports {
-        if let Some(e) = &r.error {
-            log::warn!("启动清理失败: {e} (path: {})", r.path);
+    let ids = crate::services::enabled::list_ids(app);
+    // 清单还不存在（尚未迁移）= 说不出现状：既不暂停广播，也不动手清理
+    let on = ids.as_ref().is_some_and(|v| linkage_on(app, v));
+    set_broadcast(on);
+    let migrated = startup_sequence(&data, &files, ids.as_deref(), on, &mut |files| {
+        let reports = uninstall(files);
+        for r in &reports {
+            if let Some(e) = &r.error {
+                log::warn!("启动清理失败: {e} (path: {})", r.path);
+            }
         }
+        report(app, "startup-cleanup", &reports);
+    });
+    log::info!("启动补写联动状态: {migrated:?}");
+}
+
+/// 启动阶段的两步及其顺序。
+///
+/// `strip` 由调用方给（宿主那边是真的摘条目 + 广播），所以这个函数**没有装的能力** ——
+/// 「启动只清不装」是签名层面的事实，不是注释里的约定。
+/// `ids = None` 表示启停清单还不存在：说不出现状就不动手。
+pub fn startup_sequence(
+    app_data_dir: &Path,
+    files: &[PathBuf],
+    ids: Option<&[String]>,
+    linkage_on: bool,
+    strip: &mut dyn FnMut(&[PathBuf]),
+) -> Migrate {
+    let migrated = migrate_from_legacy(app_data_dir, files);
+    if ids.is_some() && !linkage_on {
+        strip(files);
     }
-    report(app, "startup-cleanup", &reports);
+    migrated
 }
 
 /// `desktop-pet.exe --pet-hook-cleanup` 的实体：卸载应用前把自家条目摘净。
@@ -645,29 +659,84 @@ mod tests {
         }
     }
 
-    /// 顺序判据：`startup` 里补写必须早于清理，反了就把用户的 opt-in 证据先擦掉了。
-    /// 与 plugins.rs 的「只用一份 id 校验器」同一类结构断言：这条要防的是改动顺序，
-    /// 而顺序只在 startup 函数体里，纯函数测不到。
+    /// 顺序判据：启动必须先补写用户的选择，再摘残余。反了就把证据先擦掉 ——
+    /// 「停用摘掉、再启用装回来」对升级上来的用户从此永不成立。
+    /// 这条以前是查源码文本的，现在跑真的是两步：把顺序放进 `startup_sequence`，
+    /// 它不需要 AppHandle，所以能把行为本身跑红（文本断言挡不住「把 files 传成空表」）。
     #[test]
-    fn startup_migrates_before_it_cleans() {
-        let body = function_body(include_str!("linkage.rs"), "pub fn startup(");
-        let migrated = body
-            .find("migrate_from_legacy(")
-            .expect("startup 没有补写老用户的选择");
-        let cleaned = body
-            .find("uninstall(&files)")
-            .expect("startup 没有清理残余");
-        assert!(
-            migrated < cleaned,
-            "补写(第{migrated}字)必须早于清理(第{cleaned}字)"
+    fn startup_records_the_choice_before_it_strips_the_evidence() {
+        let dir = tmp_dir("startup-seq");
+        let cfg = dir.join("settings.json");
+        fs::write(
+            &cfg,
+            json!({ "hooks": { "Stop": [ { "hooks": [ managed_entry("stop"), foreign_entry() ] } ] } })
+                .to_string(),
+        )
+        .unwrap();
+        let mut stripped = 0usize;
+        // 插件已停用（清单里不包括它）→ 该摘残余
+        let migrated = startup_sequence(
+            &dir,
+            std::slice::from_ref(&cfg),
+            Some(&[]),
+            false,
+            &mut |files| {
+                stripped += uninstall(files).iter().map(|r| r.managed).sum::<usize>();
+            },
         );
-        // "uninstall(" 本身就含 "install("，所以数出现次数而不是找子串：
-        // startup 里只允许那一次卸载，多一个就说明启动开始重装了
+        assert_eq!(migrated, Migrate::Wrote(Some(QODER.to_string())));
+        assert_eq!(stripped, 1, "联动关着就要把残余摘掉");
         assert_eq!(
-            body.matches("install(").count(),
-            1,
-            "启动清理只摘不装：重装会把用户在 Agent 那边删掉的条目又加回去"
+            agent_choice(&dir).as_deref(),
+            Some(QODER),
+            "补写必须早于摘除：先摘就再也看不出用户装过"
         );
+        let after = fs::read_to_string(&cfg).unwrap();
+        assert_eq!(after.matches("--pet-hook").count(), 0);
+        assert!(after.contains("other-tool --notify"), "别人条目不受影响");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 启动「只清不装」的另一半：联动开着、或现状还说不出来时，配置文件一个字都不许动。
+    /// `startup_sequence` 拿到的闭包只能摘不能装，所以重装这条路在签名上就不存在。
+    #[test]
+    fn startup_leaves_the_configs_alone_when_linkage_is_on_or_unknown() {
+        let cases: Vec<(Option<Vec<String>>, bool, &str)> = vec![
+            (
+                Some(vec!["com.pet.agent-bridge".to_string()]),
+                true,
+                "联动开着：用户在 Agent 那边故意删掉的条目不该被开机加回去",
+            ),
+            (None, false, "启停清单还不存在：说不出现状就别动手"),
+        ];
+        for (ids, on, why) in cases {
+            let dir = tmp_dir("startup-keep");
+            let cfg = dir.join("settings.json");
+            fs::write(
+                &cfg,
+                json!({ "hooks": { "Stop": [ { "hooks": [ managed_entry("stop") ] } ] } })
+                    .to_string(),
+            )
+            .unwrap();
+            let mut called = false;
+            startup_sequence(
+                &dir,
+                std::slice::from_ref(&cfg),
+                ids.as_deref(),
+                on,
+                &mut |_| called = true,
+            );
+            assert!(!called, "{why}：还是去摘了条目");
+            assert_eq!(
+                fs::read_to_string(&cfg)
+                    .unwrap()
+                    .matches("--pet-hook")
+                    .count(),
+                1,
+                "{why}：配置文件被动过了"
+            );
+            let _ = fs::remove_dir_all(&dir);
+        }
     }
 
     /// 挂点判据：联动只能挂在启停清单的唯一写入口上，且必须在清单落盘之后
