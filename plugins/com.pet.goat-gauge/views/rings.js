@@ -1,0 +1,82 @@
+// 三环的共用小件：overlay 与插件页概览都用它。
+// 圆环进度用 path 的 d；线宽/线帽放在 CSS 里（契约没有 stroke-width 属性）。
+import { arcPath, toneOfPct } from "../charts.js";
+import { fmtCountdown, fmtPct } from "../format.js";
+import { svg, tag, text } from "./dom.js";
+
+export const RING_CSS = `
+  .g-rings { display: flex; justify-content: space-between; gap: 10px; }
+  .g-ring { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 0; }
+  .g-ring-svg { display: block; }
+  .g-ring-track { fill: none; stroke: rgba(255,255,255,.14); stroke-width: 6; }
+  .g-ring-progress { fill: none; stroke-width: 6; stroke-linecap: round; }
+  .g-ring.good .g-ring-progress { stroke: #4ade80; }
+  .g-ring.warn .g-ring-progress { stroke: #f5c518; }
+  .g-ring.bad .g-ring-progress { stroke: #ff6b6b; }
+  .g-ring-value { font-size: 15px; font-weight: 600; color: #eef2f6; }
+  .g-ring-label { font-size: 11px; color: #9aa3b2; }
+  .g-ring-reset { font-size: 10px; color: #98a2b3; }
+  .g-ring.unavailable .g-ring-value, .g-ring.unavailable .g-ring-reset { color: #6b7280; }
+`;
+
+/**
+ * @param {any} dom
+ * @param {{ size?: number, label: string, kind: string }} options
+ */
+export function createRing(dom, { size = 64, label, kind }) {
+  const box = tag(dom, "div", "g-ring");
+  box.dataset.ring = kind;
+
+  const radius = size / 2 - 4;
+  const center = size / 2;
+  const chart = svg(dom, "svg", {
+    viewBox: `0 0 ${size} ${size}`,
+    width: size,
+    height: size,
+    class: "g-ring-svg",
+  });
+  const track = svg(dom, "circle", {
+    cx: center,
+    cy: center,
+    r: radius,
+    class: "g-ring-track",
+  });
+  const progress = svg(dom, "path", {
+    d: "",
+    class: "g-ring-progress",
+  });
+  progress.dataset.role = "ring-progress";
+  chart.append(track, progress);
+
+  const value = text(dom, "—", "g-ring-value");
+  value.dataset.role = "ring-value";
+  const labelNode = text(dom, label, "g-ring-label");
+  const reset = text(dom, "—", "g-ring-reset");
+  reset.dataset.role = "ring-reset";
+  box.append(chart, value, labelNode, reset);
+
+  /**
+   * @param {Record<string, any> | null | undefined} window
+   * @param {number} now
+   */
+  function update(window, now = Date.now()) {
+    const available = window && window.available !== false;
+    const pct = available ? Number(window.remaining_pct) : Number.NaN;
+    if (!available || !Number.isFinite(pct)) {
+      progress.setAttribute("d", "");
+      value.textContent = "—";
+      reset.textContent = String(window?.note ?? "—");
+      box.className = "g-ring unavailable";
+      box.dataset.state = window ? "unavailable" : "empty";
+      return;
+    }
+    progress.setAttribute("d", arcPath(center, center, radius, pct));
+    value.textContent = fmtPct(pct);
+    const resetAt = Number(window.reset_at) || 0;
+    reset.textContent = resetAt > now ? fmtCountdown(resetAt, now) : "已重置";
+    box.className = `g-ring ${toneOfPct(pct)}`;
+    box.dataset.state = window.exceeded === true ? "exceeded" : "ok";
+  }
+
+  return { box, chart, progress, value, reset, update };
+}
