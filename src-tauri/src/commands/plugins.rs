@@ -447,6 +447,9 @@ pub fn spawn_plugins_watcher(app: &tauri::AppHandle) -> Result<PluginWatcher, Ho
             let ids = plugin_ids_from_paths(&root, &paths);
             let reload_ids = plugin_reload_ids_from_paths(&root, &paths);
             crate::services::permission::prune_orphan_grants(&sink);
+            // 删插件目录是「关闭联动」的第二条路：运行期没有卸载命令，只有这里看得见
+            // 磁盘上的变化。resync 自己比较新旧判据，删个无关插件不会把 hook 摘掉。
+            crate::services::agent::linkage::resync(&sink);
             let _ = sink.emit(
                 "host:plugins-changed",
                 serde_json::json!({ "ids": ids, "reloadIds": reload_ids }),

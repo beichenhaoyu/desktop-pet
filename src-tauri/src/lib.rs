@@ -18,6 +18,14 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 卸载应用前的清理分支（NSIS 的 NSIS_HOOK_PREUNINSTALL 调它）。分流必须和下面的 hook
+    // 分支一样排在建窗与单实例锁之前，否则会被转给已运行的实例、这次清理根本不发生；
+    // 而且它永不返回非零退出码 —— 清理失败不能拦住卸载。
+    if std::env::args().any(|arg| arg == "--pet-hook-cleanup") {
+        services::agent::linkage::run_cleanup_cli();
+        return;
+    }
+
     // Agent hook 的接收分支必须排在一切之前：它只把 stdin 落到一个文件就退出。
     // 走完整启动流程不仅慢，还会被下面的单实例插件把参数转发给已运行的实例，
     // 于是 stdin 与这次事件一起丢掉。
@@ -78,6 +86,9 @@ pub fn run() {
             app.manage(Arc::new(AgentState::default()));
             app.state::<StoreState>().init(app.handle())?;
             app.state::<PermissionState>().init(app.handle())?;
+            // 启停联动的现状在这里对齐：先补写老用户的显式选择，再按「联动已关」摘残余。
+            // 开着的时候不重装（顺序判据见 services/agent/linkage.rs）。
+            services::agent::linkage::startup(app.handle());
             window::pet::setup(app.handle())?;
             window::tray::setup(app.handle())?;
             // watcher 被 drop 就停止监听，所以必须交给 app state 长期持有

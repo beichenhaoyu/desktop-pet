@@ -208,6 +208,17 @@ export default {
 
 图集规格：8 列 × 9 行（v1，1536×1872）或 8 列 × 11 行（v2，1536×2288，多出的两行是预留空白）的无损 webp，单元格 192×208，行号即状态——row0 `idle`(6 帧/1100ms)、row1 `running-right`(8/1060)、row2 `running-left`(8/1060)、row3 `waving`(4/700)、row4 `jumping`(5/840)、row5 `failed`(8/1220)、row6 `waiting`(6/1010)、row7 `running`(6/820)、row8 `review`(6/1030)，规格定义在 `src/pet/petdex-states.ts`。
 
+**9. Agent hook 的装卸与插件启停联动**：hook 条目写在编码 Agent 自己的配置文件里（Qoder 即 `~/.qoder-cn/settings.json` 与 `~/.qoder/settings.json`），而桌宠停用插件或卸载应用都不会自动带走它们。所以联动住在宿主，不住在插件——
+
+- a) 判据：已启用的插件里有没有任一 manifest 声明 `agent:hooks`（不写死插件 id）。启停清单的唯一写入口是 `src-tauri/src/services/enabled.rs`，在那里比较新旧清单，装与卸都拦得住；插件被删目录由 `src-tauri/src/commands/plugins.rs` 的目录 watcher 重算。
+- b) 只有用户的显式操作能写 `<app_data>/agent-linkage.json` 的 `agent` 字段：设置页装成功记 `qoder`，设置页卸载或「撤销授权」连带的宿主卸载记 `null`。启停差异、删除插件、启动清理与 `--pet-hook-cleanup` 一律只读它——停用导致的卸载不是退出，重新启用时全靠这个字段把安装恢复回来。
+- c) 关→开 需要 `agent:hooks` 已同意**且** `agent` 非空才装；开→关 摘净自家条目并暂停广播（`src-tauri/src/services/agent/watcher.rs` 只推进偏移量，既不重放也不发 `agent:state`/`agent:event`）；应用启动只清理不重装——用户可能就是在 Agent 那边故意把条目删掉的。
+- d) 装卸失败不拦启停：清单先落盘，`src-tauri/src/services/agent/linkage.rs` 的 `reconcile` 没有 Result；每个文件的结果经 `host:agent-hooks-report` 广播。读-改-写三步由 `src-tauri/src/services/agent_hooks.rs` 里的 `HOOK_IO` 一把锁串行（调用方有四个，锁放在被调方才漏不掉）。
+- e) 卸载应用走 `bundle.windows.nsis.installerHooks`（`src-tauri/windows/installer-hooks.nsi`）的 `NSIS_HOOK_PREUNINSTALL` → `desktop-pet.exe --pet-hook-cleanup`。分流排在建窗与单实例锁之前，退出码恒为 0（清理失败不能拦住卸载）；带 `/UPDATE` 的升级跳过清理，否则每次覆盖安装都摘一次 hook 而启动又只清不装，桥就静默失效了。
+- f) 老用户迁移：状态文件还不存在时，按「候选配置文件里有自家条目」补写 `qoder`（没有就写 `null`）。这一步必须早于启动清理——先摘条目就再也看不出用户装过。判据写在 `linkage.rs` 的单测里。
+
+运行时验证：`npm run verify:agent`（临时 `PET_AGENT_CONFIG_FILES` 样例里做停用/再启用与清理分支）、`tests/unit/unit-nsis-hook.mjs`（NSIS 接线的静态半区，进 `npm run unit`）、`tools/check-nsis-cleanup.ps1`（真实安装包的卸载与覆盖安装，发版前手动跑）。
+
 ## 六、实施步骤
 
 1. **脚手架 + 宠物窗**：Tauri 2 + Vite/TS 初始化；透明置顶窗、无边框拖拽、右键托盘、单实例；Canvas 播放 Petdex 图集序列帧，状态机跑通九个状态（图集不可用时退回程序生成的 idle 帧）。

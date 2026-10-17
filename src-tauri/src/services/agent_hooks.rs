@@ -11,11 +11,24 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use serde_json::{json, Value};
 
 /// 自家条目的识别标记。它同时是 hook 分支的 CLI 参数，两边共用这一个常量
 pub const HOOK_MARKER: &str = "--pet-hook";
+
+/// 装卸串行锁。设置页点按钮、启停联动、启动清理和 `--pet-hook-cleanup` 都在做
+/// 「读原文 → 改 → 原子替换」这三步，并发跑就会互相覆盖：一方按旧内容算出新文本时
+/// 另一方已经写进去了，后写的那份把先写的条目抹掉（或装出双份）。
+/// 锁放在这一层（而不是调用方）是因为调用方有四个，少一个就漏。
+static HOOK_IO: Mutex<()> = Mutex::new(());
+
+/// 取锁。中毒（持锁线程 panic）时继续用：配置读写本身是可重入的纯 IO，
+/// 让后续装卸因一次无关 panic 永久失效，比带着锁继续跑更糟。
+fn lock_hook_io() -> std::sync::MutexGuard<'static, ()> {
+    HOOK_IO.lock().unwrap_or_else(|p| p.into_inner())
+}
 
 /// hook 超时（秒）。事件采集不该拖住 Agent，取小值
 const HOOK_TIMEOUT: i64 = 2;
@@ -228,6 +241,12 @@ fn read_existing(path: &Path) -> Result<Option<String>, std::io::Error> {
     }
 }
 
+/// 这批报告里有没有至少一个文件真的装上了。设置页据此决定「要不要把用户的选择记进
+/// 联动状态文件」—— 全部失败时不记，否则下一次启用插件会去装一个从没成功过的 hook。
+pub fn any_installed(reports: &[FileReport]) -> bool {
+    reports.iter().any(|r| r.error.is_none() && r.managed > 0)
+}
+
 pub fn status_reports(files: &[PathBuf]) -> Vec<FileReport> {
     files
         .iter()
@@ -259,6 +278,7 @@ fn apply_text(path: &Path, text: &str) -> Result<(), String> {
 }
 
 pub fn install_files(files: &[PathBuf], exe: &Path) -> Vec<FileReport> {
+    let _io = lock_hook_io();
     files
         .iter()
         .map(|path| {
@@ -284,6 +304,7 @@ pub fn install_files(files: &[PathBuf], exe: &Path) -> Vec<FileReport> {
 }
 
 pub fn uninstall_files(files: &[PathBuf]) -> Vec<FileReport> {
+    let _io = lock_hook_io();
     files
         .iter()
         .map(|path| {
@@ -441,5 +462,30 @@ mod tests {
         assert!(built.starts_with('"'));
         assert!(built.contains("Program Files"));
         assert!(built.ends_with("--pet-hook pre"));
+    }
+
+    /// 「装成功才算用户的选择」的判据：设置页据此决定要不要往 agent-linkage.json 写 qoder。
+    /// 全失败还去记，等于让下一次启用插件装一个从没成功过的 hook。
+    #[test]
+    fn any_installed_needs_a_file_without_error_and_with_entries() {
+        let ok = |managed: usize, error: Option<&str>| FileReport {
+            path: "x".into(),
+            managed,
+            error: error.map(str::to_string),
+        };
+        assert!(any_installed(&[ok(12, None)]));
+        assert!(
+            any_installed(&[ok(0, Some("备份失败")), ok(12, None)]),
+            "一个文件失败不算全失败"
+        );
+        assert!(!any_installed(&[]), "一个候选都没有 = 没装那个 Agent");
+        assert!(
+            !any_installed(&[ok(0, Some("配置解析失败"))]),
+            "全部失败不能算装上"
+        );
+        assert!(
+            !any_installed(&[ok(0, None)]),
+            "managed=0 且无错 = 没写进任何条目，也不算装上"
+        );
     }
 }
