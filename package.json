@@ -31,6 +31,7 @@
     "verify:release": "node tests/e2e/verify-release.mjs",
     "verify:astock": "node tests/e2e/verify-astock.mjs",
     "verify:http": "node tests/e2e/verify-http.mjs",
+    "verify:goat-gauge": "node tests/e2e/verify-goat-gauge.mjs",
     "unit:widget": "node --import ./tests/unit/ts-loader.mjs --test --test-concurrency=1 tests/unit/unit-widget-protocol.mjs tests/unit/unit-widget-worker.mjs tests/unit/unit-widget-migrations.mjs tests/unit/unit-badge-arbiter.mjs",
     "unit:migrate": "node --import ./tests/unit/ts-loader.mjs --test --test-concurrency=1 tests/unit/unit-widget-migrations.mjs"
   },

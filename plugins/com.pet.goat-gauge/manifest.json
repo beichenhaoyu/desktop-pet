@@ -3,11 +3,13 @@
   "name": "GOAT 用量",
   "version": "0.1.0",
   "entry": "index.js",
+  "widget": "widget.js",
   "apiVersion": 2,
   "permissions": [
     "http",
     "storage",
     "widget",
+    "overlay",
     "bus:publish",
     "bus:subscribe",
     "notify",

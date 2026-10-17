@@ -136,7 +136,7 @@ jobs:
         run: |
           # The allowlist is part of this gate (see the file header for why game/release/astock/http/skin
           # stay out). It also pins the input to npm script names so the string never reaches the shell.
-          $allowed = @("verify", "verify:agent", "verify:worker", "verify:todo", "verify:game")
+          $allowed = @("verify", "verify:agent", "verify:worker", "verify:todo", "verify:game", "verify:goat-gauge")
           $failed = @()
           foreach ($s in ($env:SUITES -split ",")) {
             $name = $s.Trim()

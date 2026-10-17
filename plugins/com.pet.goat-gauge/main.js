@@ -14,7 +14,7 @@ import { appendHistory } from "./history.js";
 import { buildSnapshot, maskKey } from "./normalize.js";
 import { nextDelay } from "./schedule.js";
 import { DEFAULT_CONFIG, migrate, sanitizeConfig, SCHEMA_VERSION } from "./store-schema.js";
-import { TOPIC_CMD, TOPIC_STATUS, TOPIC_USAGE } from "./topics.js";
+import { TOPIC_CMD, TOPIC_PANEL, TOPIC_STATUS, TOPIC_USAGE } from "./topics.js";
 import { cooldownReason, cooldownUntil, gate, resetThrottle } from "./index.js";
 
 export let ctx = null;
@@ -30,6 +30,7 @@ let alertsFired = {};
 let whoamiCache = null;
 let subscriptionCache = null;
 let timer = 0;
+let overlayChain = Promise.resolve();
 let stopped = false;
 let busy = false;
 let noChangeCount = 0;
@@ -176,6 +177,42 @@ function publishUsage(prev, next) {
   }
 }
 
+function publishPanel() {
+  if (!ctx) return;
+  try {
+    const published = ctx.bus.publish(TOPIC_PANEL, {
+      history: history.map((row) => [...row]),
+      fetchedAt: Number(snapshot?.fetched_at) || 0,
+    });
+    if (published && typeof published.catch === "function") {
+      void published.catch(() => undefined);
+    }
+  } catch (err) {
+    ctx?.log?.("历史广播失败", err);
+  }
+}
+
+function syncOverlay() {
+  overlayChain = overlayChain.then(async () => {
+    if (!alive()) return;
+    const want = config.showOverlay === true && !!snapshot && viewState !== "onboarding";
+    try {
+      if (want) {
+        await ctx.overlay.show({
+          x: config.overlayX,
+          y: config.overlayY,
+          height: 150,
+        });
+      } else {
+        await ctx.overlay.hide();
+      }
+    } catch (err) {
+      ctx?.log?.("悬浮卡切换失败", err);
+    }
+  });
+  return overlayChain;
+}
+
 async function fireAlerts(events) {
   if (!events?.length || !ctx) return;
   for (const event of events) {
@@ -268,6 +305,7 @@ async function handleRefreshError(err) {
       await fireAlerts([event]);
     }
     publishView();
+    void syncOverlay();
     return;
   }
   if (isThrottleError(err) || err?.kind === "cooldown" || Date.now() < cooldownUntil) {
@@ -275,12 +313,14 @@ async function handleRefreshError(err) {
     lastError = err?.message ?? "限流冷却中";
     scheduleNext();
     publishView();
+    void syncOverlay();
     return;
   }
   viewState = "stale";
   lastError = err?.message ?? String(err);
   scheduleNext();
   publishView();
+  void syncOverlay();
 }
 
 async function refreshSnapshot() {
@@ -288,6 +328,7 @@ async function refreshSnapshot() {
   if (!config.demo && !cred.apiKey) {
     viewState = "onboarding";
     publishView();
+    void syncOverlay();
     return;
   }
 
@@ -378,6 +419,8 @@ async function refreshSnapshot() {
     lastError = summaryFailed ? "用量汇总暂不可用，保留上次数据" : "";
     publishView();
     publishUsage(prev, snapshot);
+    if (historyChanged) publishPanel();
+    void syncOverlay();
     scheduleNext();
   } catch (err) {
     if (alive()) await handleRefreshError(err);
@@ -391,6 +434,7 @@ async function handleCmd(cmd) {
   switch (cmd.action) {
     case "sync":
       publishView();
+      publishPanel();
       return;
     case "refresh": {
       if (busy) {
@@ -445,6 +489,7 @@ async function handleCmd(cmd) {
       lastError = "";
       await persist(["cred", "snapshot", "history", "alertsFired"]);
       publishView();
+      void syncOverlay();
       scheduleNext(0);
       status("API Key 已保存", "ok");
       return;
@@ -464,12 +509,19 @@ async function handleCmd(cmd) {
       lastError = "";
       await persist(["cred", "snapshot", "history", "alertsFired"]);
       publishView();
+      void syncOverlay();
       if (config.demo) scheduleNext(0);
       status("已清除 API Key", "ok");
       return;
     }
     case "saveConfig": {
-      config = sanitizeConfig(cmd.config ?? cmd);
+      // 面板只发改动字段；这里与当前 config 合并，避免「只改币种把刷新间隔抹回默认」。
+      const patch = cmd.config && typeof cmd.config === "object" ? cmd.config : cmd;
+      config = sanitizeConfig({
+        ...config,
+        ...patch,
+        thresholds: { ...config.thresholds, ...(patch.thresholds ?? {}) },
+      });
       await persist(["config"]);
       if (config.demo) scheduleNext(0);
       else if (cred.apiKey) scheduleNext(0);
@@ -478,6 +530,7 @@ async function handleCmd(cmd) {
         viewState = "onboarding";
       }
       publishView();
+      void syncOverlay();
       status("设置已保存", "ok");
       return;
     }
@@ -507,6 +560,7 @@ export async function activate(context) {
   ctx = context;
   stopped = false;
   busy = false;
+  overlayChain = Promise.resolve();
   await restore();
   try {
     await ctx.bus.subscribe(TOPIC_CMD, (payload) => {
@@ -522,6 +576,7 @@ export async function activate(context) {
   }
   viewState = config.demo ? "demo" : cred.apiKey ? "stale" : "onboarding";
   publishView();
+  void syncOverlay();
   if (config.demo) void refreshSnapshot();
   else if (cred.apiKey) scheduleNext(0);
   status("GOAT 用量已就绪", "info");
@@ -530,5 +585,11 @@ export async function activate(context) {
 export async function deactivate() {
   stopped = true;
   stopTimer();
+  await overlayChain.catch(() => undefined);
+  try {
+    await ctx?.overlay.destroy();
+  } catch {
+    /* 没开过就没有卡片 */
+  }
   ctx = null;
 }
