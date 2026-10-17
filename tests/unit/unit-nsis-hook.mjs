@@ -18,18 +18,34 @@ const hooksPath = conf?.bundle?.windows?.nsis?.installerHooks;
 
 group("NSIS 钩子接线");
 check("tauri.conf.json 配了 bundle.windows.nsis.installerHooks", typeof hooksPath === "string" && hooksPath !== "");
-// 路径以 src-tauri 为基准（与 tauri.conf.json 同目录），不是仓库根
+// 路径以 src-tauri 为基准（与 tauri.conf.json 同目录），不是仓库根。
+// 读不到就留空串继续跑：让下面每条断言各自变红，而不是整个文件在 import 阶段炸掉 ——
+// 炸掉的红色没有名字，看不出去向。
 const hookRel = `src-tauri/${hooksPath}`;
-check("钩子文件真的存在", (() => { try { readFileSync(join(REPO, hookRel)); return true; } catch { return false; } })(), hookRel);
+const hookExists = (() => {
+  try {
+    readFileSync(join(REPO, hookRel));
+    return true;
+  } catch {
+    return false;
+  }
+})();
+check("钩子文件真的存在", hookExists, hookRel);
 
-const hook = hooksPath ? read(hookRel) : "";
+const hook = hookExists ? read(hookRel) : "";
 // 从配置读产物名，不写死：改 Cargo.toml 的 package.name 就该连带改这里
 const cargoName = read("src-tauri/Cargo.toml").match(/^\[package\][^[]*?^\s*name\s*=\s*"([^"]+)"/m)?.[1];
 check("Cargo.toml 里读得到二进制名", typeof cargoName === "string" && cargoName !== "", String(cargoName));
 
 group("NSIS_HOOK_PREUNINSTALL 宏");
 check("定义了 NSIS_HOOK_PREUNINSTALL", hook.includes("!macro NSIS_HOOK_PREUNINSTALL"));
-check("宏有配对收尾", (hook.match(/!macro\s/g) ?? []).length === (hook.match(/!macroend/g) ?? []).length);
+// 空文件会让「两边都是 0」成立，所以先要求至少有一个宏 —— 否则这条判据是空转的
+const macroOpen = (hook.match(/!macro\s/g) ?? []).length;
+check(
+  "宏有配对收尾",
+  macroOpen > 0 && macroOpen === (hook.match(/!macroend/g) ?? []).length,
+  `open=${macroOpen} end=${(hook.match(/!macroend/g) ?? []).length}`,
+);
 // 取宏体：只在这一段里判，免得文件头注释里的同名词自己命中自己
 const macroBody = hook.slice(
   hook.indexOf("!macro NSIS_HOOK_PREUNINSTALL"),
