@@ -128,7 +128,6 @@ try {
     r.group("宿主侧规则在发布版同样有效");
     const undeclared = await invoke("permission_request", {
       pluginId: PROBE_ID,
-      pluginName: "隔离探针",
       capabilities: ["ble:scan"],
     });
     r.check("未声明能力被拒", true, !undeclared.ok && /未在 manifest 声明/.test(String(undeclared.e)));

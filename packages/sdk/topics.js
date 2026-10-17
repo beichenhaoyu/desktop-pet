@@ -26,3 +26,25 @@ export const STANDARD_TOPICS = Object.freeze([
   LLM_TOKEN_USAGE,
   TODO_CHANGED,
 ]);
+
+/* 宿主 BLE 服务经 `bus.inject` 注入的扩展事件（src/runtime/plugin-runtime.ts 的 listen 清单）。
+   它们不在五条标准名单里（docs/PLUGIN_SDK.md 单列），但同样是「插件可订的宿主 topic」。 */
+export const BLE_DEVICE_FOUND = "ble:device-found";
+export const BLE_DISCONNECTED = "ble:disconnected";
+export const BLE_ERROR = "ble:error";
+
+/**
+ * 插件**可以跨命名空间订阅**的公开 topic（ADR-0011）。
+ *
+ * 判据：订阅 `<别人 id>:xxx` 一律拒，只有这份名单里的名字才放行（仍需声明 `bus:subscribe`）。
+ * 名单 = 五条标准 topic ∪ 宿主 BLE 扩展事件。宿主 inject 的就是全部来源，所以
+ * ——新增一条宿主 topic 时要同步加到这里，否则插件订不到。**这是有意的**：
+ * 漏登记会当场表现为「订不到」，而不是默默放开某个别人插件的私有 topic。
+ * 注意名单里 `com.pet.todo:changed` 虽然长在插件前缀里，但它是登记为公开的标准 topic。
+ */
+export const PUBLIC_TOPICS = Object.freeze([
+  ...STANDARD_TOPICS,
+  BLE_DEVICE_FOUND,
+  BLE_DISCONNECTED,
+  BLE_ERROR,
+]);

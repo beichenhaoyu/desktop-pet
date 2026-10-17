@@ -7,8 +7,12 @@
 //      裸 IPC 就跟着 bundle 进了 Worker realm，本波要收口的洞当场作废）。
 //
 // 运行：npm run unit（随全量离线单测一起跑；真机那部分见 npm run verify:worker）
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { check, deep, eq, group } from "./harness.mjs";
+import { inspect } from "./import-graph.mjs";
 
 const proto = await import(new URL("../../src/runtime/plugin-worker-protocol.ts", import.meta.url));
 const { LEGACY_CODE } = await import(new URL("../../src/runtime/host-error.ts", import.meta.url));
@@ -17,7 +21,6 @@ const read = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8");
 const sdkSrc = read("../../packages/sdk/index.d.ts");
 const hostSrc = read("../../src/runtime/worker-plugin-host.ts");
 const workerSrc = read("../../src/runtime/plugin-worker.ts");
-const protoSrc = read("../../src/runtime/plugin-worker-protocol.ts");
 const runtimeSrc = read("../../src/runtime/plugin-runtime.ts");
 const sorted = (list) => [...list].sort();
 
@@ -94,19 +97,46 @@ check("还原出来的是 Error 且名字是 HostError", rebuilt instanceof Erro
 eq("文案逐字不变", rebuilt.message, "[zz.l1-probe] 权限被拒绝: storage");
 eq("码挂在 Error 上", rebuilt.code, "denied");
 
-group("Worker 侧不得带进裸 IPC");
-/** 只认「真的 import 语句」—— 注释里提到 @tauri-apps 是说明为什么不许用，不算违规 */
-const importsTauri = (src) => /from\s+"@tauri-apps|import\(\s*"@tauri-apps/.test(src);
-for (const [label, src] of [
-  ["plugin-worker.ts", workerSrc],
-  ["plugin-worker-protocol.ts", protoSrc],
+group("Worker 侧不得带进裸 IPC（传递闭包，P2-5）");
+// 旧判据是两个手写正则：只认双引号、只看**直接** import —— 改成单引号，或者中间过一层
+// re-export，它就看不见了。现在真的把 import 图走一遍（AST 取说明符 + 递归相对导入），
+// Worker 侧入口的**整个**可达闭包里出现 IPC 入口即红。
+const entryPath = (rel) => fileURLToPath(new URL(rel, import.meta.url));
+for (const [label, entry] of [
+  ["plugin-worker.ts", entryPath("../../src/runtime/plugin-worker.ts")],
+  ["widget-worker.ts", entryPath("../../src/runtime/widget-worker.ts")],
 ]) {
-  check(`${label} 不 import @tauri-apps`, !importsTauri(src));
-  check(`${label} 不引用 host-error`, !src.includes('"./host-error"'));
-  check(`${label} 不引用 invoke`, !src.includes("invoke("));
+  const hit = inspect(entry);
+  check(`${label} 的传递闭包不触及 @tauri-apps`, hit.tauri.length === 0, `命中: ${hit.tauri.join(", ")}`);
+  check(`${label} 的传递闭包不触及 host-error`, hit.hostErrorFiles.length === 0, `命中: ${hit.hostErrorFiles.join(", ")}`);
+  check(`${label} 的闭包不是空的（防判据空转）`, hit.files.length >= 2, `闭包内文件数 ${hit.files.length}`);
 }
+// 反向对照：宿主侧入口必须命中 host-error，否则说明这套闭包判据根本没走到 IPC 入口那一层
+check(
+  "宿主侧入口的闭包命中 host-error（反向对照）",
+  inspect(entryPath("../../src/runtime/worker-plugin-host.ts")).hostErrorFiles.length === 1,
+);
 check("Worker 本体不碰 window.", !workerSrc.includes("window."));
 check("宿主侧才 import 真实通道", hostSrc.includes('from "./host-error"'));
+
+group("闭包判据自身可信（防空转，P2-5）");
+{
+  // 造两个「违规」模块做负向对照：① 用**单引号** import @tauri-apps —— 旧正则正是被这一手绕过的；
+  // ② 把 host-error 藏在下一层的相对导入里 —— 旧判据只看直接 import，同样看不见。
+  const tmpDir = mkdtempSync(join(tmpdir(), "pet-import-graph-"));
+  const bad = join(tmpDir, "bad.ts");
+  writeFileSync(bad, "import { invoke } from '@tauri-apps/api/core';\nimport { x } from './mid';\nexport const y = [invoke, x];\n");
+  writeFileSync(join(tmpDir, "mid.ts"), "import { z } from './host-error';\nexport const x = z;\n");
+  writeFileSync(join(tmpDir, "host-error.ts"), "export const z = 1;\n");
+  const hit = inspect(bad);
+  check("单引号 import @tauri-apps 被抓到（旧正则会漏）", hit.tauri.length === 1, `命中: ${hit.tauri.join(", ")}`);
+  check(
+    "隔一层的 host-error 也被抓到（旧判据只看直接 import）",
+    hit.hostErrorFiles.length === 1,
+    `命中: ${hit.hostErrorFiles.join(", ")}`,
+  );
+  rmSync(tmpDir, { recursive: true, force: true });
+}
 
 group("例外名单与接线");
 eq("例外键名", proto.REALM_HOST_FLAG, "host:realm-plugin-host");

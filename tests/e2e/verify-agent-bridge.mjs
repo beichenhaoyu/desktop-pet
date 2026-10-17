@@ -518,7 +518,6 @@ try {
   // 所以不等它的返回，弹框交给整轮在跑的 consentPump，这里只轮询授权表。
   invoke("permission_request", {
     pluginId: HR_ID,
-    pluginName: "心率蓝牙广播",
     capabilities: ["overlay"],
   }).catch(() => undefined);
   let overlayGranted = false;

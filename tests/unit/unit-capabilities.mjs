@@ -336,6 +336,12 @@ group("topic 前缀归属");
   noThrow("声明 bus:subscribe 后能订宿主 topic", () => acl.assertSubscribable("com.pet.todo", "agent:state", [capsMod.BUS_SUBSCRIBE]));
   throws("通配越过自己前缀一律拒（即便声明了 bus:subscribe）", () => acl.assertSubscribable("com.pet.todo", "com.pet.astock:*", [capsMod.BUS_SUBSCRIBE]), "越过了自己的命名空间");
   throws("裸通配「*」同样拒", () => acl.assertSubscribable("com.pet.todo", "*", [capsMod.BUS_SUBSCRIBE]), "越过了自己的命名空间");
+  // ADR-0011：跨命名空间只认公开 topic —— 「声明了 bus:subscribe」不再等于「能读任意命名空间」
+  throws("订他人插件的私有 topic：声明了 bus:subscribe 也拒", () => acl.assertSubscribable("com.pet.todo", "com.pet.astock:widget", [capsMod.BUS_SUBSCRIBE]), "被拒");
+  throws("订他人插件的指令通道：同样拒", () => acl.assertSubscribable("com.pet.todo", "com.pet.astock:cmd", [capsMod.BUS_SUBSCRIBE]), "被拒");
+  noThrow("公开名单里的宿主 BLE 事件：声明后可订", () => acl.assertSubscribable("com.pet.todo", "ble:device-found", [capsMod.BUS_SUBSCRIBE]));
+  noThrow("登记为公开的他人前缀 topic：声明后可订", () => acl.assertSubscribable("com.pet.hr-ble", "com.pet.todo:changed", [capsMod.BUS_SUBSCRIBE]));
+  throws("公开名单外的宿主 topic 也不放行（名单是白名单不是黑名单）", () => acl.assertSubscribable("com.pet.todo", "host:fullscreen", [capsMod.BUS_SUBSCRIBE]), "被拒");
 
   // widget 侧的窄化总线：publish 还要再验 bus:publish 授权（第三处判定，K3 一起收）
   const fakeBus = { published: [], publish(topic, payload, pluginId) { this.published.push({ topic, payload, pluginId }); }, subscribe() { return () => {}; } };
